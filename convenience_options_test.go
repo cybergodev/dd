@@ -146,7 +146,7 @@ func TestNewWithOptions_FileConfig(t *testing.T) {
 	logger, err := NewWithOptions(Options{
 		Console: false,
 		File:    tmpFile,
-		FileConfig: &FileWriterConfig{
+		FileConfig: FileWriterConfig{
 			MaxSizeMB:  1,
 			MaxBackups: 5,
 			MaxAge:     24 * time.Hour,

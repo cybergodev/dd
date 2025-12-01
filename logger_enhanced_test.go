@@ -155,11 +155,13 @@ func TestLoggerFilterMessageNoFilter(t *testing.T) {
 }
 
 func TestLoggerApplySecurity(t *testing.T) {
+	var buf bytes.Buffer
 	config := DefaultConfig()
 	config.SecurityConfig = &SecurityConfig{
 		MaxMessageSize:  50,
 		SensitiveFilter: NewBasicSensitiveDataFilter(),
 	}
+	config.Writers = []io.Writer{&buf}
 
 	logger, err := New(config)
 	if err != nil {
@@ -167,24 +169,30 @@ func TestLoggerApplySecurity(t *testing.T) {
 	}
 	defer logger.Close()
 
-	// Test message truncation
+	// Test message truncation - log a very long message
 	longMessage := strings.Repeat("a", 100)
-	result := logger.applySecurity(longMessage)
-	if len(result) > 100 {
-		t.Errorf("Message should be truncated, got length %d", len(result))
+	logger.Info(longMessage)
+	output := buf.String()
+	// The output should be truncated (including timestamp, level, etc.)
+	if !strings.Contains(output, "[TRUNCATED]") {
+		t.Error("Long message should be truncated")
 	}
 
 	// Test sensitive data filtering
+	buf.Reset()
 	sensitiveMessage := "password=secret123"
-	result = logger.applySecurity(sensitiveMessage)
-	if strings.Contains(result, "secret123") {
+	logger.Info(sensitiveMessage)
+	output = buf.String()
+	if strings.Contains(output, "secret123") {
 		t.Error("Sensitive data should be filtered")
 	}
 }
 
 func TestLoggerApplySecurityNoConfig(t *testing.T) {
+	var buf bytes.Buffer
 	config := DefaultConfig()
 	config.SecurityConfig = nil
+	config.Writers = []io.Writer{&buf}
 
 	logger, err := New(config)
 	if err != nil {
@@ -192,11 +200,12 @@ func TestLoggerApplySecurityNoConfig(t *testing.T) {
 	}
 	defer logger.Close()
 
-	// Without security config, message should be unchanged
+	// Without security config, message should be unchanged (except for formatting)
 	original := "test message"
-	result := logger.applySecurity(original)
-	if result != original {
-		t.Error("Message should not be modified without security config")
+	logger.Info(original)
+	output := buf.String()
+	if !strings.Contains(output, original) {
+		t.Error("Message should contain original text without security config")
 	}
 }
 

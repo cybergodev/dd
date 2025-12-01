@@ -376,14 +376,15 @@ func TestConfigWithFileOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	logFile := tmpDir + "/test.log"
 
-	config := DefaultConfig().WithFileOnly(logFile, nil)
+	config, err := DefaultConfig().WithFileOnly(logFile, FileWriterConfig{})
+	if err != nil {
+		t.Fatalf("WithFileOnly() error = %v", err)
+	}
 
-	// Should have only file writer
 	if len(config.Writers) != 1 {
 		t.Errorf("WithFileOnly() should have 1 writer, got %d", len(config.Writers))
 	}
 
-	// Close any file writers to allow cleanup
 	for _, w := range config.Writers {
 		if closer, ok := w.(io.Closer); ok {
 			closer.Close()
@@ -395,12 +396,13 @@ func TestConfigWithFileInvalidPath(t *testing.T) {
 	config := DefaultConfig()
 	originalLen := len(config.Writers)
 
-	// Try with invalid path
-	config = config.WithFile("\x00invalid", nil)
+	_, err := config.WithFile("\x00invalid", FileWriterConfig{})
+	if err == nil {
+		t.Error("WithFile() with invalid path should return error")
+	}
 
-	// Should not add writer on error
 	if len(config.Writers) != originalLen {
-		t.Error("WithFile() with invalid path should not add writer")
+		t.Error("WithFile() with invalid path should not modify config")
 	}
 }
 

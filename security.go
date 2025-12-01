@@ -26,18 +26,26 @@ func NewSensitiveDataFilter() *SensitiveDataFilter {
 	}
 	filter.enabled.Store(true)
 
-	_ = filter.addPattern(`\b[0-9]{13,19}\b`)
-	_ = filter.addPattern(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
-	_ = filter.addPattern(`(?i)(password|passwd|pwd|secret|token|api[_-]?key)[\s:=]+[^\s]{1,32}`)
-	_ = filter.addPattern(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)
-	_ = filter.addPattern(`-----BEGIN[^-]*PRIVATE\s+KEY-----`)
-	_ = filter.addPattern(`\bAKIA[0-9A-Z]{16}\b`)
-	_ = filter.addPattern(`\bsk-[A-Za-z0-9]{20,48}\b`)
-	_ = filter.addPattern(`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	_ = filter.addPattern(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`)
-	_ = filter.addPattern(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-	_ = filter.addPattern(`\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b`)
-	_ = filter.addPattern(`(?i)(mysql|postgresql|mongodb)://[^\s]{1,128}`)
+	patterns := []string{
+		`\b[0-9]{13,19}\b`,
+		`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`,
+		`(?i)(password|passwd|pwd|secret)[\s:=]+[^\s]{1,32}`,
+		`(?i)(token|api[_-]?key|bearer)[\s:=]+[^\s]{1,256}`,
+		`eyJ[A-Za-z0-9_-]{10,100}\.eyJ[A-Za-z0-9_-]{10,100}\.[A-Za-z0-9_-]{10,100}`,
+		`-----BEGIN[^-]*PRIVATE\s+KEY-----[\s\S]*?-----END[^-]*PRIVATE\s+KEY-----`,
+		`\bAKIA[0-9A-Z]{16}\b`,
+		`\bAIza[A-Za-z0-9_-]{35}\b`,
+		`\bsk-[A-Za-z0-9]{20,48}\b`,
+		`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`,
+		`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b`,
+		`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`,
+		`\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b`,
+		`(?i)(mysql|postgresql|mongodb)://[^\s]{1,128}`,
+	}
+
+	for _, pattern := range patterns {
+		_ = filter.addPattern(pattern)
+	}
 
 	return filter
 }
@@ -67,7 +75,7 @@ func NewCustomSensitiveDataFilter(patterns ...string) (*SensitiveDataFilter, err
 func (f *SensitiveDataFilter) addPattern(pattern string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrInvalidPattern, err)
 	}
 
 	f.mu.Lock()
@@ -141,82 +149,86 @@ func (f *SensitiveDataFilter) Clone() *SensitiveDataFilter {
 }
 
 func (f *SensitiveDataFilter) Filter(input string) string {
-	if f == nil || !f.enabled.Load() || len(input) == 0 {
+	if f == nil || !f.enabled.Load() {
 		return input
 	}
 
-	if f.maxInputLength > 0 && len(input) > f.maxInputLength {
+	inputLen := len(input)
+	if inputLen == 0 {
+		return input
+	}
+
+	if f.maxInputLength > 0 && inputLen > f.maxInputLength {
 		input = input[:f.maxInputLength] + "... [TRUNCATED FOR SECURITY]"
 	}
 
 	f.mu.RLock()
-	if len(f.patterns) == 0 {
+	patternCount := len(f.patterns)
+	if patternCount == 0 {
 		f.mu.RUnlock()
 		return input
 	}
-	patterns := make([]*regexp.Regexp, len(f.patterns))
+
+	patterns := make([]*regexp.Regexp, patternCount)
 	copy(patterns, f.patterns)
 	timeout := f.timeout
 	f.mu.RUnlock()
 
 	result := input
-	for _, pattern := range patterns {
-		if pattern != nil {
-			result = f.filterWithTimeout(result, pattern, timeout)
-		}
+	for i := range patternCount {
+		result = f.filterWithTimeout(result, patterns[i], timeout)
 	}
 
 	return result
 }
 
 func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Regexp, timeout time.Duration) string {
-	if len(input) < 100 {
+	inputLen := len(input)
+	if inputLen < fastPathThreshold {
 		return pattern.ReplaceAllString(input, "[REDACTED]")
 	}
 
-	type result struct {
-		output string
-		err    error
-	}
-
-	done := make(chan result, 1)
+	done := make(chan string, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				done <- result{err: fmt.Errorf("regex panic: %v", r)}
+				select {
+				case done <- "[REDACTED]":
+				default:
+				}
 			}
 		}()
-		done <- result{output: pattern.ReplaceAllString(input, "[REDACTED]")}
+		output := pattern.ReplaceAllString(input, "[REDACTED]")
+		select {
+		case done <- output:
+		case <-ctx.Done():
+		}
 	}()
 
 	select {
-	case res := <-done:
-		if res.err != nil {
-			return fmt.Sprintf("[REDACTED - REGEX ERROR: %v]", res.err)
-		}
-		return res.output
+	case output := <-done:
+		return output
 	case <-ctx.Done():
-		return "[REDACTED - REGEX TIMEOUT]"
+		return "[REDACTED]"
 	}
 }
 
 func (f *SensitiveDataFilter) FilterValue(value any) any {
-	if f == nil {
+	if f == nil || !f.enabled.Load() {
 		return value
 	}
 	if str, ok := value.(string); ok {
 		return f.Filter(str)
 	}
-
 	return value
 }
 
 var sensitiveKeywords = []string{
 	"password", "passwd", "pwd",
-	"secret", "token",
+	"secret", "token", "bearer",
 	"api_key", "apikey", "api-key",
 	"access_key", "accesskey", "access-key",
 	"secret_key", "secretkey", "secret-key",
@@ -267,12 +279,18 @@ func NewBasicSensitiveDataFilter() *SensitiveDataFilter {
 	}
 	filter.enabled.Store(true)
 
-	_ = filter.addPattern(`\b[0-9]{13,19}\b`)
-	_ = filter.addPattern(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
-	_ = filter.addPattern(`(?i)(password|passwd|pwd)[\s:=]+[^\s]{1,32}`)
-	_ = filter.addPattern(`(?i)(api[_-]?key|token)[\s:=]+[^\s]{1,32}`)
-	_ = filter.addPattern(`\bsk-[A-Za-z0-9]{16,48}\b`)
-	_ = filter.addPattern(`-----BEGIN[^-]*PRIVATE\s+KEY-----`)
+	patterns := []string{
+		`\b[0-9]{13,19}\b`,
+		`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`,
+		`(?i)(password|passwd|pwd)[\s:=]+[^\s]{1,32}`,
+		`(?i)(api[_-]?key|token|bearer)[\s:=]+[^\s]{1,256}`,
+		`\bsk-[A-Za-z0-9]{16,48}\b`,
+		`-----BEGIN[^-]*PRIVATE\s+KEY-----[\s\S]*?-----END[^-]*PRIVATE\s+KEY-----`,
+	}
+
+	for _, pattern := range patterns {
+		_ = filter.addPattern(pattern)
+	}
 
 	return filter
 }
@@ -293,63 +311,18 @@ func SecureSecurityConfig() *SecurityConfig {
 	}
 }
 
-const truncatedSuffix = "... [TRUNCATED]"
-
 const (
+	truncatedSuffix       = "... [TRUNCATED]"
 	invalidKeyName        = "invalid_key"
 	defaultMaxMessageSize = 5 * 1024 * 1024 // 5MB
 	defaultMaxWriters     = 100
-	defaultMaxInputLength = 256 * 1024              // 256KB
+	defaultMaxInputLength = 256 * 1024 // 256KB
 	defaultFilterTimeout  = 50 * time.Millisecond
-	basicMaxInputLength   = 64 * 1024               // 64KB
-	emptyMaxInputLength   = 1024 * 1024             // 1MB
+	basicMaxInputLength   = 64 * 1024   // 64KB
+	emptyMaxInputLength   = 1024 * 1024 // 1MB
 	emptyFilterTimeout    = 100 * time.Millisecond
+	fastPathThreshold     = 100 // Fast path for small inputs in filterWithTimeout
 )
-
-func sanitizeMessage(message string, maxSize int) string {
-	msgLen := len(message)
-	if msgLen == 0 {
-		return message
-	}
-
-	if maxSize > 0 && msgLen > maxSize {
-		message = message[:maxSize] + truncatedSuffix
-		msgLen = len(message)
-	}
-
-	needsSanitization := false
-	for i := 0; i < msgLen; i++ {
-		c := message[i]
-		if c == '\n' || c == '\r' || (c < 32 && c != '\t') || c == 127 {
-			needsSanitization = true
-			break
-		}
-	}
-
-	if !needsSanitization {
-		return message
-	}
-
-	var sb strings.Builder
-	sb.Grow(msgLen + 10)
-
-	for _, r := range message {
-		switch r {
-		case '\n':
-			sb.WriteString("\\n")
-		case '\r':
-			sb.WriteString("\\r")
-		case '\t':
-			sb.WriteRune(r)
-		default:
-			if (r >= 32 && r < 127) || r >= 128 {
-				sb.WriteRune(r)
-			}
-		}
-	}
-
-	return sb.String()
-}
 
 func sanitizeFieldKey(key string) string {
 	keyLen := len(key)
@@ -362,35 +335,35 @@ func sanitizeFieldKey(key string) string {
 		keyLen = maxFieldKeyLength
 	}
 
-	needsSanitization := false
-	for i := 0; i < keyLen; i++ {
-		c := key[i]
-		if !isValidKeyChar(c) {
-			needsSanitization = true
+	// Fast path: check if sanitization is needed
+	hasInvalid := false
+	for i := range keyLen {
+		if !isValidKeyChar(key[i]) {
+			hasInvalid = true
 			break
 		}
 	}
 
-	if !needsSanitization {
+	if !hasInvalid {
 		return key
 	}
 
+	// Slow path: remove invalid characters
 	var sb strings.Builder
 	sb.Grow(keyLen)
 
-	for i := 0; i < keyLen; i++ {
+	for i := range keyLen {
 		c := key[i]
 		if isValidKeyChar(c) {
 			sb.WriteByte(c)
 		}
 	}
 
-	result := sb.String()
-	if result == "" {
+	if sb.Len() == 0 {
 		return invalidKeyName
 	}
 
-	return result
+	return sb.String()
 }
 
 func isValidKeyChar(c byte) bool {

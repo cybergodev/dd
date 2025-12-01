@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	fmt.Println("=== DD Message Size Limit ===\n")
+	fmt.Println("=== DD Message Size Limit ===\n ")
 
 	defaultLimit()
 	customLimit()

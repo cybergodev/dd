@@ -14,7 +14,7 @@ type Options struct {
 	Format            LogFormat
 	Console           bool
 	File              string
-	FileConfig        *FileWriterConfig
+	FileConfig        FileWriterConfig
 	IncludeCaller     bool
 	FullPath          bool
 	DynamicCaller     bool
@@ -26,6 +26,7 @@ type Options struct {
 }
 
 func NewWithOptions(opts Options) (*Logger, error) {
+	// Validate and normalize options
 	if opts.Level < LevelDebug || opts.Level > LevelFatal {
 		opts.Level = LevelDebug
 	}
@@ -34,6 +35,22 @@ func NewWithOptions(opts Options) (*Logger, error) {
 	}
 	if opts.TimeFormat == "" {
 		opts.TimeFormat = time.RFC3339
+	}
+
+	// Calculate writer capacity
+	writerCap := 0
+	if opts.Console {
+		writerCap++
+	}
+	if opts.File != "" {
+		writerCap++
+	}
+	additionalCount := len(opts.AdditionalWriters)
+	if additionalCount > 0 {
+		writerCap += additionalCount
+	}
+	if writerCap == 0 {
+		writerCap = 1
 	}
 
 	config := &LoggerConfig{
@@ -45,7 +62,7 @@ func NewWithOptions(opts Options) (*Logger, error) {
 		DynamicCaller: opts.DynamicCaller,
 		IncludeTime:   true,
 		IncludeLevel:  true,
-		Writers:       make([]io.Writer, 0),
+		Writers:       make([]io.Writer, 0, writerCap),
 	}
 
 	if opts.Console {
@@ -60,7 +77,7 @@ func NewWithOptions(opts Options) (*Logger, error) {
 		config.Writers = append(config.Writers, fileWriter)
 	}
 
-	if len(opts.AdditionalWriters) > 0 {
+	if additionalCount > 0 {
 		config.Writers = append(config.Writers, opts.AdditionalWriters...)
 	}
 
@@ -68,9 +85,7 @@ func NewWithOptions(opts Options) (*Logger, error) {
 		config.Writers = []io.Writer{os.Stdout}
 	}
 
-	if config.SecurityConfig == nil {
-		config.SecurityConfig = DefaultSecurityConfig()
-	}
+	config.SecurityConfig = DefaultSecurityConfig()
 
 	if opts.CustomFilter != nil {
 		config.SecurityConfig.SensitiveFilter = opts.CustomFilter
@@ -83,7 +98,7 @@ func NewWithOptions(opts Options) (*Logger, error) {
 		case "full":
 			config.SecurityConfig.SensitiveFilter = NewSensitiveDataFilter()
 		default:
-			return nil, fmt.Errorf("invalid filter level: %s (must be 'none', 'basic', or 'full')", opts.FilterLevel)
+			return nil, fmt.Errorf("%w: %s (must be 'none', 'basic', or 'full')", ErrInvalidFilterLevel, opts.FilterLevel)
 		}
 	}
 
@@ -98,64 +113,53 @@ func NewWithOptions(opts Options) (*Logger, error) {
 	return New(config)
 }
 
-func ToFile(filename ...string) *Logger {
-	file := defFile
+func getFilename(filename []string) string {
 	if len(filename) > 0 && filename[0] != "" {
-		file = filename[0]
+		return filename[0]
 	}
+	return defFile
+}
+
+func fallbackLogger() *Logger {
+	logger, _ := NewWithOptions(Options{Console: true})
+	return logger
+}
+
+func ToFile(filename ...string) *Logger {
 	logger, err := NewWithOptions(Options{
 		Console: false,
-		File:    file,
+		File:    getFilename(filename),
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dd: create file logger '%s': %v, using console fallback\n", file, err)
-		fallback, _ := NewWithOptions(Options{Console: true})
-		return fallback
+		return fallbackLogger()
 	}
 	return logger
 }
 
 func ToConsole() *Logger {
-	logger, err := NewWithOptions(Options{Console: true})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dd: create console logger: %v, using fallback\n", err)
-		fallback, _ := New(DefaultConfig())
-		return fallback
-	}
+	logger, _ := NewWithOptions(Options{Console: true})
 	return logger
 }
 
 func ToJSONFile(filename ...string) *Logger {
-	file := defFile
-	if len(filename) > 0 && filename[0] != "" {
-		file = filename[0]
-	}
 	logger, err := NewWithOptions(Options{
 		Format:  FormatJSON,
 		Console: false,
-		File:    file,
+		File:    getFilename(filename),
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dd: create JSON file logger '%s': %v, using console fallback\n", file, err)
-		fallback, _ := NewWithOptions(Options{Console: true})
-		return fallback
+		return fallbackLogger()
 	}
 	return logger
 }
 
 func ToAll(filename ...string) *Logger {
-	file := defFile
-	if len(filename) > 0 && filename[0] != "" {
-		file = filename[0]
-	}
 	logger, err := NewWithOptions(Options{
 		Console: true,
-		File:    file,
+		File:    getFilename(filename),
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dd: create logger with file '%s': %v, using console fallback\n", file, err)
-		fallback, _ := NewWithOptions(Options{Console: true})
-		return fallback
+		return fallbackLogger()
 	}
 	return logger
 }

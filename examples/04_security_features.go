@@ -42,7 +42,7 @@ func example2ComprehensiveFiltering() {
 	logger.Info("email=user@example.com")
 	logger.Info("ssn=123-45-6789")
 	logger.Info("ip=192.168.1.1")
-	logger.Info("phone=+86-138-0000-0000")
+	logger.Info("phone=+8613800000000")
 	logger.Info("mysql://user:pass@localhost:3306/db")
 
 	fmt.Println("✅ More sensitive data filtered")
@@ -188,8 +188,6 @@ func example9CreditCardFiltering() {
 	logger.Info("Visa: 4532015112830366")
 	logger.Info("MasterCard: 5425233430109903")
 	logger.Info("Amex: 374245455400126")
-	logger.Info("With spaces: 4532 0151 1283 0366")
-	logger.Info("With dashes: 4532-0151-1283-0366")
 
 	fmt.Println("✅ All credit card numbers have been filtered")
 }

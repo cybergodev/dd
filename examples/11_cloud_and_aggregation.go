@@ -65,7 +65,12 @@ func cloudWatch() {
 	fmt.Println("\n2. AWS CloudWatch Format")
 
 	config := dd.JSONConfig()
-	config.WithFile("logs/cloudwatch.log", nil)
+	config.WithFile("logs/cloudwatch.log", dd.FileWriterConfig{
+		MaxSizeMB:  100,
+		MaxBackups: 30,
+		MaxAge:     30 * 24 * time.Hour,
+		Compress:   true,
+	})
 	logger, _ := dd.New(config)
 	defer logger.Close()
 
@@ -94,7 +99,12 @@ func distributedTracing() {
 	fmt.Println("\n3. Distributed Tracing")
 
 	config := dd.JSONConfig()
-	config.WithFile("logs/tracing.log", nil)
+	config.WithFile("logs/tracing.log", dd.FileWriterConfig{
+		MaxSizeMB:  100,
+		MaxBackups: 30,
+		MaxAge:     30 * 24 * time.Hour,
+		Compress:   true,
+	})
 	logger, _ := dd.New(config)
 	defer logger.Close()
 

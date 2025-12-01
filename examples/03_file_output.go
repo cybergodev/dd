@@ -78,7 +78,7 @@ func example5CustomRotation() {
 	fmt.Println("\n=== Example 5: Custom File Rotation Configuration ===")
 
 	// Create file writer with rotation parameters
-	fileWriter, err := dd.NewFileWriter("logs/rotation.log", &dd.FileWriterConfig{
+	fileWriter, err := dd.NewFileWriter("logs/rotation.log", dd.FileWriterConfig{
 		MaxSizeMB:  50,                 // Rotate when file reaches 50MB
 		MaxBackups: 5,                  // Keep 5 backup files
 		MaxAge:     7 * 24 * time.Hour, // Keep for 7 days
@@ -111,14 +111,14 @@ func example6MultipleFiles() {
 	fmt.Println("\n=== Example 6: Multiple File Outputs ===")
 
 	// Create multiple file writers
-	infoWriter, _ := dd.NewFileWriter("logs/info.log", &dd.FileWriterConfig{
+	infoWriter, _ := dd.NewFileWriter("logs/info.log", dd.FileWriterConfig{
 		MaxSizeMB:  50,
 		MaxBackups: 5,
 		Compress:   true,
 	})
 	defer infoWriter.Close()
 
-	errorWriter, _ := dd.NewFileWriter("logs/error.log", &dd.FileWriterConfig{
+	errorWriter, _ := dd.NewFileWriter("logs/error.log", dd.FileWriterConfig{
 		MaxSizeMB:  100,
 		MaxBackups: 20,
 		Compress:   true,
@@ -159,7 +159,7 @@ func example8LargeFileRotation() {
 	fmt.Println("\n=== Example 8: Large File Rotation Test ===")
 
 	// Set small file size for testing rotation
-	fileWriter, err := dd.NewFileWriter("logs/rotation_test.log", &dd.FileWriterConfig{
+	fileWriter, err := dd.NewFileWriter("logs/rotation_test.log", dd.FileWriterConfig{
 		MaxSizeMB:  1, // Rotate at 1MB
 		MaxBackups: 3,
 		Compress:   true,
@@ -194,7 +194,7 @@ func example9FileSecurity() {
 
 	// DD automatically prevents path traversal attacks
 	// The following path will be rejected
-	_, err := dd.NewFileWriter("../../../etc/passwd", nil)
+	_, err := dd.NewFileWriter("../../../etc/passwd", dd.FileWriterConfig{})
 	if err != nil {
 		fmt.Printf("Path traversal attack blocked: %v\n", err)
 	}
@@ -211,7 +211,7 @@ func example10RealWorldScenario() {
 	fmt.Println("\n=== Example 10: Real-World Scenario ===")
 
 	// Application logs
-	appWriter, _ := dd.NewFileWriter("logs/app.log", &dd.FileWriterConfig{
+	appWriter, _ := dd.NewFileWriter("logs/app.log", dd.FileWriterConfig{
 		MaxSizeMB:  100,
 		MaxBackups: 30,
 		MaxAge:     30 * 24 * time.Hour,
@@ -220,7 +220,7 @@ func example10RealWorldScenario() {
 	defer appWriter.Close()
 
 	// Error logs (kept longer)
-	errorWriter, _ := dd.NewFileWriter("logs/error.log", &dd.FileWriterConfig{
+	errorWriter, _ := dd.NewFileWriter("logs/error.log", dd.FileWriterConfig{
 		MaxSizeMB:  200,
 		MaxBackups: 90,
 		MaxAge:     90 * 24 * time.Hour,

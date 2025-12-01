@@ -156,7 +156,7 @@ logger, _ := dd.New(dd.JSONConfig())
 ```go
 logger, _ := dd.NewWithOptions(dd.Options{
     File: "app.log",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,                 // 分片大小 100MB
         MaxBackups: 10,                  // 保留 10 个备份
         MaxAge:     30 * 24 * time.Hour, // 30 天后删除
@@ -336,7 +336,7 @@ logger, err := dd.NewWithOptions(dd.Options{
     Console: true,            // 控制台输出
     File:    "logs/app.log",  // 文件路径
     
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,                 // 100MB轮转
         MaxBackups: 10,                  // 保留10个备份
         MaxAge:     30 * 24 * time.Hour, // 30天后删除
@@ -601,7 +601,7 @@ logger, _ := dd.NewWithOptions(dd.Options{
     File:        "logs/app.log",
     Console:     false,  // 生产环境不输出控制台
     FilterLevel: "basic",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,
         MaxBackups: 30,
         MaxAge:     7 * 24 * time.Hour,

@@ -38,26 +38,13 @@ type FileWriterConfig struct {
 	Compress   bool
 }
 
-func NewFileWriter(path string, config *FileWriterConfig) (*FileWriter, error) {
-	if err := validateFilePath(path); err != nil {
-		return nil, err
-	}
-
-	securePath, err := secureFilePath(path)
+func NewFileWriter(path string, config FileWriterConfig) (*FileWriter, error) {
+	securePath, err := validateAndSecurePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	if config == nil {
-		config = &FileWriterConfig{
-			MaxSizeMB:  defaultMaxSizeMB,
-			MaxAge:     defaultMaxAge,
-			MaxBackups: defaultMaxBackups,
-			Compress:   true,
-		}
-	}
-
-	if err := validateFileWriterConfig(config); err != nil {
+	if err := validateFileWriterConfig(&config); err != nil {
 		return nil, err
 	}
 
@@ -87,8 +74,10 @@ func NewFileWriter(path string, config *FileWriterConfig) (*FileWriter, error) {
 	fw.file = file
 	fw.currentSize.Store(size)
 
-	fw.wg.Add(1)
-	go fw.cleanupRoutine()
+	if fw.maxAge > 0 {
+		fw.wg.Add(1)
+		go fw.cleanupRoutine()
+	}
 
 	return fw, nil
 }
@@ -107,32 +96,27 @@ const (
 	dirPermissions     = 0700
 )
 
-func validateFilePath(path string) error {
+func validateAndSecurePath(path string) (string, error) {
 	if path == "" {
-		return fmt.Errorf("file path cannot be empty")
-	}
-
-	if len(path) > maxPathLength {
-		return fmt.Errorf("file path too long (max %d characters)", maxPathLength)
+		return "", ErrEmptyFilePath
 	}
 
 	if strings.Contains(path, "\x00") {
-		return fmt.Errorf("null byte in file path")
+		return "", ErrNullByte
 	}
 
-	return nil
-}
+	if len(path) > maxPathLength {
+		return "", fmt.Errorf("%w (max %d characters)", ErrPathTooLong, maxPathLength)
+	}
 
-func secureFilePath(path string) (string, error) {
 	cleanPath := filepath.Clean(path)
-
 	if strings.Contains(cleanPath, "..") {
-		return "", fmt.Errorf("path traversal detected")
+		return "", ErrPathTraversal
 	}
 
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return "", fmt.Errorf("invalid file path: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrInvalidPath, err)
 	}
 
 	return absPath, nil
@@ -150,20 +134,25 @@ func validateFileWriterConfig(config *FileWriterConfig) error {
 	}
 
 	if config.MaxSizeMB > maxFileSizeMB {
-		return fmt.Errorf("maxSize too large (maximum %dMB)", maxFileSizeMB)
+		return fmt.Errorf("%w: maximum %dMB", ErrMaxSizeExceeded, maxFileSizeMB)
 	}
 	if config.MaxBackups > maxBackupCount {
-		return fmt.Errorf("maxBackups too large (maximum %d)", maxBackupCount)
+		return fmt.Errorf("%w: maximum %d", ErrMaxBackupsExceeded, maxBackupCount)
 	}
 
 	return nil
 }
 
 func (fw *FileWriter) Write(p []byte) (int, error) {
+	pLen := len(p)
+	if pLen == 0 {
+		return 0, nil
+	}
+
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
-	if filewriter.NeedsRotation(fw.currentSize.Load(), int64(len(p)), fw.maxSize) {
+	if filewriter.NeedsRotation(fw.currentSize.Load(), int64(pLen), fw.maxSize) {
 		if err := fw.rotate(); err != nil {
 			return 0, fmt.Errorf("rotation failed: %w", err)
 		}
@@ -179,7 +168,9 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 }
 
 func (fw *FileWriter) Close() error {
-	fw.cancel()
+	if fw.cancel != nil {
+		fw.cancel()
+	}
 	fw.wg.Wait()
 
 	fw.mu.Lock()
@@ -219,7 +210,9 @@ func (fw *FileWriter) rotate() error {
 	}
 
 	if fw.compress {
+		fw.wg.Add(1)
 		go func() {
+			defer fw.wg.Done()
 			if err := filewriter.CompressFile(backupPath); err != nil {
 				fmt.Fprintf(os.Stderr, "dd: compress backup %s: %v\n", backupPath, err)
 			}
@@ -238,10 +231,6 @@ func (fw *FileWriter) rotate() error {
 
 func (fw *FileWriter) cleanupRoutine() {
 	defer fw.wg.Done()
-
-	if fw.maxAge <= 0 {
-		return
-	}
 
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
@@ -272,14 +261,14 @@ type BufferedWriter struct {
 
 func NewBufferedWriter(w io.Writer, bufferSize int) (*BufferedWriter, error) {
 	if w == nil {
-		return nil, fmt.Errorf("writer cannot be nil")
+		return nil, ErrNilWriter
 	}
 
 	if bufferSize < defaultBufferSize {
 		bufferSize = defaultBufferSize
 	}
 	if bufferSize > maxBufferSize {
-		return nil, fmt.Errorf("buffer size too large (maximum %dMB)", maxBufferSize/(1024*1024))
+		return nil, fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSize/(1024*1024))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -301,6 +290,11 @@ func NewBufferedWriter(w io.Writer, bufferSize int) (*BufferedWriter, error) {
 }
 
 func (bw *BufferedWriter) Write(p []byte) (int, error) {
+	pLen := len(p)
+	if pLen == 0 {
+		return 0, nil
+	}
+
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
@@ -367,7 +361,7 @@ func (bw *BufferedWriter) autoFlushRoutine() {
 			return
 		case <-ticker.C:
 			bw.mu.Lock()
-			if time.Since(bw.lastFlush) >= bw.flushTime && bw.buffer.Buffered() > 0 {
+			if bw.buffer.Buffered() > 0 && time.Since(bw.lastFlush) >= bw.flushTime {
 				_ = bw.buffer.Flush()
 				bw.lastFlush = time.Now()
 			}
@@ -395,51 +389,51 @@ func NewMultiWriter(writers ...io.Writer) *MultiWriter {
 }
 
 func (mw *MultiWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
+	pLen := len(p)
+	if pLen == 0 {
 		return 0, nil
 	}
 
 	mw.mu.RLock()
-	writers := make([]io.Writer, len(mw.writers))
+	writerCount := len(mw.writers)
+	if writerCount == 0 {
+		mw.mu.RUnlock()
+		return pLen, nil
+	}
+
+	writers := make([]io.Writer, writerCount)
 	copy(writers, mw.writers)
 	mw.mu.RUnlock()
 
-	if len(writers) == 0 {
-		return len(p), nil
-	}
-
-	var errs []error
+	var firstErr error
 	successCount := 0
 
-	for i, w := range writers {
-		if w == nil {
-			continue
-		}
-
-		n, err := w.Write(p)
+	for i := range writerCount {
+		n, err := writers[i].Write(p)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("writer[%d]: %w", i, err))
+			if firstErr == nil {
+				firstErr = fmt.Errorf("writer[%d]: %w", i, err)
+			}
 			continue
 		}
-		if n != len(p) {
-			errs = append(errs, fmt.Errorf("writer[%d]: short write (%d/%d bytes)", i, n, len(p)))
+		if n != pLen {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("writer[%d]: short write (%d/%d bytes)", i, n, pLen)
+			}
 			continue
 		}
 		successCount++
 	}
 
-	if successCount == 0 && len(errs) > 0 {
-		if len(errs) == 1 {
-			return 0, errs[0]
-		}
-		return 0, fmt.Errorf("all writers failed: %v", errs)
+	if successCount == 0 {
+		return 0, firstErr
 	}
 
-	if len(errs) > 0 {
-		return len(p), fmt.Errorf("partial write failure (%d/%d succeeded): %v", successCount, len(writers), errs)
+	if firstErr != nil {
+		return pLen, fmt.Errorf("partial write failure (%d/%d succeeded): %w", successCount, writerCount, firstErr)
 	}
 
-	return len(p), nil
+	return pLen, nil
 }
 
 func (mw *MultiWriter) AddWriter(w io.Writer) {
@@ -457,8 +451,8 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) {
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
-	for i, writer := range mw.writers {
-		if writer == w {
+	for i := range mw.writers {
+		if mw.writers[i] == w {
 			mw.writers = append(mw.writers[:i], mw.writers[i+1:]...)
 			break
 		}
