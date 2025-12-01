@@ -132,6 +132,18 @@ func TestFormatFields(t *testing.T) {
 }
 
 func TestFieldsToMap(t *testing.T) {
+	// Helper function for testing field conversion
+	fieldsToMap := func(fields []Field) map[string]any {
+		if len(fields) == 0 {
+			return nil
+		}
+		m := make(map[string]any, len(fields))
+		for _, field := range fields {
+			m[field.Key] = field.Value
+		}
+		return m
+	}
+
 	tests := []struct {
 		name   string
 		fields []Field

@@ -43,13 +43,14 @@ func Err(err error) Field {
 }
 
 var fieldPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new(strings.Builder)
 	},
 }
 
 func formatFields(fields []Field) string {
-	if len(fields) == 0 {
+	fieldCount := len(fields)
+	if fieldCount == 0 {
 		return ""
 	}
 
@@ -57,40 +58,29 @@ func formatFields(fields []Field) string {
 	sb.Reset()
 	defer fieldPool.Put(sb)
 
-	for i, field := range fields {
+	for i := range fieldCount {
 		if i > 0 {
 			sb.WriteString(" ")
 		}
+		field := fields[i]
 		sb.WriteString(field.Key)
 		sb.WriteString("=")
 
 		switch v := field.Value.(type) {
 		case string:
 			if strings.ContainsAny(v, " \t\n") {
-				sb.WriteString(fmt.Sprintf("%q", v))
+				fmt.Fprintf(sb, "%q", v)
 			} else {
 				sb.WriteString(v)
 			}
 		case nil:
 			sb.WriteString("<nil>")
 		default:
-			sb.WriteString(fmt.Sprintf("%v", v))
+			fmt.Fprintf(sb, "%v", v)
 		}
 	}
 
 	return sb.String()
-}
-
-func fieldsToMap(fields []Field) map[string]any {
-	if len(fields) == 0 {
-		return nil
-	}
-
-	m := make(map[string]any, len(fields))
-	for _, field := range fields {
-		m[field.Key] = field.Value
-	}
-	return m
 }
 
 func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {
@@ -103,13 +93,11 @@ func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {
 		return
 	}
 
-	fullMessage := msg
 	if len(fields) > 0 {
-		fullMessage = msg + " " + formatFields(fields)
+		msg = msg + " " + formatFields(fields)
 	}
 
-	message := l.formatMessageWithDepth(level, fullMessage, nil, 6)
-	message = l.applySecurity(message)
+	message := l.formatMessageWithDepth(level, msg, nil, 6)
 	l.writeMessage(message)
 
 	if level == LevelFatal {

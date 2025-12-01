@@ -139,21 +139,20 @@ func (l *Logger) SetSecurityConfig(config *SecurityConfig) {
 }
 
 func (l *Logger) GetSecurityConfig() *SecurityConfig {
-	v := l.securityConfig.Load()
-	if v == nil {
-		return nil
-	}
-	secConfig := v.(*SecurityConfig)
+	secConfig := l.getSecurityConfig()
 	if secConfig == nil {
 		return nil
 	}
+
 	clone := &SecurityConfig{
 		MaxMessageSize: secConfig.MaxMessageSize,
 		MaxWriters:     secConfig.MaxWriters,
 	}
+
 	if secConfig.SensitiveFilter != nil {
 		clone.SensitiveFilter = secConfig.SensitiveFilter.Clone()
 	}
+
 	return clone
 }
 
@@ -162,25 +161,29 @@ func (l *Logger) getSecurityConfig() *SecurityConfig {
 	if v == nil {
 		return nil
 	}
-	return v.(*SecurityConfig)
+	secConfig, ok := v.(*SecurityConfig)
+	if !ok {
+		return nil
+	}
+	return secConfig
 }
 
 func (l *Logger) AddWriter(w io.Writer) error {
 	if w == nil {
-		return fmt.Errorf("writer cannot be nil")
+		return ErrNilWriter
 	}
 
 	if l.closed.Load() {
-		return fmt.Errorf("logger is closed")
+		return ErrLoggerClosed
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Check writer count limit
-	if secConfig := l.getSecurityConfig(); secConfig != nil && secConfig.MaxWriters > 0 {
+	secConfig := l.getSecurityConfig()
+	if secConfig != nil && secConfig.MaxWriters > 0 {
 		if len(l.writers) >= secConfig.MaxWriters {
-			return fmt.Errorf("maximum writer count (%d) exceeded", secConfig.MaxWriters)
+			return fmt.Errorf("%w (%d)", ErrMaxWritersExceeded, secConfig.MaxWriters)
 		}
 	}
 
@@ -196,8 +199,8 @@ func (l *Logger) RemoveWriter(w io.Writer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for i, writer := range l.writers {
-		if writer == w {
+	for i := range l.writers {
+		if l.writers[i] == w {
 			l.writers = append(l.writers[:i], l.writers[i+1:]...)
 			break
 		}
@@ -210,9 +213,7 @@ func (l *Logger) logWithFieldsAndDepth(level LogLevel, msg string, fields []Fiel
 	}
 
 	fieldMap := l.processFields(fields)
-	filteredMsg := l.filterMessage(msg)
-	message := l.formatMessageWithDepth(level, filteredMsg, fieldMap, callerDepth)
-	message = l.applySecurity(message)
+	message := l.formatMessageWithDepth(level, msg, fieldMap, callerDepth)
 	l.writeMessage(message)
 
 	if level == LevelFatal {
@@ -221,24 +222,31 @@ func (l *Logger) logWithFieldsAndDepth(level LogLevel, msg string, fields []Fiel
 }
 
 func (l *Logger) processFields(fields []Field) map[string]any {
-	if len(fields) == 0 {
+	fieldCount := len(fields)
+	if fieldCount == 0 {
 		return nil
 	}
 
-	fieldMap := make(map[string]any, len(fields))
 	secConfig := l.getSecurityConfig()
-	hasFilter := secConfig != nil && secConfig.SensitiveFilter != nil
+	var filter *SensitiveDataFilter
+	if secConfig != nil && secConfig.SensitiveFilter != nil && secConfig.SensitiveFilter.IsEnabled() {
+		filter = secConfig.SensitiveFilter
+	}
 
-	for _, field := range fields {
-		safeKey := field.Key
-		if needsSanitization(field.Key) {
-			safeKey = sanitizeFieldKey(field.Key)
+	fieldMap := make(map[string]any, fieldCount)
+	for i := range fieldCount {
+		field := fields[i]
+		key := field.Key
+		if needsSanitization(key) {
+			key = sanitizeFieldKey(key)
 		}
-		if hasFilter {
-			fieldMap[safeKey] = secConfig.SensitiveFilter.FilterFieldValue(field.Key, field.Value)
-		} else {
-			fieldMap[safeKey] = field.Value
+
+		value := field.Value
+		if filter != nil {
+			value = filter.FilterFieldValue(field.Key, value)
 		}
+
+		fieldMap[key] = value
 	}
 
 	return fieldMap
@@ -249,6 +257,8 @@ const (
 	poolMaxBufferSize  = 4096
 	defaultCallerDepth = 6
 	maxCallerDepth     = 15
+	minPoolCapacity    = 1024
+	closeTimeout       = 5 * time.Second
 )
 
 func needsSanitization(key string) bool {
@@ -257,9 +267,8 @@ func needsSanitization(key string) bool {
 		return true
 	}
 
-	for i := 0; i < keyLen; i++ {
-		c := key[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+	for i := range keyLen {
+		if !isValidKeyChar(key[i]) {
 			return true
 		}
 	}
@@ -268,7 +277,11 @@ func needsSanitization(key string) bool {
 
 func (l *Logger) filterMessage(msg string) string {
 	secConfig := l.getSecurityConfig()
-	if secConfig != nil && secConfig.SensitiveFilter != nil {
+	if secConfig == nil || secConfig.SensitiveFilter == nil {
+		return msg
+	}
+
+	if secConfig.SensitiveFilter.IsEnabled() {
 		return secConfig.SensitiveFilter.Filter(msg)
 	}
 	return msg
@@ -283,14 +296,12 @@ func (l *Logger) Log(level LogLevel, args ...any) {
 		return
 	}
 
-	// Use Sprintln logic to add spaces between args, then trim trailing newline
 	msg := fmt.Sprintln(args...)
-	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
-		msg = msg[:len(msg)-1]
+	if msgLen := len(msg); msgLen > 0 && msg[msgLen-1] == '\n' {
+		msg = msg[:msgLen-1]
 	}
 
-	message := l.formatMessageWithDepth(level, msg, nil, 6)
-	message = l.applySecurity(message)
+	message := l.formatMessageWithDepth(level, msg, nil, defaultCallerDepth)
 	l.writeMessage(message)
 
 	if level == LevelFatal {
@@ -299,10 +310,27 @@ func (l *Logger) Log(level LogLevel, args ...any) {
 }
 
 func (l *Logger) formatMessageWithDepth(level LogLevel, msg string, fields map[string]any, callerDepth int) string {
+	msg = l.filterMessage(msg)
+
+	var formatted string
 	if l.format == FormatJSON {
-		return l.formatJSONWithDepth(level, msg, fields, callerDepth)
+		formatted = l.formatJSONWithDepth(level, msg, fields, callerDepth)
+	} else {
+		formatted = l.formatTextWithDepth(level, msg, callerDepth)
 	}
-	return l.formatTextWithDepth(level, msg, callerDepth)
+
+	return l.applySecurity(formatted)
+}
+
+func (l *Logger) applySecurity(message string) string {
+	msgLen := len(message)
+
+	secConfig := l.getSecurityConfig()
+	if secConfig != nil && secConfig.MaxMessageSize > 0 && msgLen > secConfig.MaxMessageSize {
+		message = message[:secConfig.MaxMessageSize] + truncatedSuffix
+	}
+
+	return sanitizeControlChars(message)
 }
 
 func (l *Logger) formatTextWithDepth(level LogLevel, msg string, callerDepth int) string {
@@ -390,14 +418,12 @@ func (l *Logger) logWithExtraDepth(level LogLevel, extraDepth int, args ...any) 
 		return
 	}
 
-	// Use Sprintln logic to add spaces between args, then trim trailing newline
 	msg := fmt.Sprintln(args...)
-	if len(msg) > 0 && msg[len(msg)-1] == '\n' {
-		msg = msg[:len(msg)-1]
+	if msgLen := len(msg); msgLen > 0 && msg[msgLen-1] == '\n' {
+		msg = msg[:msgLen-1]
 	}
 
 	message := l.formatMessageWithDepth(level, msg, nil, l.callerDepth+extraDepth)
-	message = l.applySecurity(message)
 	l.writeMessage(message)
 
 	if level == LevelFatal {
@@ -411,7 +437,6 @@ func (l *Logger) logfWithExtraDepth(level LogLevel, extraDepth int, format strin
 	}
 
 	message := l.formatMessageWithDepth(level, fmt.Sprintf(format, args...), nil, l.callerDepth+extraDepth)
-	message = l.applySecurity(message)
 	l.writeMessage(message)
 
 	if level == LevelFatal {
@@ -419,22 +444,39 @@ func (l *Logger) logfWithExtraDepth(level LogLevel, extraDepth int, format strin
 	}
 }
 
-func (l *Logger) applySecurity(message string) string {
-	secConfig := l.getSecurityConfig()
-	if secConfig == nil {
-		return sanitizeMessage(message, 0)
+func sanitizeControlChars(message string) string {
+	msgLen := len(message)
+	if msgLen == 0 {
+		return message
 	}
 
-	if secConfig.SensitiveFilter != nil && secConfig.SensitiveFilter.IsEnabled() {
-		message = secConfig.SensitiveFilter.Filter(message)
+	// Fast path: check if sanitization is needed
+	hasControlChars := false
+	for i := range msgLen {
+		if isControlChar(message[i]) {
+			hasControlChars = true
+			break
+		}
 	}
 
-	maxSize := secConfig.MaxMessageSize
-	if maxSize > 0 && len(message) > maxSize {
-		message = message[:maxSize] + truncatedSuffix
+	if !hasControlChars {
+		return message
 	}
 
-	return sanitizeMessage(message, maxSize)
+	// Slow path: remove control characters
+	result := make([]byte, 0, msgLen)
+	for i := range msgLen {
+		c := message[i]
+		if !isControlChar(c) {
+			result = append(result, c)
+		}
+	}
+
+	return string(result)
+}
+
+func isControlChar(c byte) bool {
+	return c == '\x00' || (c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127
 }
 
 func (l *Logger) handleFatal() {
@@ -451,25 +493,24 @@ func (l *Logger) writeMessage(message string) {
 		return
 	}
 
-	l.mu.RLock()
-	writers := l.writers
-	writerCount := len(writers)
-	l.mu.RUnlock()
+	msgLen := len(message)
+	if msgLen == 0 {
+		return
+	}
 
+	l.mu.RLock()
+	writerCount := len(l.writers)
 	if writerCount == 0 {
+		l.mu.RUnlock()
 		return
 	}
 
 	bufPtr := messagePool.Get().(*[]byte)
 	buf := *bufPtr
 
-	needed := len(message) + 1
+	needed := msgLen + 1
 	if cap(buf) < needed {
-		newCap := needed
-		if newCap < 1024 {
-			newCap = 1024
-		}
-		buf = make([]byte, 0, newCap)
+		buf = make([]byte, 0, max(needed, minPoolCapacity))
 	} else {
 		buf = buf[:0]
 	}
@@ -477,13 +518,19 @@ func (l *Logger) writeMessage(message string) {
 	buf = append(buf, message...)
 	buf = append(buf, '\n')
 
-	if writerCount == 1 && writers[0] != nil {
-		_, _ = writers[0].Write(buf)
+	// Fast path: single writer
+	if writerCount == 1 {
+		w := l.writers[0]
+		l.mu.RUnlock()
+		_, _ = w.Write(buf)
 	} else {
-		for _, w := range writers {
-			if w != nil {
-				_, _ = w.Write(buf)
-			}
+		// Multiple writers: copy slice before releasing lock
+		writers := make([]io.Writer, writerCount)
+		copy(writers, l.writers)
+		l.mu.RUnlock()
+
+		for i := range writerCount {
+			_, _ = writers[i].Write(buf)
 		}
 	}
 
@@ -498,9 +545,7 @@ func (l *Logger) detectCallerDepthWithHint(hint int) int {
 		return hint
 	}
 
-	const pkgPrefix = "github.com/cybergodev/dd"
-
-	for depth := 2; depth <= maxCallerDepth; depth++ {
+	for depth := 2; depth < maxCallerDepth; depth++ {
 		pc, file, _, ok := runtime.Caller(depth)
 		if !ok {
 			return hint
@@ -513,11 +558,14 @@ func (l *Logger) detectCallerDepthWithHint(hint int) int {
 
 		funcName := fn.Name()
 
+		// Skip runtime functions
 		if strings.HasPrefix(funcName, "runtime.") {
 			continue
 		}
 
-		if strings.Contains(funcName, pkgPrefix) && !strings.HasSuffix(file, "_test.go") {
+		// Check if this is an internal dd package call (not test)
+		isTestFile := strings.HasSuffix(file, "_test.go")
+		if !isTestFile && strings.Contains(funcName, "/dd.") {
 			continue
 		}
 
@@ -539,7 +587,6 @@ func (l *Logger) logf(level LogLevel, format string, args ...any) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	message := l.formatMessageWithDepth(level, msg, nil, defaultCallerDepth)
-	message = l.applySecurity(message)
 	l.writeMessage(message)
 
 	if level == LevelFatal {
@@ -569,7 +616,6 @@ func (l *Logger) Close() error {
 			close(done)
 		}()
 
-		const closeTimeout = 5 * time.Second
 		select {
 		case <-done:
 		case <-time.After(closeTimeout):
@@ -577,10 +623,8 @@ func (l *Logger) Close() error {
 		}
 
 		l.mu.Lock()
-		defer l.mu.Unlock()
-
 		for i, writer := range l.writers {
-			if writer == os.Stdout || writer == os.Stderr || writer == os.Stdin {
+			if writer == os.Stdout || writer == os.Stderr {
 				continue
 			}
 			if closer, ok := writer.(io.Closer); ok {
@@ -589,28 +633,30 @@ func (l *Logger) Close() error {
 				}
 			}
 		}
+		l.mu.Unlock()
 	})
 
-	if len(errs) == 0 {
+	errCount := len(errs)
+	if errCount == 0 {
 		return nil
 	}
-	if len(errs) == 1 {
+	if errCount == 1 {
 		return errs[0]
 	}
 
 	var errMsg strings.Builder
 	errMsg.WriteString("multiple close errors: ")
-	for i, err := range errs {
+	for i := range errCount {
 		if i > 0 {
 			errMsg.WriteString("; ")
 		}
-		errMsg.WriteString(err.Error())
+		errMsg.WriteString(errs[i].Error())
 	}
 	return fmt.Errorf("%s", errMsg.String())
 }
 
 var (
-	defaultLogger atomic.Value // *Logger
+	defaultLogger atomic.Pointer[Logger]
 	defaultOnce   sync.Once
 )
 
@@ -620,17 +666,29 @@ func Default() *Logger {
 	defaultOnce.Do(func() {
 		logger, err := New(nil)
 		if err != nil {
-			panic(fmt.Sprintf("dd: failed to initialize default logger: %v", err))
+			ctx, cancel := context.WithCancel(context.Background())
+			logger = &Logger{
+				format:        FormatText,
+				timeFormat:    time.RFC3339,
+				callerDepth:   defaultCallerDepth,
+				includeCaller: false,
+				includeTime:   true,
+				includeLevel:  true,
+				fullPath:      false,
+				writers:       []io.Writer{os.Stderr},
+				ctx:           ctx,
+				cancel:        cancel,
+			}
+			logger.level.Store(int32(LevelInfo))
+			logger.securityConfig.Store(DefaultSecurityConfig())
 		}
 		defaultLogger.Store(logger)
 	})
 
-	return defaultLogger.Load().(*Logger)
+	return defaultLogger.Load()
 }
 
 // SetDefault sets the default global logger (thread-safe)
-// The old logger is not automatically closed to prevent race conditions
-// Users should manually close the old logger if needed
 func SetDefault(logger *Logger) {
 	if logger == nil {
 		return
@@ -641,10 +699,7 @@ func SetDefault(logger *Logger) {
 // GetDefaultLogger returns the current default logger without initialization
 // Returns nil if no default logger has been set
 func GetDefaultLogger() *Logger {
-	if logger := defaultLogger.Load(); logger != nil {
-		return logger.(*Logger)
-	}
-	return nil
+	return defaultLogger.Load()
 }
 
 func Debug(args ...any)                 { Default().logWithExtraDepth(LevelDebug, 1, args...) }

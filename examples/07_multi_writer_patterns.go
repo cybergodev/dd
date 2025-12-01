@@ -46,7 +46,7 @@ func example1ConsoleAndFile() {
 		Format:  dd.FormatText,  // Human-readable for development
 		Console: true,           // Output to console
 		File:    "logs/app.log", // Also write to file
-		FileConfig: &dd.FileWriterConfig{
+		FileConfig: dd.FileWriterConfig{
 			MaxSizeMB:  10, // 10MB per file
 			MaxBackups: 3,  // Keep 3 old files
 			Compress:   true,
@@ -80,7 +80,7 @@ func example2LevelBasedRouting() {
 		Format:  dd.FormatJSON, // JSON for production
 		Console: true,
 		File:    "logs/app-all.log",
-		FileConfig: &dd.FileWriterConfig{
+		FileConfig: dd.FileWriterConfig{
 			MaxSizeMB:  10,
 			MaxBackups: 5,
 		},
@@ -204,7 +204,7 @@ func example4AsyncWriter() {
 
 // Helper: Create file writer with error handling
 func createFileWriter(path string) io.WriteCloser {
-	writer, err := dd.NewFileWriter(path, nil)
+	writer, err := dd.NewFileWriter(path, dd.FileWriterConfig{})
 	if err != nil {
 		panic(fmt.Sprintf("Failed to create file writer: %v", err))
 	}

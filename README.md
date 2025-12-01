@@ -155,7 +155,7 @@ logger, _ := dd.New(dd.JSONConfig())
 ```go
 logger, _ := dd.NewWithOptions(dd.Options{
     File: "app.log",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,                 // Rotate at 100MB
         MaxBackups: 10,                  // Keep 10 backups
         MaxAge:     30 * 24 * time.Hour, // Delete after 30 days
@@ -335,7 +335,7 @@ logger, err := dd.NewWithOptions(dd.Options{
     Console: true,            // Console output
     File:    "logs/app.log",  // File path
     
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,                 // Rotate at 100MB
         MaxBackups: 10,                  // Keep 10 backups
         MaxAge:     30 * 24 * time.Hour, // Delete after 30 days
@@ -600,7 +600,7 @@ logger, _ := dd.NewWithOptions(dd.Options{
     File:        "logs/app.log",
     Console:     false,  // No console output in production
     FilterLevel: "basic",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,
         MaxBackups: 30,
         MaxAge:     7 * 24 * time.Hour,

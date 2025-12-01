@@ -94,7 +94,7 @@ func fileRotation() {
 	fmt.Println("\n4. File Rotation")
 
 	// Basic rotation: size, age, and backup limits
-	config := dd.DefaultConfig().WithFile("logs/app.log", &dd.FileWriterConfig{
+	config, _ := dd.DefaultConfig().WithFile("logs/app.log", dd.FileWriterConfig{
 		MaxSizeMB:  10,                 // Rotate at 10MB
 		MaxBackups: 5,                  // Keep 5 old files
 		MaxAge:     7 * 24 * time.Hour, // Delete after 7 days
@@ -107,8 +107,8 @@ func fileRotation() {
 
 	// Multiple files with different policies
 	config2 := dd.DefaultConfig()
-	config2.WithFile("logs/app-all.log", nil) // Default rotation
-	config2.WithFile("logs/errors.log", &dd.FileWriterConfig{
+	config2.WithFile("logs/app-all.log", dd.FileWriterConfig{}) // Default rotation
+	config2.WithFile("logs/errors.log", dd.FileWriterConfig{
 		MaxSizeMB:  100,                 // Larger for errors
 		MaxBackups: 50,                  // Keep more backups
 		MaxAge:     90 * 24 * time.Hour, // Longer retention
@@ -128,7 +128,7 @@ func productionSetup() {
 	appConfig := dd.JSONConfig()
 	appConfig.Level = dd.LevelInfo
 	appConfig.EnableFullFiltering()
-	appConfig.WithFile("logs/app.log", &dd.FileWriterConfig{
+	appConfig, _ = appConfig.WithFile("logs/app.log", dd.FileWriterConfig{
 		MaxSizeMB:  100,
 		MaxBackups: 30,
 		MaxAge:     30 * 24 * time.Hour,
@@ -147,7 +147,7 @@ func productionSetup() {
 	errorConfig := dd.JSONConfig()
 	errorConfig.Level = dd.LevelError
 	errorConfig.EnableFullFiltering()
-	errorConfig.WithFileOnly("logs/errors.log", &dd.FileWriterConfig{
+	errorConfig, _ = errorConfig.WithFileOnly("logs/errors.log", dd.FileWriterConfig{
 		MaxSizeMB:  200,
 		MaxBackups: 100,
 		MaxAge:     90 * 24 * time.Hour,
@@ -165,7 +165,7 @@ func productionSetup() {
 	// Access logger: no filtering, high volume
 	accessConfig := dd.JSONConfig()
 	accessConfig.DisableFiltering()
-	accessConfig.WithFileOnly("logs/access.log", &dd.FileWriterConfig{
+	accessConfig, _ = accessConfig.WithFileOnly("logs/access.log", dd.FileWriterConfig{
 		MaxSizeMB:  500,
 		MaxBackups: 20,
 		MaxAge:     14 * 24 * time.Hour,

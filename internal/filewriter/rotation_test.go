@@ -3,7 +3,6 @@ package filewriter
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -40,49 +39,6 @@ func TestOpenFile(t *testing.T) {
 
 	if size2 != int64(n) {
 		t.Errorf("Existing file size = %d, want %d", size2, n)
-	}
-}
-
-func TestValidatePath(t *testing.T) {
-	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
-	}{
-		{
-			name:    "valid path",
-			path:    "test.log",
-			wantErr: false,
-		},
-		{
-			name:    "empty path",
-			path:    "",
-			wantErr: true,
-		},
-		{
-			name:    "null byte",
-			path:    "test\x00.log",
-			wantErr: true,
-		},
-		{
-			name:    "too long",
-			path:    strings.Repeat("a", 5000),
-			wantErr: true,
-		},
-		{
-			name:    "path traversal",
-			path:    "../../../etc/passwd",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validatePath(tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("validatePath() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
 	}
 }
 

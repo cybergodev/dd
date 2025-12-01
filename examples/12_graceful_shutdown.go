@@ -29,7 +29,7 @@ func main() {
 func basicShutdown() {
 	fmt.Println("1. Basic Shutdown")
 
-	config := dd.DefaultConfig().WithFile("logs/shutdown.log", nil)
+	config, _ := dd.DefaultConfig().WithFile("logs/shutdown.log", dd.FileWriterConfig{})
 	logger, _ := dd.New(config)
 
 	logger.Info("Application started")
@@ -54,7 +54,7 @@ func basicShutdown() {
 func signalHandling() {
 	fmt.Println("\n2. Signal Handling")
 
-	config := dd.JSONConfig().WithFile("logs/signals.log", nil)
+	config, _ := dd.JSONConfig().WithFile("logs/signals.log", dd.FileWriterConfig{})
 	logger, _ := dd.New(config)
 
 	sigChan := make(chan os.Signal, 1)
@@ -99,7 +99,7 @@ func signalHandling() {
 func contextShutdown() {
 	fmt.Println("\n3. Context Shutdown")
 
-	config := dd.JSONConfig().WithFile("logs/context.log", nil)
+	config, _ := dd.JSONConfig().WithFile("logs/context.log", dd.FileWriterConfig{})
 	logger, _ := dd.New(config)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -166,7 +166,10 @@ type Application struct {
 }
 
 func (app *Application) Start() error {
-	config := dd.JSONConfig().WithFile("logs/lifecycle.log", nil)
+	config, err := dd.JSONConfig().WithFile("logs/lifecycle.log", dd.FileWriterConfig{})
+	if err != nil {
+		return err
+	}
 	logger, err := dd.New(config)
 	if err != nil {
 		return err

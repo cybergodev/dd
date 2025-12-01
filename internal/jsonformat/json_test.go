@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cybergodev/dd/internal/caller"
 )
 
 func TestFormatMessage(t *testing.T) {
@@ -232,28 +234,28 @@ func TestLevelToString(t *testing.T) {
 
 func TestGetCaller(t *testing.T) {
 	// Test with full path (depth 1 to get this test function)
-	caller := getCaller(1, true)
-	if !strings.Contains(caller, "json_test.go") {
-		t.Errorf("getCaller(true) should contain file name, got: %s", caller)
+	callerInfo := caller.GetCaller(1, true)
+	if !strings.Contains(callerInfo, "json_test.go") {
+		t.Errorf("GetCaller(true) should contain file name, got: %s", callerInfo)
 	}
-	if !strings.Contains(caller, ":") {
-		t.Error("getCaller() should contain line number")
+	if !strings.Contains(callerInfo, ":") {
+		t.Error("GetCaller() should contain line number")
 	}
 
 	// Test without full path
-	caller = getCaller(1, false)
-	if !strings.Contains(caller, "json_test.go") {
-		t.Errorf("getCaller(false) should contain file name, got: %s", caller)
+	callerInfo = caller.GetCaller(1, false)
+	if !strings.Contains(callerInfo, "json_test.go") {
+		t.Errorf("GetCaller(false) should contain file name, got: %s", callerInfo)
 	}
 	// Should not contain full path
-	if strings.Contains(caller, "/") || strings.Contains(caller, "\\") {
-		t.Errorf("getCaller(false) should not contain path separators, got: %s", caller)
+	if strings.Contains(callerInfo, "/") || strings.Contains(callerInfo, "\\") {
+		t.Errorf("GetCaller(false) should not contain path separators, got: %s", callerInfo)
 	}
 
 	// Test with invalid depth
-	caller = getCaller(100, false)
-	if caller != "" {
-		t.Errorf("getCaller(100) should return empty string, got: %s", caller)
+	callerInfo = caller.GetCaller(100, false)
+	if callerInfo != "" {
+		t.Errorf("GetCaller(100) should return empty string, got: %s", callerInfo)
 	}
 }
 

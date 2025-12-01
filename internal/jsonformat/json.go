@@ -3,9 +3,9 @@ package jsonformat
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"runtime"
 	"time"
+
+	"github.com/cybergodev/dd/internal/caller"
 )
 
 type LogLevel int8
@@ -144,10 +144,20 @@ func FormatMessageWithOptions(
 
 	opts.FieldNames = mergeWithDefaults(opts.FieldNames)
 
-	capacity := 4
-	if len(fields) > 0 {
-		capacity = 5
+	capacity := 1 // message always included
+	if includeTime {
+		capacity++
 	}
+	if includeLevel {
+		capacity++
+	}
+	if includeCaller {
+		capacity++
+	}
+	if len(fields) > 0 {
+		capacity++
+	}
+
 	entry := make(map[string]any, capacity)
 
 	if includeTime {
@@ -155,12 +165,12 @@ func FormatMessageWithOptions(
 	}
 
 	if includeLevel {
-		entry[opts.FieldNames.Level] = LogLevel(level).String()
+		entry[opts.FieldNames.Level] = level.String()
 	}
 
 	if includeCaller {
-		if caller := getCaller(callerDepth, fullPath); caller != "" {
-			entry[opts.FieldNames.Caller] = caller
+		if callerInfo := caller.GetCaller(callerDepth, fullPath); callerInfo != "" {
+			entry[opts.FieldNames.Caller] = callerInfo
 		}
 	}
 
@@ -184,17 +194,4 @@ func FormatMessageWithOptions(
 	}
 
 	return string(data), nil
-}
-
-func getCaller(callerDepth int, fullPath bool) string {
-	_, file, line, ok := runtime.Caller(callerDepth)
-	if !ok {
-		return ""
-	}
-
-	if !fullPath {
-		file = filepath.Base(file)
-	}
-
-	return fmt.Sprintf("%s:%d", file, line)
 }

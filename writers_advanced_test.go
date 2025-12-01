@@ -21,48 +21,48 @@ func TestFileWriterInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name   string
 		path   string
-		config *FileWriterConfig
+		config FileWriterConfig
 		errMsg string
 	}{
 		{
 			name:   "empty path",
 			path:   "",
-			config: nil,
+			config: FileWriterConfig{},
 			errMsg: "empty",
 		},
 		{
 			name:   "path too long",
 			path:   strings.Repeat("a", 5000),
-			config: nil,
+			config: FileWriterConfig{},
 			errMsg: "too long",
 		},
 		{
 			name:   "null byte in path",
 			path:   "test\x00.log",
-			config: nil,
+			config: FileWriterConfig{},
 			errMsg: "null byte",
 		},
 		{
 			name:   "path traversal",
 			path:   "../../../etc/passwd",
-			config: nil,
+			config: FileWriterConfig{},
 			errMsg: "traversal",
 		},
 		{
 			name: "max size too large",
 			path: "logs/test.log",
-			config: &FileWriterConfig{
+			config: FileWriterConfig{
 				MaxSizeMB: 20000, // 20GB
 			},
-			errMsg: "too large",
+			errMsg: "exceeded",
 		},
 		{
 			name: "max backups too large",
 			path: "logs/test.log",
-			config: &FileWriterConfig{
+			config: FileWriterConfig{
 				MaxBackups: 2000,
 			},
-			errMsg: "too large",
+			errMsg: "exceeded",
 		},
 	}
 
@@ -88,7 +88,7 @@ func TestFileWriterRotationBehavior(t *testing.T) {
 	defer os.Remove(testPath + ".1")
 	defer os.Remove(testPath + ".2")
 
-	fw, err := NewFileWriter(testPath, &FileWriterConfig{
+	fw, err := NewFileWriter(testPath, FileWriterConfig{
 		MaxSizeMB:  1, // 1MB
 		MaxBackups: 2,
 		Compress:   false,
@@ -126,7 +126,7 @@ func TestFileWriterConcurrentWrites(t *testing.T) {
 	testPath := "logs/test_concurrent.log"
 	defer os.Remove(testPath)
 
-	fw, err := NewFileWriter(testPath, &FileWriterConfig{
+	fw, err := NewFileWriter(testPath, FileWriterConfig{
 		MaxSizeMB:  10,
 		MaxBackups: 3,
 		Compress:   false,
@@ -172,7 +172,7 @@ func TestFileWriterCloseWithError(t *testing.T) {
 	testPath := "logs/test_close_error.log"
 	defer os.Remove(testPath)
 
-	fw, err := NewFileWriter(testPath, nil)
+	fw, err := NewFileWriter(testPath, FileWriterConfig{})
 	if err != nil {
 		t.Fatalf("Failed to create file writer: %v", err)
 	}

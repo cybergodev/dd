@@ -2,10 +2,10 @@ package logformat
 
 import (
 	"fmt"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/cybergodev/dd/internal/caller"
 )
 
 type LogLevel int8
@@ -45,49 +45,48 @@ func FormatMessage(
 	fullPath bool,
 	args ...any,
 ) string {
-	var parts []string
+	capacity := 1 // message always included
+	if includeTime {
+		capacity++
+	}
+	if includeLevel {
+		capacity++
+	}
+	if includeCaller {
+		capacity++
+	}
+
+	parts := make([]string, 0, capacity)
 
 	if includeTime {
-		timestamp := time.Now().Format(timeFormat)
-		parts = append(parts, fmt.Sprintf("[%s]", timestamp))
+		parts = append(parts, "["+time.Now().Format(timeFormat)+"]")
 	}
 
 	if includeLevel {
-		parts = append(parts, fmt.Sprintf("[%s]", LogLevel(level).String()))
+		parts = append(parts, "["+level.String()+"]")
 	}
 
 	if includeCaller {
-		if caller := getCaller(callerDepth, fullPath); caller != "" {
-			parts = append(parts, caller)
+		if callerInfo := caller.GetCaller(callerDepth, fullPath); callerInfo != "" {
+			parts = append(parts, callerInfo)
 		}
 	}
 
 	var message string
-	if len(args) == 0 {
+	argCount := len(args)
+	switch argCount {
+	case 0:
 		message = ""
-	} else if len(args) == 1 {
+	case 1:
 		if s, ok := args[0].(string); ok {
 			message = s
 		} else {
 			message = fmt.Sprint(args[0])
 		}
-	} else {
+	default:
 		message = strings.TrimSuffix(fmt.Sprintln(args...), "\n")
 	}
 	parts = append(parts, message)
 
 	return strings.Join(parts, " ")
-}
-
-func getCaller(callerDepth int, fullPath bool) string {
-	_, file, line, ok := runtime.Caller(callerDepth)
-	if !ok {
-		return ""
-	}
-
-	if !fullPath {
-		file = filepath.Base(file)
-	}
-
-	return fmt.Sprintf("%s:%d", file, line)
 }

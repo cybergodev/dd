@@ -158,23 +158,23 @@ func (c *LoggerConfig) Clone() *LoggerConfig {
 
 func (c *LoggerConfig) Validate() error {
 	if c == nil {
-		return fmt.Errorf("config cannot be nil")
+		return ErrNilConfig
 	}
 
-	if c.TimeFormat == "" && c.IncludeTime {
+	if c.Level < LevelDebug || c.Level > LevelFatal {
+		return fmt.Errorf("%w: %d", ErrInvalidLevel, c.Level)
+	}
+
+	if c.Format != FormatText && c.Format != FormatJSON {
+		return fmt.Errorf("%w: %d", ErrInvalidFormat, c.Format)
+	}
+
+	if c.IncludeTime && c.TimeFormat == "" {
 		c.TimeFormat = time.RFC3339
 	}
 
 	if len(c.Writers) == 0 {
 		c.Writers = []io.Writer{os.Stdout}
-	}
-
-	if c.Level < LevelDebug || c.Level > LevelFatal {
-		return fmt.Errorf("invalid log level: %d", c.Level)
-	}
-
-	if c.Format != FormatText && c.Format != FormatJSON {
-		return fmt.Errorf("invalid log format: %d", c.Format)
 	}
 
 	if c.SecurityConfig == nil {
@@ -191,27 +191,27 @@ func (c *LoggerConfig) Validate() error {
 	return nil
 }
 
-func (c *LoggerConfig) WithFile(filename string, config *FileWriterConfig) *LoggerConfig {
+func (c *LoggerConfig) WithFile(filename string, config FileWriterConfig) (*LoggerConfig, error) {
 	fileWriter, err := NewFileWriter(filename, config)
 	if err != nil {
-		return c
+		return c, fmt.Errorf("failed to create file writer: %w", err)
 	}
 
 	if c.Writers == nil {
 		c.Writers = []io.Writer{os.Stdout}
 	}
 	c.Writers = append(c.Writers, fileWriter)
-	return c
+	return c, nil
 }
 
-func (c *LoggerConfig) WithFileOnly(filename string, config *FileWriterConfig) *LoggerConfig {
+func (c *LoggerConfig) WithFileOnly(filename string, config FileWriterConfig) (*LoggerConfig, error) {
 	fileWriter, err := NewFileWriter(filename, config)
 	if err != nil {
-		return c
+		return c, fmt.Errorf("failed to create file writer: %w", err)
 	}
 
 	c.Writers = []io.Writer{fileWriter}
-	return c
+	return c, nil
 }
 
 func (c *LoggerConfig) WithWriter(writer io.Writer) *LoggerConfig {

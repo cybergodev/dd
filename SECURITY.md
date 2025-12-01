@@ -216,7 +216,7 @@ logger, _ := dd.NewWithOptions(dd.Options{
     Format:      dd.FormatJSON,
     FilterLevel: "basic",
     File:        "logs/app.log",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,
         MaxBackups: 30,
         Compress:   true,
@@ -277,7 +277,7 @@ When logging to files, ensure appropriate file permissions:
 
 ```go
 // Set restrictive permissions on log files
-fileWriter, _ := dd.NewFileWriter("logs/app.log", &dd.FileWriterConfig{
+fileWriter, _ := dd.NewFileWriter("logs/app.log", dd.FileWriterConfig{
     // File is created with 0644 permissions by default
     // Adjust OS-level permissions as needed
 })
@@ -290,7 +290,7 @@ Enable log rotation and compression to prevent disk exhaustion:
 ```go
 logger, _ := dd.NewWithOptions(dd.Options{
     File: "logs/app.log",
-    FileConfig: &dd.FileWriterConfig{
+    FileConfig: dd.FileWriterConfig{
         MaxSizeMB:  100,                 // Rotate at 100MB
         MaxBackups: 10,                  // Keep only 10 backups
         MaxAge:     7 * 24 * time.Hour,  // Delete after 7 days

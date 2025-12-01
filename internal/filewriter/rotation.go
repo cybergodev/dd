@@ -11,24 +11,14 @@ import (
 )
 
 const (
-	maxPathLength  = 4096
-	retryAttempts  = 3
-	retryDelay     = 10 * time.Millisecond
-	verifyBufSize  = 1024
-	dirPermissions = 0700
+	maxPathLength   = 4096
+	retryAttempts   = 3
+	retryDelay      = 10 * time.Millisecond
+	verifyBufSize   = 1024
 	filePermissions = 0600
 )
 
 func OpenFile(path string) (*os.File, int64, error) {
-	if err := validatePath(path); err != nil {
-		return nil, 0, err
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, dirPermissions); err != nil {
-		return nil, 0, fmt.Errorf("create directory: %w", err)
-	}
-
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, filePermissions)
 	if err != nil {
 		return nil, 0, err
@@ -46,27 +36,6 @@ func OpenFile(path string) (*os.File, int64, error) {
 	}
 
 	return file, stat.Size(), nil
-}
-
-func validatePath(path string) error {
-	if path == "" {
-		return fmt.Errorf("path cannot be empty")
-	}
-
-	if strings.Contains(path, "\x00") {
-		return fmt.Errorf("null byte in path")
-	}
-
-	if len(path) > maxPathLength {
-		return fmt.Errorf("path too long (max %d bytes)", maxPathLength)
-	}
-
-	cleanPath := filepath.Clean(path)
-	if strings.Contains(cleanPath, "..") {
-		return fmt.Errorf("path traversal detected")
-	}
-
-	return nil
 }
 
 func NeedsRotation(currentSize, writeSize, maxSize int64) bool {
@@ -159,26 +128,27 @@ func cleanupExcessBackups(basePath string, maxBackups int, compress bool) {
 
 		var index int
 		pattern := prefix + "_%d" + ext + suffix
-		_, err := fmt.Sscanf(name, pattern, &index)
-		if err == nil {
+		if _, err := fmt.Sscanf(name, pattern, &index); err == nil {
 			backups = append(backups, backupFile{name: name, index: index})
 		}
 	}
 
-	if len(backups) > maxBackups {
-		for i := 0; i < len(backups)-1; i++ {
-			for j := i + 1; j < len(backups); j++ {
-				if backups[i].index > backups[j].index {
-					backups[i], backups[j] = backups[j], backups[i]
-				}
+	backupCount := len(backups)
+	for backupCount > maxBackups {
+		minIndex := backups[0].index
+		minPos := 0
+		for i := 1; i < backupCount; i++ {
+			if backups[i].index < minIndex {
+				minIndex = backups[i].index
+				minPos = i
 			}
 		}
 
-		toRemove := len(backups) - maxBackups
-		for i := 0; i < toRemove; i++ {
-			filePath := filepath.Join(dir, backups[i].name)
-			_ = os.Remove(filePath)
-		}
+		filePath := filepath.Join(dir, backups[minPos].name)
+		_ = os.Remove(filePath)
+
+		backups = append(backups[:minPos], backups[minPos+1:]...)
+		backupCount--
 	}
 }
 
@@ -204,7 +174,6 @@ func CompressFile(filePath string) error {
 	}
 
 	tmpPath := filePath + ".gz.tmp"
-
 	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePermissions)
 	if err != nil {
 		src.Close()
@@ -213,7 +182,6 @@ func CompressFile(filePath string) error {
 
 	gw := gzip.NewWriter(dst)
 	_, copyErr := io.Copy(gw, src)
-
 	closeErr := gw.Close()
 	dstCloseErr := dst.Close()
 	srcCloseErr := src.Close()
@@ -241,13 +209,12 @@ func CompressFile(filePath string) error {
 	}
 
 	finalPath := filePath + ".gz"
-
 	if _, err := os.Stat(finalPath); err == nil {
-		for i := 0; i < retryAttempts; i++ {
+		for attempt := range retryAttempts {
 			if err := os.Remove(finalPath); err == nil {
 				break
 			}
-			if i < retryAttempts-1 {
+			if attempt < retryAttempts-1 {
 				time.Sleep(retryDelay)
 			}
 		}
@@ -258,18 +225,16 @@ func CompressFile(filePath string) error {
 		return fmt.Errorf("rename: %w", err)
 	}
 
-	var removeErr error
-	for i := 0; i < retryAttempts; i++ {
-		removeErr = os.Remove(filePath)
-		if removeErr == nil {
+	for attempt := range retryAttempts {
+		if err := os.Remove(filePath); err == nil {
 			return nil
 		}
-		if i < retryAttempts-1 {
+		if attempt < retryAttempts-1 {
 			time.Sleep(retryDelay)
 		}
 	}
 
-	return removeErr
+	return nil
 }
 
 func verifyGzipFile(path string) error {
