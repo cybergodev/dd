@@ -7,7 +7,7 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
-## v1.1.0 - Performance & Security Update (2025-12-01)
+## v1.0.1 - Performance & Security Update (2025-12-01)
 
 ### Added
 - Centralized error definitions in `errors.go` for consistent error handling
