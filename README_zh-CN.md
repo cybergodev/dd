@@ -274,6 +274,10 @@ logger.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 // 结构化日志
 logger.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
+// 调试数据可视化
+logger.Json(data any)  // 输出紧凑 JSON 到控制台
+logger.Text(data any)  // 输出格式化 JSON 到控制台
+
 // 配置管理
 logger.SetLevel(level LogLevel)
 logger.GetLevel() LogLevel
@@ -288,6 +292,10 @@ logger.Close() error
 dd.Debug / Info / Warn / Error / Fatal (args ...any)
 dd.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 dd.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
+
+// 调试数据可视化
+dd.Json(data any)  // 输出紧凑 JSON 到控制台
+dd.Text(data any)  // 输出格式化 JSON 到控制台
 
 // 全局 logger 管理
 dd.Default() *Logger

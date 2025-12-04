@@ -7,6 +7,16 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.0.2 - Debug Visualization (2025-12-04)
+
+### Added
+- `dd.Json()` method for compact JSON output of data structures
+- `dd.Text()` method for pretty-printed JSON output of data structures
+- Debug visualization available as both package-level functions and Logger methods
+- Example demonstrating debug data visualization patterns
+
+---
+
 ## v1.0.1 - Performance & Security Update (2025-12-01)
 
 ### Added
