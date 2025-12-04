@@ -273,6 +273,10 @@ logger.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 // Structured logging
 logger.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
+// Debug data visualization
+logger.Json(data any)  // Output compact JSON to console
+logger.Text(data any)  // Output pretty-printed JSON to console
+
 // Configuration management
 logger.SetLevel(level LogLevel)
 logger.GetLevel() LogLevel
@@ -287,6 +291,10 @@ logger.Close() error
 dd.Debug / Info / Warn / Error / Fatal (args ...any)
 dd.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 dd.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
+
+// Debug data visualization
+dd.Json(data any)  // Output compact JSON to console
+dd.Text(data any)  // Output pretty-printed JSON to console
 
 // Global logger management
 dd.Default() *Logger
