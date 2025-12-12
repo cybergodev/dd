@@ -64,6 +64,7 @@ func TestLoggerCreation(t *testing.T) {
 func TestLoggerBasicLogging(t *testing.T) {
 	var buf bytes.Buffer
 	config := DefaultConfig()
+	config.Level = LevelDebug // Set to debug level to test all messages
 	config.Writers = []io.Writer{&buf}
 
 	logger, err := New(config)
@@ -80,7 +81,7 @@ func TestLoggerBasicLogging(t *testing.T) {
 
 	output := buf.String()
 
-	// Should contain all messages (level is Debug by default)
+	// Should contain all messages (level is set to Debug)
 	if !strings.Contains(output, "debug message") {
 		t.Error("Debug message missing")
 	}
@@ -153,7 +154,9 @@ func TestLoggerLevelControl(t *testing.T) {
 }
 
 func TestLoggerClose(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -181,7 +184,9 @@ func TestLoggerClose(t *testing.T) {
 func TestLoggerWriterManagement(t *testing.T) {
 	var buf1, buf2 bytes.Buffer
 
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -224,7 +229,9 @@ func TestLoggerWriterManagement(t *testing.T) {
 }
 
 func TestLoggerWriterErrors(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -245,15 +252,17 @@ func TestLoggerWriterErrors(t *testing.T) {
 // ============================================================================
 
 func TestLoggerSecurityConfig(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
 	defer logger.Close()
 
 	// Test getting security config
-	config := logger.GetSecurityConfig()
-	if config == nil {
+	secConfig := logger.GetSecurityConfig()
+	if secConfig == nil {
 		t.Error("GetSecurityConfig() returned nil")
 	}
 
@@ -404,10 +413,24 @@ func TestPackageLevelFunctions(t *testing.T) {
 	// Test that package-level functions work
 	var buf bytes.Buffer
 
-	// Get default logger and add our buffer
-	defaultLogger := Default()
-	defaultLogger.AddWriter(&buf)
-	defer defaultLogger.RemoveWriter(&buf)
+	// Create new logger for testing
+	config := DefaultConfig()
+	config.Writers = []io.Writer{&buf}
+
+	logger, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Save original and set test logger as default
+	original := GetDefaultLogger()
+	SetDefault(logger)
+	defer func() {
+		if original != nil {
+			SetDefault(original)
+		}
+	}()
 
 	Info("package level info")
 	Warn("package level warn")
@@ -464,7 +487,9 @@ func TestSetDefaultLogger(t *testing.T) {
 // ============================================================================
 
 func TestLoggerClosedOperations(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -511,7 +536,9 @@ func TestLoggerInvalidLogLevels(t *testing.T) {
 // ============================================================================
 
 func TestLoggerLifecycle(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -532,6 +559,13 @@ func TestLoggerLifecycle(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Error("Logger close timed out")
 	}
+}
+
+// Test helper types
+type failingWriter struct{}
+
+func (fw *failingWriter) Write(p []byte) (int, error) {
+	return 0, io.ErrShortWrite
 }
 
 func TestLoggerWithFailingWriter(t *testing.T) {

@@ -66,7 +66,11 @@ func TestFilterMaxInputLength(t *testing.T) {
 
 	// The filter should handle large inputs safely
 	// It may truncate or filter the input
-	t.Logf("Input length: %d, Result length: %d, Result: %q", len(largeInput), len(result), result)
+	resultPreview := result
+	if len(result) > 100 {
+		resultPreview = result[:100] + "..."
+	}
+	t.Logf("Input length: %d, Result length: %d, Result preview: %q", len(largeInput), len(result), resultPreview)
 
 	// Result should be much smaller than input
 	if len(result) >= len(largeInput) {

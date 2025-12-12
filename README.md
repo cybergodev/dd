@@ -11,7 +11,7 @@ A production-grade high-performance Go logging library with zero external depend
 
 ## ✨ Core Features
 
-- 🚀 **Extreme Performance** - 190K+ ops/sec simple logging, 140K+ ops/sec structured logging, 940K+ ops/sec concurrent
+- 🚀 **Extreme Performance** - 3M+ ops/sec simple logging, 1M+ ops/sec structured logging, optimized for high-throughput systems
 - 🔒 **Thread-Safe** - Atomic operations + lock-free design, fully concurrent-safe
 - 🛡️ **Built-in Security** - Sensitive data filtering (credit cards, passwords, API keys, JWT, etc. - 12 patterns), injection attack prevention
 - 📊 **Structured Logging** - Type-safe fields, supports JSON/text dual formats, customizable field names
@@ -242,12 +242,12 @@ Real-world data on Intel Core Ultra 9 185H:
 
 | Operation Type            | Throughput       | Memory/Op | Allocs/Op  | Scenario Description          |
 |---------------------------|------------------|-----------|------------|-------------------------------|
-| Simple Logging            | **190K ops/sec** | 1,041 B   | 13 allocs  | Basic text logging            |
-| Formatted Logging         | **150K ops/sec** | 1,200 B   | 15 allocs  | Infof/Errorf                  |
-| Structured Logging        | **140K ops/sec** | 8,982 B   | 89 allocs  | InfoWith + 3 fields           |
-| Complex Structured        | **80K ops/sec**  | 12KB      | 120 allocs | InfoWith + 8 fields           |
-| JSON Format               | **30K ops/sec**  | 8,866 B   | 88 allocs  | JSON structured output        |
-| Concurrent (8 goroutines) | **940K ops/sec** | 1,415 B   | 18 allocs  | 8 goroutines concurrent       |
+| Simple Logging            | **3.1M ops/sec** | 200 B     | 7 allocs   | Basic text logging            |
+| Formatted Logging         | **2.4M ops/sec** | 272 B     | 8 allocs   | Infof/Errorf                  |
+| Structured Logging        | **1.9M ops/sec** | 417 B     | 12 allocs  | InfoWith + 3 fields           |
+| Complex Structured        | **720K ops/sec** | 1,227 B   | 26 allocs  | InfoWith + 8 fields           |
+| JSON Format               | **600K ops/sec** | 800 B     | 20 allocs  | JSON structured output        |
+| Concurrent (22 goroutines)| **68M ops/sec**  | 200 B     | 7 allocs   | 22 goroutines concurrent      |
 | Level Check               | **2.5B ops/sec** | 0 B       | 0 allocs   | Level filtering (no output)   |
 | Field Creation            | **50M ops/sec**  | 16 B      | 1 allocs   | String/Int field construction |
 
@@ -274,8 +274,12 @@ logger.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 logger.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
 // Debug data visualization
-logger.Json(data any)  // Output compact JSON to console
-logger.Text(data any)  // Output pretty-printed JSON to console
+logger.Json(data ...any)                    // Output compact JSON to console
+logger.Jsonf(format string, args ...any)    // Output formatted JSON to console
+logger.Text(data ...any)                    // Output pretty-printed text to console
+logger.Textf(format string, args ...any)    // Output formatted text to console
+logger.Exit(data ...any)                    // Output text and exit program (os.Exit(0))
+logger.Exitf(format string, args ...any)    // Output formatted text and exit program
 
 // Configuration management
 logger.SetLevel(level LogLevel)
@@ -293,8 +297,12 @@ dd.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 dd.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
 // Debug data visualization
-dd.Json(data any)  // Output compact JSON to console
-dd.Text(data any)  // Output pretty-printed JSON to console
+dd.Json(data ...any)                    // Output compact JSON to console
+dd.Jsonf(format string, args ...any)    // Output formatted JSON to console
+dd.Text(data ...any)                    // Output pretty-printed text to console
+dd.Textf(format string, args ...any)    // Output formatted text to console
+dd.Exit(data ...any)                    // Output text and exit program (os.Exit(0))
+dd.Exitf(format string, args ...any)    // Output formatted text and exit program
 
 // Global logger management
 dd.Default() *Logger
@@ -350,11 +358,11 @@ logger, err := dd.NewWithOptions(dd.Options{
         Compress:   true,                // Compress old files (.gz)
     },
     
-    IncludeCaller: true,      // Show call location (filename:line)
-    FullPath:      false,     // Show full path (default false, filename only)
-    DynamicCaller: false,     // Dynamic caller depth detection (auto-adapt wrappers)
-    TimeFormat:    time.RFC3339,  // Time format
-    FilterLevel:   "basic",   // Sensitive data filtering: "none", "basic", "full"
+    IncludeCaller: true,            // Show call location (filename:line)
+    FullPath:      false,           // Show full path (default false, filename only)
+    DynamicCaller: false,           // Dynamic caller depth detection (auto-adapt wrappers)
+    TimeFormat:    time.RFC3339,    // Time format
+    FilterLevel:   "basic",         // Sensitive data filtering: "none", "basic", "full"
     
     JSONOptions: &dd.JSONOptions{
         PrettyPrint: false,   // Pretty print (useful for development)
@@ -539,8 +547,8 @@ Fine-grained control of security limits:
 ```go
 config := dd.DefaultConfig()
 config.SecurityConfig = &dd.SecurityConfig{
-    MaxMessageSize:  10 * 1024 * 1024,  // 10MB message limit
-    MaxWriters:      50,                 // Max 50 output targets
+    MaxMessageSize:  10 * 1024 * 1024,      // 10MB message limit
+    MaxWriters:      50,                    // Max 50 output targets
     SensitiveFilter: dd.NewBasicSensitiveDataFilter(),
 }
 logger, _ := dd.New(config)

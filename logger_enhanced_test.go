@@ -31,7 +31,9 @@ func TestLoggerGetLevel(t *testing.T) {
 }
 
 func TestLoggerSetLevelAtomic(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}
@@ -90,7 +92,9 @@ func TestLoggerProcessFields(t *testing.T) {
 }
 
 func TestLoggerProcessFieldsWithInvalidKeys(t *testing.T) {
-	logger, err := New(DefaultConfig())
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, err := New(config)
 	if err != nil {
 		t.Fatalf("Failed to create logger: %v", err)
 	}

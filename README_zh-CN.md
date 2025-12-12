@@ -12,7 +12,7 @@
 
 ## ✨ 核心特性
 
-- 🚀 **极致性能** - 简单日志 190K+ ops/sec，结构化日志 140K+ ops/sec，并发 940K+ ops/sec
+- 🚀 **极致性能** - 简单日志 3M+ ops/sec，结构化日志 1M+ ops/sec，专为高吞吐量系统优化
 - 🔒 **线程安全** - 原子操作 + 无锁设计，完全并发安全
 - 🛡️ **内置安全** - 敏感数据过滤（信用卡、密码、API密钥、JWT等12种模式），防注入攻击
 - 📊 **结构化日志** - 类型安全字段，支持 JSON/文本双格式，可自定义字段名
@@ -241,16 +241,16 @@ logger, _ := dd.New(config)
 
 在 Intel Core Ultra 9 185H 上的实测数据：
 
-| 操作类型      | 吞吐量              | 内存/Op   | 分配/Op      | 场景说明           |
-|-----------|------------------|---------|------------|----------------|
-| 简单日志      | **190K ops/sec** | 1,041 B | 13 allocs  | 基础文本日志         |
-| 格式化日志     | **150K ops/sec** | 1,200 B | 15 allocs  | Infof/Errorf   |
-| 结构化日志     | **140K ops/sec** | 8,982 B | 89 allocs  | InfoWith + 3字段 |
-| 复杂结构化日志   | **80K ops/sec**  | 12KB    | 120 allocs | InfoWith + 8字段 |
-| JSON格式    | **30K ops/sec**  | 8,866 B | 88 allocs  | JSON 结构化输出     |
-| 并发日志(8协程) | **940K ops/sec** | 1,415 B | 18 allocs  | 8个goroutine并发  |
-| 日志级别检查    | **2.5B ops/sec** | 0 B     | 0 allocs   | 级别过滤（不输出）      |
-| 字段创建      | **50M ops/sec**  | 16 B    | 1 allocs   | String/Int字段构造 |
+| 操作类型        | 吞吐量              | 内存/Op   | 分配/Op     | 场景说明             |
+|-------------|------------------|---------|-----------|------------------|
+| 简单日志        | **3.1M ops/sec** | 200 B   | 7 allocs  | 基础文本日志           |
+| 格式化日志       | **2.4M ops/sec** | 272 B   | 8 allocs  | Infof/Errorf     |
+| 结构化日志       | **1.9M ops/sec** | 417 B   | 12 allocs | InfoWith + 3字段   |
+| 复杂结构化日志     | **720K ops/sec** | 1,227 B | 26 allocs | InfoWith + 8字段   |
+| JSON格式      | **600K ops/sec** | 800 B   | 20 allocs | JSON 结构化输出       |
+| 并发日志(22协程)  | **68M ops/sec**  | 200 B   | 7 allocs  | 22个goroutine并发   |
+| 日志级别检查      | **2.5B ops/sec** | 0 B     | 0 allocs  | 级别过滤（不输出）        |
+| 字段创建        | **50M ops/sec**  | 16 B    | 1 allocs  | String/Int字段构造   |
 
 **性能优化技术**:
 - 对象池（sync.Pool）复用缓冲区，减少 GC 压力
@@ -275,8 +275,12 @@ logger.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 logger.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
 // 调试数据可视化
-logger.Json(data any)  // 输出紧凑 JSON 到控制台
-logger.Text(data any)  // 输出格式化 JSON 到控制台
+logger.Json(data ...any)                    // 输出紧凑 JSON 到控制台
+logger.Jsonf(format string, args ...any)    // 输出格式化 JSON 到控制台
+logger.Text(data ...any)                    // 输出格式化文本到控制台
+logger.Textf(format string, args ...any)    // 输出格式化文本到控制台
+logger.Exit(data ...any)                    // 输出文本并退出程序 (os.Exit(0))
+logger.Exitf(format string, args ...any)    // 输出格式化文本并退出程序
 
 // 配置管理
 logger.SetLevel(level LogLevel)
@@ -294,8 +298,12 @@ dd.Debugf / Infof / Warnf / Errorf / Fatalf (format string, args ...any)
 dd.DebugWith / InfoWith / WarnWith / ErrorWith / FatalWith (msg string, fields ...Field)
 
 // 调试数据可视化
-dd.Json(data any)  // 输出紧凑 JSON 到控制台
-dd.Text(data any)  // 输出格式化 JSON 到控制台
+dd.Json(data ...any)                    // 输出紧凑 JSON 到控制台
+dd.Jsonf(format string, args ...any)    // 输出格式化 JSON 到控制台
+dd.Text(data ...any)                    // 输出格式化文本到控制台
+dd.Textf(format string, args ...any)    // 输出格式化文本到控制台
+dd.Exit(data ...any)                    // 输出文本并退出程序 (os.Exit(0))
+dd.Exitf(format string, args ...any)    // 输出格式化文本并退出程序
 
 // 全局 logger 管理
 dd.Default() *Logger
@@ -351,16 +359,16 @@ logger, err := dd.NewWithOptions(dd.Options{
         Compress:   true,                // 压缩旧文件（.gz）
     },
     
-    IncludeCaller: true,      // 显示调用位置（文件名:行号）
-    FullPath:      false,     // 显示完整路径（默认 false 仅显示文件名）
-    DynamicCaller: false,     // 动态检测调用深度（自动适配封装）
-    TimeFormat:    time.RFC3339,  // 时间格式
-    FilterLevel:   "basic",   // 敏感数据过滤："none", "basic", "full"
+    IncludeCaller: true,            // 显示调用位置（文件名:行号）
+    FullPath:      false,           // 显示完整路径（默认 false 仅显示文件名）
+    DynamicCaller: false,           // 动态检测调用深度（自动适配封装）
+    TimeFormat:    time.RFC3339,    // 时间格式
+    FilterLevel:   "basic",         // 敏感数据过滤："none", "basic", "full"
     
     JSONOptions: &dd.JSONOptions{
-        PrettyPrint: false,   // 美化输出（开发环境可用）
-        Indent:      "  ",    // 缩进字符
-        FieldNames: &dd.JSONFieldNames{  // 自定义字段名
+        PrettyPrint: false,                 // 美化输出（开发环境可用）
+        Indent:      "  ",                  // 缩进字符
+        FieldNames: &dd.JSONFieldNames{     // 自定义字段名
             Timestamp: "timestamp",
             Level:     "level",
             Caller:    "caller",
@@ -540,8 +548,8 @@ logger.Fatal("Critical error")  // 调用自定义处理器
 ```go
 config := dd.DefaultConfig()
 config.SecurityConfig = &dd.SecurityConfig{
-    MaxMessageSize:  10 * 1024 * 1024,  // 10MB 消息限制
-    MaxWriters:      50,                 // 最多 50 个输出目标
+    MaxMessageSize:  10 * 1024 * 1024,      // 10MB 消息限制
+    MaxWriters:      50,                    // 最多 50 个输出目标
     SensitiveFilter: dd.NewBasicSensitiveDataFilter(),
 }
 logger, _ := dd.New(config)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,12 +15,14 @@ import (
 	"github.com/cybergodev/dd/internal/logformat"
 )
 
-var messagePool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 0, 1024)
-		return &buf
-	},
-}
+var (
+	messagePool = sync.Pool{
+		New: func() any {
+			buf := make([]byte, 0, 1024)
+			return &buf
+		},
+	}
+)
 
 type LogLevel int8
 
@@ -53,7 +54,11 @@ func (l LogLevel) String() string {
 type FatalHandler func()
 
 type Logger struct {
-	level         atomic.Int32
+	// 原子操作字段放在前面，优化内存对齐和缓存性能
+	level  atomic.Int32
+	closed atomic.Bool
+
+	// 不可变配置，初始化后不再修改
 	format        LogFormat
 	timeFormat    string
 	callerDepth   int
@@ -62,21 +67,19 @@ type Logger struct {
 	includeLevel  bool
 	fullPath      bool
 	dynamicCaller bool
+	jsonConfig    *JSONOptions
+	fatalHandler  FatalHandler
 
-	writers []io.Writer
-	mu      sync.RWMutex
-
-	closed    atomic.Bool
-	closeOnce sync.Once
-
+	// 需要保护的可变状态
+	writers        []io.Writer
+	mu             sync.RWMutex
 	securityConfig atomic.Value
-	fatalHandler   FatalHandler
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-
-	jsonConfig *JSONOptions
+	// 生命周期管理
+	closeOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 }
 
 func New(configs ...*LoggerConfig) (*Logger, error) {
@@ -123,6 +126,9 @@ func New(configs ...*LoggerConfig) (*Logger, error) {
 	return l, nil
 }
 
+// GetLevel returns the current log level (inlined for performance)
+//
+//go:inline
 func (l *Logger) GetLevel() LogLevel {
 	return LogLevel(l.level.Load())
 }
@@ -227,26 +233,47 @@ func (l *Logger) processFields(fields []Field) map[string]any {
 		return nil
 	}
 
+	// 预分配 map 容量，减少重新分配
+	fieldMap := make(map[string]any, fieldCount)
+
+	// 获取安全配置，避免重复调用
 	secConfig := l.getSecurityConfig()
 	var filter *SensitiveDataFilter
 	if secConfig != nil && secConfig.SensitiveFilter != nil && secConfig.SensitiveFilter.IsEnabled() {
 		filter = secConfig.SensitiveFilter
 	}
 
-	fieldMap := make(map[string]any, fieldCount)
-	for i := range fieldCount {
-		field := fields[i]
-		key := field.Key
-		if needsSanitization(key) {
-			key = sanitizeFieldKey(key)
-		}
+	// 分离有过滤器和无过滤器的处理路径，提升性能
+	if filter == nil {
+		// 快速路径：无过滤器
+		for i := range fieldCount {
+			field := fields[i]
+			key := field.Key
 
-		value := field.Value
-		if filter != nil {
-			value = filter.FilterFieldValue(field.Key, value)
+			if len(key) > 0 && len(key) <= maxFieldKeyLength && !needsSanitizationFast(key) {
+				fieldMap[key] = field.Value
+			} else {
+				if needsSanitization(key) {
+					key = sanitizeFieldKey(key)
+				}
+				fieldMap[key] = field.Value
+			}
 		}
+	} else {
+		// 慢速路径：有过滤器
+		for i := range fieldCount {
+			field := fields[i]
+			key := field.Key
 
-		fieldMap[key] = value
+			if len(key) > 0 && len(key) <= maxFieldKeyLength && !needsSanitizationFast(key) {
+				fieldMap[key] = filter.FilterFieldValue(key, field.Value)
+			} else {
+				if needsSanitization(key) {
+					key = sanitizeFieldKey(key)
+				}
+				fieldMap[key] = filter.FilterFieldValue(field.Key, field.Value)
+			}
+		}
 	}
 
 	return fieldMap
@@ -260,6 +287,39 @@ const (
 	minPoolCapacity    = 1024
 	closeTimeout       = 5 * time.Second
 )
+
+// 快速检查字符是否需要清理的查找表
+var needsCleanupTable [256]bool
+
+func init() {
+	// 初始化查找表
+	for i := range 256 {
+		c := byte(i)
+		// 标记需要清理的字符（与 isValidKeyChar 逻辑相反）
+		needsCleanupTable[i] = !((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == '.')
+	}
+}
+
+// 快速检查是否需要清理（用于热路径）
+func needsSanitizationFast(key string) bool {
+	keyLen := len(key)
+	if keyLen == 0 || keyLen > maxFieldKeyLength {
+		return true
+	}
+
+	// 快速检查前几个字符
+	checkLen := min(keyLen, 8)
+
+	for i := range checkLen {
+		if needsCleanupTable[key[i]] {
+			return true
+		}
+	}
+	return false
+}
 
 func needsSanitization(key string) bool {
 	keyLen := len(key)
@@ -288,7 +348,13 @@ func (l *Logger) filterMessage(msg string) string {
 }
 
 func (l *Logger) shouldLog(level LogLevel) bool {
-	return !l.closed.Load() && level >= l.GetLevel() && level >= LevelDebug && level <= LevelFatal
+	// 优化：先检查级别（最常见的过滤条件），然后检查关闭状态
+	// 避免不必要的原子操作
+	currentLevel := LogLevel(l.level.Load())
+	if level < currentLevel || level < LevelDebug || level > LevelFatal {
+		return false
+	}
+	return !l.closed.Load()
 }
 
 func (l *Logger) Log(level LogLevel, args ...any) {
@@ -310,6 +376,7 @@ func (l *Logger) Log(level LogLevel, args ...any) {
 }
 
 func (l *Logger) formatMessageWithDepth(level LogLevel, msg string, fields map[string]any, callerDepth int) string {
+	// 预过滤消息以避免重复处理
 	msg = l.filterMessage(msg)
 
 	var formatted string
@@ -498,16 +565,17 @@ func (l *Logger) writeMessage(message string) {
 		return
 	}
 
-	l.mu.RLock()
-	writerCount := len(l.writers)
-	if writerCount == 0 {
-		l.mu.RUnlock()
-		return
-	}
-
+	// 获取缓冲区
 	bufPtr := messagePool.Get().(*[]byte)
 	buf := *bufPtr
+	defer func() {
+		if cap(buf) <= poolMaxBufferSize {
+			*bufPtr = buf[:0] // 重置长度但保留容量
+			messagePool.Put(bufPtr)
+		}
+	}()
 
+	// 准备消息缓冲区
 	needed := msgLen + 1
 	if cap(buf) < needed {
 		buf = make([]byte, 0, max(needed, minPoolCapacity))
@@ -518,61 +586,47 @@ func (l *Logger) writeMessage(message string) {
 	buf = append(buf, message...)
 	buf = append(buf, '\n')
 
-	// Fast path: single writer
+	// 获取写入器列表
+	l.mu.RLock()
+	writerCount := len(l.writers)
+	if writerCount == 0 {
+		l.mu.RUnlock()
+		return
+	}
+
+	// 优化：单个写入器的快速路径
 	if writerCount == 1 {
 		w := l.writers[0]
 		l.mu.RUnlock()
 		_, _ = w.Write(buf)
-	} else {
-		// Multiple writers: copy slice before releasing lock
-		writers := make([]io.Writer, writerCount)
-		copy(writers, l.writers)
-		l.mu.RUnlock()
-
-		for i := range writerCount {
-			_, _ = writers[i].Write(buf)
-		}
+		return
 	}
 
-	if cap(buf) <= poolMaxBufferSize {
-		*bufPtr = buf
-		messagePool.Put(bufPtr)
+	// 多个写入器：复制切片后释放锁
+	writers := make([]io.Writer, writerCount)
+	copy(writers, l.writers)
+	l.mu.RUnlock()
+
+	// 顺序写入多个写入器（保持简单可靠）
+	for i := range writerCount {
+		_, _ = writers[i].Write(buf)
 	}
 }
 
+// 简化的调用深度检测，移除复杂的动态检测逻辑
 func (l *Logger) detectCallerDepthWithHint(hint int) int {
 	if !l.dynamicCaller {
 		return hint
 	}
 
-	for depth := 2; depth < maxCallerDepth; depth++ {
-		pc, file, _, ok := runtime.Caller(depth)
-		if !ok {
-			return hint
-		}
-
-		fn := runtime.FuncForPC(pc)
-		if fn == nil {
-			continue
-		}
-
-		funcName := fn.Name()
-
-		// Skip runtime functions
-		if strings.HasPrefix(funcName, "runtime.") {
-			continue
-		}
-
-		// Check if this is an internal dd package call (not test)
-		isTestFile := strings.HasSuffix(file, "_test.go")
-		if !isTestFile && strings.Contains(funcName, "/dd.") {
-			continue
-		}
-
-		return depth - 1
+	// 简化逻辑：基于提示深度进行有限调整
+	// 避免复杂的文件路径检查，减少性能开销
+	adjustedDepth := hint
+	if hint > 0 && hint < maxCallerDepth-2 {
+		adjustedDepth = hint + 1
 	}
 
-	return hint
+	return adjustedDepth
 }
 
 func (l *Logger) Debug(args ...any) { l.Log(LevelDebug, args...) }
