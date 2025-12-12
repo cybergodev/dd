@@ -455,10 +455,24 @@ func TestLogWithManyFields(t *testing.T) {
 func TestPackageLevelStructuredFunctions(t *testing.T) {
 	var buf bytes.Buffer
 
-	// Get default logger and add our buffer
-	defaultLogger := Default()
-	defaultLogger.AddWriter(&buf)
-	defer defaultLogger.RemoveWriter(&buf)
+	// Create new logger for testing
+	config := DefaultConfig()
+	config.Writers = []io.Writer{&buf}
+
+	logger, err := New(config)
+	if err != nil {
+		t.Fatalf("Failed to create logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Save original and set test logger as default
+	original := GetDefaultLogger()
+	SetDefault(logger)
+	defer func() {
+		if original != nil {
+			SetDefault(original)
+		}
+	}()
 
 	// Test package-level structured functions
 	DebugWith("debug", Any("key", "value"))

@@ -8,72 +8,52 @@ import (
 	"github.com/cybergodev/dd"
 )
 
-// Debug data visualization examples
 func main() {
-	fmt.Println("DD Logger - Debug Data Visualization")
-	fmt.Println("====================================")
+	// Example 1: Simple types with Text (no quotes)
+	fmt.Println("=== Example 1: Simple Types with Text ===")
+	dd.Text("hello world") // Output: hello world (no quotes)
+	dd.Text(42)            // Output: 42
+	dd.Text(3.14)          // Output: 3.14
+	dd.Text(true)          // Output: true
 
-	example1PackageLevelDebug()
-	example2LoggerInstanceDebug()
-	example3ComplexDataStructures()
-	example4RealWorldScenarios()
+	// Example 2: Simple types with Json (JSON format)
+	fmt.Println("\n\n=== Example 2: Simple Types with Json ===")
+	dd.Json("hello world") // Output: "hello world" (with quotes)
+	dd.Json(42)            // Output: 42
+	dd.Json(true)          // Output: true
 
-	fmt.Println("\n=== All examples completed ===")
-}
+	// Example 3: Complex types with Text (pretty JSON)
+	fmt.Println("\n\n=== Example 3: Complex Types with Text ===")
+	dd.Text(map[string]any{"name": "Alice", "age": 30})
 
-// Example 1: Package-level debug functions
-func example1PackageLevelDebug() {
-	fmt.Println("\n=== Example 1: Package-Level Debug Functions ===")
+	// Example 4: Multiple simple arguments with Text
+	fmt.Println("\n\n=== Example 4: Multiple Simple Arguments - Text ===")
+	dd.Text("User:", "Alice", "Age:", 30, "Active:", true)
+	dd.Text("User:", "Alice", "Age:", 30, "Active:", true)
 
-	// Simple data types
-	dd.Json("Hello World")
-	dd.Json(42)
-	dd.Json(true)
-	dd.Json([]int{1, 2, 3, 4, 5})
+	// Example 5: Multiple arguments with Json (compact)
+	fmt.Println("\n\n=== Example 5: Multiple Arguments - Json ===")
+	dd.Json("user", 123, map[string]string{"status": "active"})
+	dd.Json("user", 123, map[string]string{"status": "active"})
 
-	// Map data
-	userData := map[string]any{
-		"name":  "John Doe",
-		"age":   30,
-		"email": "john@example.com",
-	}
-	fmt.Println("\nCompact JSON output:")
-	dd.Json(userData)
+	// Example 6: Mixed simple and complex types
+	fmt.Println("\n\n=== Example 6: Mixed Types - Text ===")
+	dd.Text("Simple:", 123, "Complex:", map[string]int{"count": 10})
+	dd.Json("data", []string{"a", "b", "c"}, "total", 3)
 
-	fmt.Println("\nPretty-printed JSON output:")
-	dd.Text(userData)
-}
+	// Example 7: Pointers with Text (dereferenced automatically)
+	fmt.Println("\n\n=== Example 7: Pointers - Text ===")
+	str := "pointer value"
+	num := 999
+	flag := true
+	dd.Text(&str, &num, &flag)
 
-// Example 2: Logger instance debug methods
-func example2LoggerInstanceDebug() {
-	fmt.Println("\n=== Example 2: Logger Instance Debug Methods ===")
+	// Example 8: Pointers with Json
+	fmt.Println("\n\n=== Example 8: Pointers - Json ===")
+	dd.Json(&str, &num, []int{1, 2, 3})
 
-	logger := dd.ToConsole()
-	defer logger.Close()
-
-	config := map[string]any{
-		"database": map[string]any{
-			"host":     "localhost",
-			"port":     5432,
-			"database": "myapp",
-		},
-		"cache": map[string]any{
-			"enabled": true,
-			"ttl":     300,
-		},
-	}
-
-	fmt.Println("\nUsing logger.Json():")
-	logger.Json(config)
-
-	fmt.Println("\nUsing logger.Text():")
-	logger.Text(config)
-}
-
-// Example 3: Complex data structures
-func example3ComplexDataStructures() {
-	fmt.Println("\n=== Example 3: Complex Data Structures ===")
-
+	// Example 9: Complex nested structures
+	fmt.Println("\n\n=== Example 9: Complex Nested Structures ===")
 	type Address struct {
 		Street  string `json:"street"`
 		City    string `json:"city"`
@@ -81,92 +61,92 @@ func example3ComplexDataStructures() {
 	}
 
 	type User struct {
-		ID       int            `json:"id"`
-		Name     string         `json:"name"`
-		Email    string         `json:"email"`
-		Age      int            `json:"age"`
-		Active   bool           `json:"active"`
-		Address  Address        `json:"address"`
-		Tags     []string       `json:"tags"`
-		Metadata map[string]any `json:"metadata"`
+		Name    string   `json:"name"`
+		Age     int      `json:"age"`
+		Address Address  `json:"address"`
+		Tags    []string `json:"tags"`
 	}
 
-	user := User{
-		ID:     1001,
-		Name:   "Alice Johnson",
-		Email:  "alice@example.com",
-		Age:    28,
-		Active: true,
+	user1 := User{
+		Name: "Charlie",
+		Age:  35,
 		Address: Address{
-			Street:  "456 Oak Avenue",
+			Street:  "123 Main St",
+			City:    "New York",
+			ZipCode: "10001",
+		},
+		Tags: []string{"developer", "golang"},
+	}
+
+	user2 := User{
+		Name: "Diana",
+		Age:  28,
+		Address: Address{
+			Street:  "456 Oak Ave",
 			City:    "San Francisco",
 			ZipCode: "94102",
 		},
-		Tags: []string{"premium", "verified", "developer"},
-		Metadata: map[string]any{
-			"last_login":   "2024-12-04T10:30:00Z",
-			"login_count":  142,
-			"account_type": "professional",
-		},
+		Tags: []string{"designer", "ui/ux"},
 	}
 
-	fmt.Println("\nCompact JSON (for logs):")
-	dd.Json(user)
+	dd.Text(user1, user2)
 
-	fmt.Println("\nPretty-printed JSON (for debugging):")
-	dd.Text(user)
-}
+	// Example 10: Using with Logger instance
+	fmt.Println("\n\n=== Example 10: Logger Instance Methods ===")
+	logger := dd.ToConsole()
+	defer logger.Close()
 
-// Example 4: Real-world debugging scenarios
-func example4RealWorldScenarios() {
-	fmt.Println("\n=== Example 4: Real-World Debugging Scenarios ===")
+	logger.Text("Simple text with logger")
+	logger.Json("request", map[string]any{"method": "GET", "path": "/api/users"})
+	logger.Text(
+		map[string]any{"response": "success", "code": 200},
+		map[string]any{"data": []string{"user1", "user2"}},
+	)
 
-	// Scenario 1: API response debugging
-	fmt.Println("\nScenario 1: API Response Debugging")
-	apiResponse := map[string]any{
-		"status": "success",
-		"code":   200,
-		"data": map[string]any{
-			"users": []map[string]any{
-				{"id": 1, "name": "User 1"},
-				{"id": 2, "name": "User 2"},
-			},
-			"total": 2,
-		},
-		"timestamp": "2024-12-04T10:30:00Z",
-	}
-	dd.Text(apiResponse)
+	// Example 11: Quick debug multiple variables
+	fmt.Println("\n\n=== Example 11: Quick Debug Multiple Variables ===")
+	requestID := "req-12345"
+	userID := 789
+	sessionToken := "token-abc-xyz"
+	isAuthenticated := true
 
-	// Scenario 2: Configuration debugging
-	fmt.Println("\nScenario 2: Configuration Debugging")
-	appConfig := map[string]any{
-		"server": map[string]any{
-			"host": "0.0.0.0",
-			"port": 8080,
-		},
-		"database": map[string]any{
-			"connections": 10,
-			"timeout":     30,
-		},
-		"features": map[string]bool{
-			"auth":    true,
-			"cache":   true,
-			"metrics": false,
-		},
-	}
-	dd.Text(appConfig)
+	// Text shows simple types without quotes
+	fmt.Println("Using Text:")
+	dd.Text("Request ID:", requestID, "User ID:", userID, "Authenticated:", isAuthenticated)
 
-	// Scenario 3: Error context debugging
-	fmt.Println("\nScenario 3: Error Context Debugging")
-	errorContext := map[string]any{
-		"error":     "database connection failed",
-		"timestamp": "2024-12-04T10:35:00Z",
-		"context": map[string]any{
-			"host":         "db.example.com",
-			"port":         5432,
-			"retry_count":  3,
-			"last_attempt": "2024-12-04T10:34:55Z",
-		},
-	}
-	dd.Text(errorContext)
+	// Json shows everything in JSON format
+	fmt.Println("\nUsing Json:")
+	dd.Json(requestID, userID, sessionToken, isAuthenticated)
+
+	// Example 12: Comparing data structures
+	fmt.Println("\n\n=== Example 12: Comparing Data Structures ===")
+	before := map[string]any{"count": 10, "status": "pending"}
+	after := map[string]any{"count": 15, "status": "completed"}
+
+	fmt.Println("Before vs After:")
+	dd.Text(before, after)
+
+	// Example 13: Nil values
+	fmt.Println("\n\n=== Example 13: Nil Values ===")
+	var nilPtr *string
+	dd.Text(nil, nilPtr, "not nil")
+
+	// Example 14: Formatted output
+	fmt.Println("\n\n=== Textf() - Formatted output ===")
+	dd.Textf("User: %s, Age: %d, Score: %.2f", "Bob", 25, 95.5)
+
+	fmt.Println("\n\n=== Jsonf() - Formatted JSON output ===")
+	dd.Jsonf("Request from %s at %d", "192.168.1.1", 1234567890)
+
+	// Example 15: Logger methods
+	fmt.Println("\n\n=== Logger methods ===")
+	logger2 := dd.ToConsole()
+	defer logger2.Close()
+
+	logger2.Text("Processing", "item", 42)
+	logger2.Textf("Completed: %d/%d items", 42, 100)
+
+	logger2.Json("result", true, "count", 100)
+	logger2.Jsonf("Status: %s", "OK")
+
 }

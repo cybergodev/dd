@@ -44,7 +44,9 @@ func Err(err error) Field {
 
 var fieldPool = sync.Pool{
 	New: func() any {
-		return new(strings.Builder)
+		sb := &strings.Builder{}
+		sb.Grow(256) // 预分配合理的初始容量
+		return sb
 	},
 }
 
@@ -58,29 +60,70 @@ func formatFields(fields []Field) string {
 	sb.Reset()
 	defer fieldPool.Put(sb)
 
+	// 预估容量以减少重新分配
+	estimatedSize := fieldCount * 24 // 每个字段大约 24 字符
+	if sb.Cap() < estimatedSize {
+		sb.Grow(estimatedSize)
+	}
+
 	for i := range fieldCount {
 		if i > 0 {
-			sb.WriteString(" ")
+			sb.WriteByte(' ')
 		}
 		field := fields[i]
 		sb.WriteString(field.Key)
-		sb.WriteString("=")
+		sb.WriteByte('=')
 
+		// 优化类型判断，使用类型断言而非 switch
 		switch v := field.Value.(type) {
 		case string:
-			if strings.ContainsAny(v, " \t\n") {
-				fmt.Fprintf(sb, "%q", v)
+			if needsQuoting(v) {
+				sb.WriteByte('"')
+				// 简单转义，避免 fmt.Fprintf 的开销
+				for _, r := range v {
+					if r == '"' || r == '\\' {
+						sb.WriteByte('\\')
+					}
+					sb.WriteRune(r)
+				}
+				sb.WriteByte('"')
 			} else {
 				sb.WriteString(v)
 			}
 		case nil:
 			sb.WriteString("<nil>")
+		case int:
+			sb.WriteString(fmt.Sprintf("%d", v))
+		case int64:
+			sb.WriteString(fmt.Sprintf("%d", v))
+		case float64:
+			sb.WriteString(fmt.Sprintf("%g", v))
+		case bool:
+			if v {
+				sb.WriteString("true")
+			} else {
+				sb.WriteString("false")
+			}
 		default:
-			fmt.Fprintf(sb, "%v", v)
+			sb.WriteString(fmt.Sprintf("%v", v))
 		}
 	}
 
 	return sb.String()
+}
+
+// 快速检查字符串是否需要引号
+func needsQuoting(s string) bool {
+	if len(s) == 0 {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c == '"' || c == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {

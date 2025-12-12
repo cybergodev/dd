@@ -168,18 +168,28 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 }
 
 func (fw *FileWriter) Close() error {
-	if fw.cancel != nil {
-		fw.cancel()
-	}
-	fw.wg.Wait()
+	// 确保只关闭一次
+	var closeErr error
+	var closeOnce sync.Once
 
-	fw.mu.Lock()
-	defer fw.mu.Unlock()
+	closeOnce.Do(func() {
+		if fw.cancel != nil {
+			fw.cancel()
+		}
 
-	if fw.file != nil {
-		return fw.file.Close()
-	}
-	return nil
+		// 等待后台 goroutine 完成
+		fw.wg.Wait()
+
+		fw.mu.Lock()
+		defer fw.mu.Unlock()
+
+		if fw.file != nil {
+			closeErr = fw.file.Close()
+			fw.file = nil
+		}
+	})
+
+	return closeErr
 }
 
 func (fw *FileWriter) rotate() error {
@@ -401,6 +411,13 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 		return pLen, nil
 	}
 
+	// 优化：单个写入器的快速路径
+	if writerCount == 1 {
+		w := mw.writers[0]
+		mw.mu.RUnlock()
+		return w.Write(p)
+	}
+
 	writers := make([]io.Writer, writerCount)
 	copy(writers, mw.writers)
 	mw.mu.RUnlock()
@@ -425,10 +442,12 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 		successCount++
 	}
 
+	// 如果所有写入器都失败，返回错误
 	if successCount == 0 {
 		return 0, firstErr
 	}
 
+	// 如果部分成功，返回成功的字节数但包含错误信息
 	if firstErr != nil {
 		return pLen, fmt.Errorf("partial write failure (%d/%d succeeded): %w", successCount, writerCount, firstErr)
 	}

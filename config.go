@@ -58,16 +58,16 @@ type LoggerConfig struct {
 
 func DefaultConfig() *LoggerConfig {
 	return &LoggerConfig{
-		Level:          LevelDebug,
+		Level:          LevelInfo, // Production-friendly default
 		Format:         FormatText,
 		TimeFormat:     time.RFC3339,
-		IncludeCaller:  false,
+		IncludeCaller:  false, // Performance-friendly default
 		IncludeTime:    true,
 		IncludeLevel:   true,
-		FullPath:       true,
-		DynamicCaller:  false,
+		FullPath:       false, // Cleaner output
+		DynamicCaller:  false, // Performance-friendly default
 		Writers:        nil,
-		SecurityConfig: nil,
+		SecurityConfig: DefaultSecurityConfig(), // Always include security config
 		FatalHandler:   nil,
 	}
 }

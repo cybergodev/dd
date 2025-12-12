@@ -71,7 +71,9 @@ func BenchmarkStructuredLogging(b *testing.B) {
 
 // BenchmarkStructuredLoggingComplex benchmarks complex structured logging
 func BenchmarkStructuredLoggingComplex(b *testing.B) {
-	logger, _ := New(nil)
+	config := DefaultConfig()
+	config.Writers = []io.Writer{io.Discard}
+	logger, _ := New(config)
 	defer logger.Close()
 
 	b.ResetTimer()

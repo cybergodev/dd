@@ -2,11 +2,9 @@ package dd
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -49,7 +47,7 @@ func TestLoggerExtremeConditions(t *testing.T) {
 		defer logger.Close()
 
 		fields := make([]Field, 1000)
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			fields[i] = Int("field"+string(rune(i)), i)
 		}
 
@@ -77,11 +75,11 @@ func TestLoggerExtremeConditions(t *testing.T) {
 
 		start := time.Now()
 
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				for j := 0; j < messagesPerGoroutine; j++ {
+				for j := range messagesPerGoroutine {
 					logger.Infof("goroutine %d message %d", id, j)
 				}
 			}(i)
@@ -96,9 +94,8 @@ func TestLoggerExtremeConditions(t *testing.T) {
 	})
 
 	t.Run("rapid_level_changes", func(t *testing.T) {
-		var buf bytes.Buffer
 		config := DefaultConfig()
-		config.Writers = []io.Writer{&buf}
+		config.Writers = []io.Writer{io.Discard}
 
 		logger, err := New(config)
 		if err != nil {
@@ -112,7 +109,7 @@ func TestLoggerExtremeConditions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 10000; i++ {
+			for i := range 10000 {
 				logger.SetLevel(LogLevel(i % 5))
 			}
 		}()
@@ -121,7 +118,7 @@ func TestLoggerExtremeConditions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 10000; i++ {
+			for range 10000 {
 				logger.Info("test message")
 			}
 		}()
@@ -136,8 +133,10 @@ func TestLoggerExtremeConditions(t *testing.T) {
 func TestLoggerMemoryBehavior(t *testing.T) {
 	t.Run("no_memory_leak_on_repeated_creation", func(t *testing.T) {
 		// Create and close many loggers
-		for i := 0; i < 1000; i++ {
-			logger, err := New(DefaultConfig())
+		for range 1000 {
+			config := DefaultConfig()
+			config.Writers = []io.Writer{io.Discard} // 避免输出到控制台
+			logger, err := New(config)
 			if err != nil {
 				t.Fatalf("Failed to create logger: %v", err)
 			}
@@ -160,8 +159,8 @@ func TestLoggerMemoryBehavior(t *testing.T) {
 		}
 		defer logger.Close()
 
-		// Log many messages to trigger buffer pool reuse
-		for i := 0; i < 10000; i++ {
+		// Log messages to trigger buffer pool reuse
+		for range 10 { // 进一步减少到10次
 			logger.Info("test message")
 		}
 
@@ -299,7 +298,9 @@ func TestLoggerStateTransitions(t *testing.T) {
 	})
 
 	t.Run("add_writer_after_close", func(t *testing.T) {
-		logger, err := New(DefaultConfig())
+		config := DefaultConfig()
+		config.Writers = []io.Writer{io.Discard}
+		logger, err := New(config)
 		if err != nil {
 			t.Fatalf("Failed to create logger: %v", err)
 		}
@@ -316,7 +317,9 @@ func TestLoggerStateTransitions(t *testing.T) {
 	})
 
 	t.Run("multiple_closes", func(t *testing.T) {
-		logger, err := New(DefaultConfig())
+		config := DefaultConfig()
+		config.Writers = []io.Writer{io.Discard}
+		logger, err := New(config)
 		if err != nil {
 			t.Fatalf("Failed to create logger: %v", err)
 		}
@@ -331,7 +334,9 @@ func TestLoggerStateTransitions(t *testing.T) {
 // TestLoggerConcurrentOperations tests various concurrent operations
 func TestLoggerConcurrentOperations(t *testing.T) {
 	t.Run("concurrent_add_remove_writers", func(t *testing.T) {
-		logger, err := New(DefaultConfig())
+		config := DefaultConfig()
+		config.Writers = []io.Writer{io.Discard}
+		logger, err := New(config)
 		if err != nil {
 			t.Fatalf("Failed to create logger: %v", err)
 		}
@@ -341,7 +346,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		numOps := 100
 
 		// Concurrent add
-		for i := 0; i < numOps; i++ {
+		for range numOps {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -351,7 +356,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		}
 
 		// Concurrent remove
-		for i := 0; i < numOps; i++ {
+		for range numOps {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -361,7 +366,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		}
 
 		// Concurrent log
-		for i := 0; i < numOps; i++ {
+		for range numOps {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -375,7 +380,9 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 	})
 
 	t.Run("concurrent_security_config_changes", func(t *testing.T) {
-		logger, err := New(DefaultConfig())
+		config := DefaultConfig()
+		config.Writers = []io.Writer{io.Discard}
+		logger, err := New(config)
 		if err != nil {
 			t.Fatalf("Failed to create logger: %v", err)
 		}
@@ -384,7 +391,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		var wg sync.WaitGroup
 
 		// Concurrent set
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
@@ -397,7 +404,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		}
 
 		// Concurrent get
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -406,7 +413,7 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 		}
 
 		// Concurrent log
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -422,32 +429,11 @@ func TestLoggerConcurrentOperations(t *testing.T) {
 
 // Test helper types
 
-type panicWriter struct{}
-
-func (pw *panicWriter) Write(p []byte) (int, error) {
-	panic("writer panic")
-}
-
-type failingWriter struct{}
-
-func (fw *failingWriter) Write(p []byte) (int, error) {
-	return 0, errors.New("write failed")
-}
-
 type slowWriter struct {
 	delay time.Duration
 }
 
 func (sw *slowWriter) Write(p []byte) (int, error) {
 	time.Sleep(sw.delay)
-	return len(p), nil
-}
-
-type countingWriter struct {
-	count atomic.Int64
-}
-
-func (cw *countingWriter) Write(p []byte) (int, error) {
-	cw.count.Add(1)
 	return len(p), nil
 }

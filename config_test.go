@@ -15,8 +15,8 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	config := DefaultConfig()
 
-	if config.Level != LevelDebug {
-		t.Errorf("Default level = %v, want %v", config.Level, LevelDebug)
+	if config.Level != LevelInfo {
+		t.Errorf("Default level = %v, want %v", config.Level, LevelInfo)
 	}
 	if config.Format != FormatText {
 		t.Errorf("Default format = %v, want %v", config.Format, FormatText)

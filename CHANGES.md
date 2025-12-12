@@ -7,6 +7,47 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.0.3 - Major Performance & Security Optimization (2025-12-12)
+
+### Added
+- Object pooling for string builders and buffers to reduce memory allocations
+- Fast-path field processing with batch operations for structured logging
+- Character validation lookup table for improved field key validation performance
+- Timeout protection for security filters to prevent DoS attacks
+- Chunked processing for large inputs in security filters
+
+### Changed
+- **Performance**: Restructured Logger memory layout with atomic fields first for better cache performance
+- **Performance**: Optimized message writing with single-writer fast path and concurrent multi-writer support
+- **Performance**: Simplified caller depth detection, removed unreliable dynamic detection
+- **Performance**: Reduced function call overhead in field processing with batch operations
+- **Security**: Fixed regex DoS vulnerabilities using atomic groups and strict boundaries
+- **Security**: Enhanced sensitive data filter patterns to prevent catastrophic backtracking
+- **Code Quality**: Eliminated code duplication, especially in debug visualization
+- **Code Quality**: Unified error handling patterns across all modules
+- **Code Quality**: Modernized to Go 1.22+ range-over-int syntax
+- **Reliability**: Improved fallback logger error handling to ensure always-available logging
+
+### Fixed
+- Regex DoS vulnerabilities in private key and JWT token filtering
+- Test output noise and console spam during test execution
+- Debug visualization caller path formatting for consistent test results
+- Dynamic caller detection test stability issues
+
+### Performance
+- Simple logging: ~335 ns/op, 200 B/op, 7 allocs/op
+- Structured logging: ~102K ns/op, 1533 B/op, 23 allocs/op
+- Significant reduction in memory allocations and improved processing speed
+- Test coverage: 84.6%
+
+### Security
+- Enhanced input validation and boundary checks
+- Improved timeout handling for large input processing
+- Strengthened regex patterns against ReDoS attacks
+- Better resource management and cleanup
+
+---
+
 ## v1.0.2 - Debug Visualization (2025-12-04)
 
 ### Added
