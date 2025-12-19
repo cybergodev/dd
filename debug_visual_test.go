@@ -251,8 +251,8 @@ func TestJsonWithInvalidData(t *testing.T) {
 		Json(invalidData)
 	})
 
-	if !strings.Contains(output, "JSON marshal error") {
-		t.Errorf("expected error message for invalid data, got: %s", output)
+	if !strings.Contains(output, "<chan:chan int>") {
+		t.Errorf("expected channel representation for invalid data, got: %s", output)
 	}
 }
 
@@ -263,8 +263,8 @@ func TestTextWithInvalidData(t *testing.T) {
 		Text(invalidData)
 	})
 
-	if !strings.Contains(output, "JSON marshal error") {
-		t.Errorf("expected error message for invalid data, got: %s", output)
+	if !strings.Contains(output, "<chan:chan int>") {
+		t.Errorf("expected channel representation for invalid data, got: %s", output)
 	}
 }
 
@@ -556,8 +556,8 @@ func TestJsonWithMixedValidAndInvalidData(t *testing.T) {
 	if !strings.Contains(output, `"valid string"`) {
 		t.Errorf("expected valid data to be printed")
 	}
-	if !strings.Contains(output, "JSON marshal error") {
-		t.Errorf("expected error message for invalid data")
+	if !strings.Contains(output, "<chan:chan int>") {
+		t.Errorf("expected channel representation for invalid data")
 	}
 	if !strings.Contains(output, "42") {
 		t.Errorf("expected third argument to be printed")
