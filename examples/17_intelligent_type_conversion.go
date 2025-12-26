@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -10,7 +8,7 @@ import (
 	"github.com/cybergodev/dd"
 )
 
-// Example struct with various field types
+// ComplexStruct Example struct with various field types
 type ComplexStruct struct {
 	Name         string
 	Age          int
@@ -21,7 +19,7 @@ type ComplexStruct struct {
 	privateField string // unexported field
 }
 
-// Custom type implementing Stringer interface
+// CustomID Custom type implementing Stringer interface
 type CustomID string
 
 func (c CustomID) String() string {
@@ -29,7 +27,7 @@ func (c CustomID) String() string {
 }
 
 func main() {
-	fmt.Println("=== DD Intelligent Type Conversion Examples ===\n")
+	fmt.Println("=== DD Intelligent Type Conversion Examples ===\n ")
 
 	// 1. Simple types
 	fmt.Println("1. Simple Types:")

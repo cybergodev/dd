@@ -11,7 +11,6 @@ import (
 )
 
 const (
-	maxPathLength   = 4096
 	retryAttempts   = 3
 	retryDelay      = 10 * time.Millisecond
 	verifyBufSize   = 1024

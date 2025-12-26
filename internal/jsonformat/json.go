@@ -6,51 +6,11 @@ import (
 	"time"
 
 	"github.com/cybergodev/dd/internal/caller"
+	"github.com/cybergodev/dd/internal/types"
 )
 
-type LogLevel int8
-
-const (
-	LevelDebug LogLevel = iota
-	LevelInfo
-	LevelWarn
-	LevelError
-	LevelFatal
-)
-
-func (l LogLevel) String() string {
-	switch l {
-	case LevelDebug:
-		return "DEBUG"
-	case LevelInfo:
-		return "INFO"
-	case LevelWarn:
-		return "WARN"
-	case LevelError:
-		return "ERROR"
-	case LevelFatal:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-type JSONFieldNames struct {
-	Timestamp string
-	Level     string
-	Caller    string
-	Message   string
-	Fields    string
-}
-
-type JSONOptions struct {
-	PrettyPrint bool
-	Indent      string
-	FieldNames  *JSONFieldNames
-}
-
-func DefaultJSONFieldNames() *JSONFieldNames {
-	return &JSONFieldNames{
+func DefaultJSONFieldNames() *types.JSONFieldNames {
+	return &types.JSONFieldNames{
 		Timestamp: "timestamp",
 		Level:     "level",
 		Caller:    "caller",
@@ -59,12 +19,12 @@ func DefaultJSONFieldNames() *JSONFieldNames {
 	}
 }
 
-func mergeWithDefaults(f *JSONFieldNames) *JSONFieldNames {
+func mergeWithDefaults(f *types.JSONFieldNames) *types.JSONFieldNames {
 	if f == nil {
 		return DefaultJSONFieldNames()
 	}
 
-	result := &JSONFieldNames{
+	result := &types.JSONFieldNames{
 		Timestamp: f.Timestamp,
 		Level:     f.Level,
 		Caller:    f.Caller,
@@ -92,7 +52,7 @@ func mergeWithDefaults(f *JSONFieldNames) *JSONFieldNames {
 }
 
 func FormatMessage(
-	level LogLevel,
+	level types.LogLevel,
 	includeTime bool,
 	timeFormat string,
 	includeLevel bool,
@@ -102,7 +62,7 @@ func FormatMessage(
 	message string,
 	fields map[string]any,
 ) (string, error) {
-	opts := &JSONOptions{
+	opts := &types.JSONOptions{
 		PrettyPrint: false,
 		Indent:      "  ",
 		FieldNames:  DefaultJSONFieldNames(),
@@ -123,7 +83,7 @@ func FormatMessage(
 }
 
 func FormatMessageWithOptions(
-	level LogLevel,
+	level types.LogLevel,
 	includeTime bool,
 	timeFormat string,
 	includeLevel bool,
@@ -132,10 +92,10 @@ func FormatMessageWithOptions(
 	fullPath bool,
 	message string,
 	fields map[string]any,
-	opts *JSONOptions,
+	opts *types.JSONOptions,
 ) (string, error) {
 	if opts == nil {
-		opts = &JSONOptions{
+		opts = &types.JSONOptions{
 			PrettyPrint: false,
 			Indent:      "  ",
 			FieldNames:  DefaultJSONFieldNames(),
@@ -194,4 +154,29 @@ func FormatMessageWithOptions(
 	}
 
 	return string(data), nil
+}
+
+// FormatJSON formats a map as JSON with the given options
+func FormatJSON(entry map[string]any, opts *types.JSONOptions) string {
+	if opts == nil {
+		opts = &types.JSONOptions{
+			PrettyPrint: false,
+			Indent:      "  ",
+		}
+	}
+
+	var data []byte
+	var err error
+
+	if opts.PrettyPrint {
+		data, err = json.MarshalIndent(entry, "", opts.Indent)
+	} else {
+		data, err = json.Marshal(entry)
+	}
+
+	if err != nil {
+		return fmt.Sprintf(`{"error":"json marshal failed: %v"}`, err)
+	}
+
+	return string(data)
 }

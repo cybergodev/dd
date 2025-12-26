@@ -6,37 +6,11 @@ import (
 	"time"
 
 	"github.com/cybergodev/dd/internal/caller"
+	"github.com/cybergodev/dd/internal/types"
 )
-
-type LogLevel int8
-
-const (
-	LevelDebug LogLevel = iota
-	LevelInfo
-	LevelWarn
-	LevelError
-	LevelFatal
-)
-
-func (l LogLevel) String() string {
-	switch l {
-	case LevelDebug:
-		return "DEBUG"
-	case LevelInfo:
-		return "INFO"
-	case LevelWarn:
-		return "WARN"
-	case LevelError:
-		return "ERROR"
-	case LevelFatal:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
-	}
-}
 
 func FormatMessage(
-	level LogLevel,
+	level types.LogLevel,
 	includeTime bool,
 	timeFormat string,
 	includeLevel bool,

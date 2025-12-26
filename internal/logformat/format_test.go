@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/cybergodev/dd/internal/caller"
+	"github.com/cybergodev/dd/internal/types"
 )
 
 func TestFormatMessage(t *testing.T) {
 	tests := []struct {
 		name            string
-		level           LogLevel
+		level           types.LogLevel
 		includeTime     bool
 		timeFormat      string
 		includeLevel    bool
@@ -24,7 +25,7 @@ func TestFormatMessage(t *testing.T) {
 	}{
 		{
 			name:          "basic message",
-			level:         LevelInfo,
+			level:         types.LevelInfo,
 			includeTime:   false,
 			includeLevel:  true,
 			includeCaller: false,
@@ -33,7 +34,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:          "with time",
-			level:         LevelError,
+			level:         types.LevelError,
 			includeTime:   true,
 			timeFormat:    "15:04:05",
 			includeLevel:  true,
@@ -43,7 +44,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:          "with caller",
-			level:         LevelWarn,
+			level:         types.LevelWarn,
 			includeTime:   false,
 			includeLevel:  true,
 			includeCaller: true,
@@ -54,7 +55,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:          "with full path caller",
-			level:         LevelDebug,
+			level:         types.LevelDebug,
 			includeTime:   false,
 			includeLevel:  true,
 			includeCaller: true,
@@ -65,7 +66,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:            "minimal config",
-			level:           LevelInfo,
+			level:           types.LevelInfo,
 			includeTime:     false,
 			includeLevel:    false,
 			includeCaller:   false,
@@ -75,7 +76,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:          "multiple args",
-			level:         LevelInfo,
+			level:         types.LevelInfo,
 			includeTime:   false,
 			includeLevel:  true,
 			includeCaller: false,
@@ -84,7 +85,7 @@ func TestFormatMessage(t *testing.T) {
 		},
 		{
 			name:          "all features enabled",
-			level:         LevelFatal,
+			level:         types.LevelFatal,
 			includeTime:   true,
 			timeFormat:    time.RFC3339,
 			includeLevel:  true,
@@ -144,16 +145,16 @@ func TestFormatMessage(t *testing.T) {
 
 func TestLevelToString(t *testing.T) {
 	tests := []struct {
-		level LogLevel
+		level types.LogLevel
 		want  string
 	}{
-		{LevelDebug, "DEBUG"},
-		{LevelInfo, "INFO"},
-		{LevelWarn, "WARN"},
-		{LevelError, "ERROR"},
-		{LevelFatal, "FATAL"},
-		{LogLevel(-1), "UNKNOWN"},
-		{LogLevel(99), "UNKNOWN"},
+		{types.LevelDebug, "DEBUG"},
+		{types.LevelInfo, "INFO"},
+		{types.LevelWarn, "WARN"},
+		{types.LevelError, "ERROR"},
+		{types.LevelFatal, "FATAL"},
+		{types.LogLevel(-1), "UNKNOWN"},
+		{types.LogLevel(99), "UNKNOWN"},
 	}
 
 	for _, tt := range tests {
@@ -239,7 +240,7 @@ func TestFormatMessageWithDifferentTypes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := FormatMessage(
-				LevelInfo,
+				types.LevelInfo,
 				false,
 				"",
 				false,
@@ -297,7 +298,7 @@ func TestFormatMessageTimeFormats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := FormatMessage(
-				LevelInfo,
+				types.LevelInfo,
 				true,
 				tt.timeFormat,
 				true,
@@ -318,7 +319,7 @@ func TestFormatMessageCallerDepth(t *testing.T) {
 	// Helper function to test caller depth
 	testCaller := func(depth int) string {
 		return FormatMessage(
-			LevelInfo,
+			types.LevelInfo,
 			false,
 			"",
 			false,
@@ -349,7 +350,7 @@ func TestFormatMessageCallerDepth(t *testing.T) {
 
 func TestFormatMessageEmptyArgs(t *testing.T) {
 	result := FormatMessage(
-		LevelInfo,
+		types.LevelInfo,
 		false,
 		"",
 		true,
@@ -374,7 +375,7 @@ func TestFormatMessageSpecialCharacters(t *testing.T) {
 	specialMessage := "message with\nnewlines\tand\ttabs"
 
 	result := FormatMessage(
-		LevelInfo,
+		types.LevelInfo,
 		false,
 		"",
 		true,
@@ -394,7 +395,7 @@ func TestFormatMessageLongMessage(t *testing.T) {
 	longMessage := strings.Repeat("a", 1000)
 
 	result := FormatMessage(
-		LevelInfo,
+		types.LevelInfo,
 		false,
 		"",
 		true,
