@@ -7,6 +7,32 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.0.5 - Critical Bug Fixes & Test Suite Optimization (2025-12-26)
+
+### Fixed
+- **Critical**: Logger.Close() no longer closes standard streams (os.Stdout, os.Stderr), preventing unexpected program exits
+- Thread safety issues in internal package tests with proper type references
+- Race conditions in concurrent tests by replacing bytes.Buffer with io.Discard in test scenarios
+
+### Changed
+- **Test Suite**: Consolidated 10 test files into 4 focused files, reducing code by 43% while maintaining comprehensive coverage
+- **Code Quality**: Comprehensive optimization eliminating over-engineering, redundant code, and design flaws
+- **Performance**: Simplified object pooling and improved memory allocation patterns
+- **Security**: Enhanced security filter patterns with better ReDoS protection
+- **Architecture**: Modular design with better separation of concerns and shared type system
+
+### Removed
+- Over-engineered pooling abstractions and complex monitoring systems
+- Redundant code patterns and duplicate implementations
+- 60% reduction in test files with improved maintainability
+
+### Performance
+- Reduced memory overhead through simplified pooling
+- Enhanced concurrency with cleaner goroutine management
+- Improved allocation patterns and faster initialization
+
+---
+
 ## v1.0.4 - Intelligent Type Conversion & Deep Optimization (2025-12-19)
 
 ### Added

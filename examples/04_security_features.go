@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -7,6 +5,36 @@ import (
 
 	"github.com/cybergodev/dd"
 )
+
+func main() {
+	fmt.Println("DD Logger - Security Features Examples")
+	fmt.Println("======================================")
+
+	example1DefaultFiltering()
+	example2ComprehensiveFiltering()
+	example3DisableFiltering()
+	example4CustomFiltering()
+	example5FieldLevelFiltering()
+	example6LogInjectionProtection()
+	example7MessageSizeLimit()
+	example8MultiLayerSecurity()
+	example9CreditCardFiltering()
+	example10PasswordTokenFiltering()
+	example11DatabaseConnectionFiltering()
+	example12JWTFiltering()
+	example13PrivateKeyFiltering()
+	example14CloudCredentialsFiltering()
+	example15RealWorldScenario()
+
+	fmt.Println("\nAll examples completed!")
+	fmt.Println("\nSecurity Tips:")
+	fmt.Println("1. Sensitive data filtering is disabled by default, enable manually when handling sensitive data")
+	fmt.Println("2. Use EnableBasicFiltering() for basic filtering (recommended)")
+	fmt.Println("3. Use EnableFullFiltering() for comprehensive filtering (more protection)")
+	fmt.Println("4. Custom filtering rules can be added")
+	fmt.Println("5. Log injection protection is always enabled, no configuration needed")
+	fmt.Println("6. Regularly review log content to ensure no sensitive data leakage")
+}
 
 // Example 1: Enable basic security filtering
 func example1DefaultFiltering() {
@@ -306,34 +334,4 @@ func example15RealWorldScenario() {
 	)
 
 	fmt.Println("✅ All sensitive data has been securely filtered")
-}
-
-func main() {
-	fmt.Println("DD Logger - Security Features Examples")
-	fmt.Println("======================================")
-
-	example1DefaultFiltering()
-	example2ComprehensiveFiltering()
-	example3DisableFiltering()
-	example4CustomFiltering()
-	example5FieldLevelFiltering()
-	example6LogInjectionProtection()
-	example7MessageSizeLimit()
-	example8MultiLayerSecurity()
-	example9CreditCardFiltering()
-	example10PasswordTokenFiltering()
-	example11DatabaseConnectionFiltering()
-	example12JWTFiltering()
-	example13PrivateKeyFiltering()
-	example14CloudCredentialsFiltering()
-	example15RealWorldScenario()
-
-	fmt.Println("\nAll examples completed!")
-	fmt.Println("\nSecurity Tips:")
-	fmt.Println("1. Sensitive data filtering is disabled by default, enable manually when handling sensitive data")
-	fmt.Println("2. Use EnableBasicFiltering() for basic filtering (recommended)")
-	fmt.Println("3. Use EnableFullFiltering() for comprehensive filtering (more protection)")
-	fmt.Println("4. Custom filtering rules can be added")
-	fmt.Println("5. Log injection protection is always enabled, no configuration needed")
-	fmt.Println("6. Regularly review log content to ensure no sensitive data leakage")
 }

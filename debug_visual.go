@@ -5,26 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cybergodev/dd/internal/caller"
 )
-
-// getCallerInfo returns the caller's file path and line number in the format "file.go:line".
-// It skips the specified number of stack frames to get the actual caller.
-func getCallerInfo(skip int) string {
-	_, file, line, ok := runtime.Caller(skip)
-	if !ok {
-		return ""
-	}
-
-	rel := filepath.Base(file)
-	return fmt.Sprintf("./%s:%d", rel, line)
-}
 
 // Json outputs data as compact JSON to console for debugging.
 // It marshals the provided data to JSON format without HTML escaping and prints it directly to stdout.
@@ -32,7 +20,7 @@ func getCallerInfo(skip int) string {
 // Multiple arguments are printed on the same line separated by spaces with a newline at the end.
 // The output is prefixed with the caller's file path and line number.
 func Json(data ...any) {
-	outputJSON(getCallerInfo(2), data...)
+	outputJSON(caller.GetCaller(DebugVisualizationDepth, false), data...)
 }
 
 // Jsonf outputs formatted data as compact JSON to console for debugging.
@@ -41,7 +29,7 @@ func Json(data ...any) {
 // The output is prefixed with the caller's file path and line number.
 func Jsonf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	outputJSON(getCallerInfo(2), formatted)
+	outputJSON(caller.GetCaller(DebugVisualizationDepth, false), formatted)
 }
 
 // Text outputs data as pretty-printed format to console for debugging.
@@ -51,7 +39,7 @@ func Jsonf(format string, args ...any) {
 // Multiple arguments are printed on the same line separated by spaces with a newline at the end.
 // The output is prefixed with the caller's file path and line number.
 func Text(data ...any) {
-	outputText(getCallerInfo(2), data...)
+	outputText(caller.GetCaller(DebugVisualizationDepth, false), data...)
 }
 
 // Textf outputs formatted data as pretty-printed format to console for debugging.
@@ -60,7 +48,7 @@ func Text(data ...any) {
 // The output is prefixed with the caller's file path and line number.
 func Textf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stdout, "%s %s\n", getCallerInfo(2), formatted)
+	fmt.Fprintf(os.Stdout, "%s %s\n", caller.GetCaller(DebugVisualizationDepth, false), formatted)
 }
 
 // Exit outputs data as pretty-printed format to console for debugging and then exits the program.
@@ -71,7 +59,7 @@ func Textf(format string, args ...any) {
 // The output is prefixed with the caller's file path and line number.
 // After printing, calls os.Exit(0) to terminate the program.
 func Exit(data ...any) {
-	outputText(getCallerInfo(2), data...)
+	outputText(caller.GetCaller(DebugVisualizationDepth, false), data...)
 	os.Exit(0)
 }
 
@@ -82,42 +70,42 @@ func Exit(data ...any) {
 // After printing, calls os.Exit(0) to terminate the program.
 func Exitf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stdout, "%s %s\n", getCallerInfo(2), formatted)
+	fmt.Fprintf(os.Stdout, "%s %s\n", caller.GetCaller(DebugVisualizationDepth, false), formatted)
 	os.Exit(0)
 }
 
 // Json outputs data as compact JSON to console for debugging.
 func (l *Logger) Json(data ...any) {
-	outputJSON(getCallerInfo(2), data...)
+	outputJSON(caller.GetCaller(DebugVisualizationDepth, false), data...)
 }
 
 // Jsonf outputs formatted data as compact JSON to console for debugging.
 func (l *Logger) Jsonf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	outputJSON(getCallerInfo(2), formatted)
+	outputJSON(caller.GetCaller(DebugVisualizationDepth, false), formatted)
 }
 
 // Text outputs data as pretty-printed format to console for debugging.
 func (l *Logger) Text(data ...any) {
-	outputText(getCallerInfo(2), data...)
+	outputText(caller.GetCaller(DebugVisualizationDepth, false), data...)
 }
 
 // Textf outputs formatted data as pretty-printed format to console for debugging.
 func (l *Logger) Textf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stdout, "%s %s\n", getCallerInfo(2), formatted)
+	fmt.Fprintf(os.Stdout, "%s %s\n", caller.GetCaller(DebugVisualizationDepth, false), formatted)
 }
 
 // Exit outputs data as pretty-printed format to console for debugging and then exits the program.
 func (l *Logger) Exit(data ...any) {
-	outputText(getCallerInfo(2), data...)
+	outputText(caller.GetCaller(DebugVisualizationDepth, false), data...)
 	os.Exit(0)
 }
 
 // Exitf outputs formatted data as pretty-printed format to console for debugging and then exits the program.
 func (l *Logger) Exitf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stdout, "%s %s\n", getCallerInfo(2), formatted)
+	fmt.Fprintf(os.Stdout, "%s %s\n", caller.GetCaller(DebugVisualizationDepth, false), formatted)
 	os.Exit(0)
 }
 
@@ -182,7 +170,7 @@ func formatSimpleValue(v any) string {
 	return fmt.Sprintf("%v", val.Interface())
 }
 
-// 优化的共享输出实现，减少内存分配和重复代码
+// Simplified shared output implementation
 var (
 	debugBufPool = sync.Pool{
 		New: func() any {
@@ -196,6 +184,32 @@ type TypeConverter struct {
 	visited  map[uintptr]bool // Track visited pointers to handle circular references
 	depth    int              // Current recursion depth
 	maxDepth int              // Maximum recursion depth
+}
+
+// TypeConverter pool for performance optimization
+var typeConverterPool = sync.Pool{
+	New: func() any {
+		return &TypeConverter{
+			visited:  make(map[uintptr]bool),
+			maxDepth: 10, // Prevent infinite recursion
+		}
+	},
+}
+
+// getTypeConverter gets a TypeConverter from the pool
+func getTypeConverter() *TypeConverter {
+	tc := typeConverterPool.Get().(*TypeConverter)
+	tc.depth = 0
+	// Clear the visited map for reuse
+	for k := range tc.visited {
+		delete(tc.visited, k)
+	}
+	return tc
+}
+
+// putTypeConverter returns a TypeConverter to the pool
+func putTypeConverter(tc *TypeConverter) {
+	typeConverterPool.Put(tc)
 }
 
 // NewTypeConverter creates a new type converter with default settings
@@ -323,7 +337,7 @@ func (tc *TypeConverter) convertSliceOrArray(val reflect.Value) any {
 	}
 
 	result := make([]any, length)
-	for i := 0; i < length; i++ {
+	for i := range length {
 		result[i] = tc.convertReflectValue(val.Index(i))
 	}
 	return result
@@ -417,8 +431,8 @@ func (tc *TypeConverter) convertStruct(val reflect.Value) any {
 			if tag == "-" {
 				continue // Skip fields marked with json:"-"
 			}
-			if idx := strings.Index(tag, ","); idx != -1 {
-				fieldName = tag[:idx]
+			if tagName, _, found := strings.Cut(tag, ","); found {
+				fieldName = tagName
 			} else {
 				fieldName = tag
 			}
@@ -435,7 +449,7 @@ func (tc *TypeConverter) convertStruct(val reflect.Value) any {
 	return result
 }
 
-// 共享的 JSON 输出实现
+// Shared JSON output implementation
 func outputJSON(caller string, data ...any) {
 	if len(data) == 0 {
 		fmt.Fprintf(os.Stdout, "%s\n", caller)
@@ -456,9 +470,10 @@ func outputJSON(caller string, data ...any) {
 	for i, item := range data {
 		buf.Reset()
 
-		// Use intelligent type conversion
-		converter := NewTypeConverter()
+		// Use intelligent type conversion with pooled converter
+		converter := getTypeConverter()
 		convertedItem := converter.ConvertValue(item)
+		putTypeConverter(converter)
 
 		if err := encoder.Encode(convertedItem); err != nil {
 			// Fallback: try to get a string representation
@@ -481,7 +496,7 @@ func outputJSON(caller string, data ...any) {
 	}
 }
 
-// 共享的文本输出实现
+// Shared text output implementation
 func outputText(caller string, data ...any) {
 	if len(data) == 0 {
 		fmt.Fprintf(os.Stdout, "%s\n", caller)
@@ -514,8 +529,9 @@ func outputText(caller string, data ...any) {
 
 		// For complex types, use intelligent type conversion and JSON formatting
 		buf.Reset()
-		converter := NewTypeConverter()
+		converter := getTypeConverter()
 		convertedItem := converter.ConvertValue(item)
+		putTypeConverter(converter)
 
 		if err := encoder.Encode(convertedItem); err != nil {
 			// Fallback: try to get a string representation

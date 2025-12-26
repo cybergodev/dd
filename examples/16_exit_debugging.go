@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 // This example demonstrates the Exit() and Exitf() methods

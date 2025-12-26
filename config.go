@@ -5,39 +5,31 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/cybergodev/dd/internal/types"
 )
 
-// JSONOptions holds JSON-specific configuration options
-type JSONOptions struct {
-	PrettyPrint bool
-	Indent      string
-	FieldNames  *JSONFieldNames
-}
+// JSONOptions is an alias for the shared type
+type JSONOptions = types.JSONOptions
 
-// JSONFieldNames allows customization of JSON field names
-type JSONFieldNames struct {
-	Timestamp string
-	Level     string
-	Caller    string
-	Message   string
-	Fields    string
-}
+// JSONFieldNames is an alias for the shared type
+type JSONFieldNames = types.JSONFieldNames
 
 func DefaultJSONOptions() *JSONOptions {
 	return &JSONOptions{
 		PrettyPrint: false,
-		Indent:      "  ",
+		Indent:      DefaultJSONIndent,
 		FieldNames:  DefaultJSONFieldNames(),
 	}
 }
 
 func DefaultJSONFieldNames() *JSONFieldNames {
 	return &JSONFieldNames{
-		Timestamp: "timestamp",
-		Level:     "level",
-		Caller:    "caller",
-		Message:   "message",
-		Fields:    "fields",
+		Timestamp: DefaultTimestampField,
+		Level:     DefaultLevelField,
+		Caller:    DefaultCallerField,
+		Message:   DefaultMessageField,
+		Fields:    DefaultFieldsField,
 	}
 }
 
@@ -60,7 +52,7 @@ func DefaultConfig() *LoggerConfig {
 	return &LoggerConfig{
 		Level:          LevelInfo, // Production-friendly default
 		Format:         FormatText,
-		TimeFormat:     time.RFC3339,
+		TimeFormat:     DefaultTimeFormat,
 		IncludeCaller:  false, // Performance-friendly default
 		IncludeTime:    true,
 		IncludeLevel:   true,
@@ -76,7 +68,7 @@ func DevelopmentConfig() *LoggerConfig {
 	return &LoggerConfig{
 		Level:          LevelDebug,
 		Format:         FormatText,
-		TimeFormat:     "15:04:05.000",
+		TimeFormat:     DevTimeFormat,
 		IncludeCaller:  true,
 		IncludeTime:    true,
 		IncludeLevel:   true,
@@ -181,10 +173,10 @@ func (c *LoggerConfig) Validate() error {
 		c.SecurityConfig = DefaultSecurityConfig()
 	} else {
 		if c.SecurityConfig.MaxMessageSize <= 0 {
-			c.SecurityConfig.MaxMessageSize = defaultMaxMessageSize
+			c.SecurityConfig.MaxMessageSize = MaxMessageSize
 		}
 		if c.SecurityConfig.MaxWriters <= 0 {
-			c.SecurityConfig.MaxWriters = defaultMaxWriters
+			c.SecurityConfig.MaxWriters = MaxWriterCount
 		}
 	}
 

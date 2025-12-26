@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -9,6 +7,25 @@ import (
 
 	"github.com/cybergodev/dd"
 )
+
+func main() {
+	fmt.Println("DD Logger - File Output Examples")
+	fmt.Println("================================")
+
+	example1QuickFileOutput()
+	example2FileOnly()
+	example3JSONFileOutput()
+	example4BuilderFileOutput()
+	example5CustomRotation()
+	example6MultipleFiles()
+	example7DateBasedLogs()
+	example8LargeFileRotation()
+	example9FileSecurity()
+	example10RealWorldScenario()
+
+	fmt.Println("\n=== All file output examples completed! ===")
+	fmt.Println("Check the logs/ directory for generated log files")
+}
 
 // Example 1: File output only
 func example1QuickFileOutput() {
@@ -244,23 +261,4 @@ func example10RealWorldScenario() {
 		dd.Any("env", "prod"),
 		dd.Any("version", "1.0.0"),
 	)
-}
-
-func main() {
-	fmt.Println("DD Logger - File Output Examples")
-	fmt.Println("================================")
-
-	example1QuickFileOutput()
-	example2FileOnly()
-	example3JSONFileOutput()
-	example4BuilderFileOutput()
-	example5CustomRotation()
-	example6MultipleFiles()
-	example7DateBasedLogs()
-	example8LargeFileRotation()
-	example9FileSecurity()
-	example10RealWorldScenario()
-
-	fmt.Println("\n=== All file output examples completed! ===")
-	fmt.Println("Check the logs/ directory for generated log files")
 }

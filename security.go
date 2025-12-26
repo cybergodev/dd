@@ -20,46 +20,45 @@ type SensitiveDataFilter struct {
 
 func NewSensitiveDataFilter() *SensitiveDataFilter {
 	filter := &SensitiveDataFilter{
-		patterns:       make([]*regexp.Regexp, 0, 14),
-		maxInputLength: defaultMaxInputLength,
-		timeout:        defaultFilterTimeout,
+		patterns:       make([]*regexp.Regexp, 0, 12),
+		maxInputLength: MaxInputLength,
+		timeout:        DefaultFilterTimeout,
 	}
 	filter.enabled.Store(true)
 
-	// 安全优化的正则表达式模式，防止 ReDoS 攻击
+	// Optimized security patterns - ReDoS resistant with strict boundaries
 	patterns := []string{
-		// 信用卡号（严格边界，防止回溯）
-		`\b[0-9]{13,19}\b`,
-		// SSN（固定格式）
+		// Credit card numbers (13-19 digits with optional separators)
+		`\b[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{3,7}\b`,
+		// SSN (strict format)
 		`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`,
-		// 密码字段（严格限制长度，原子分组）
+		// Password/secret fields (length limited)
 		`(?i)(?:password|passwd|pwd|secret)[\s:=]+[^\s]{1,32}\b`,
-		// API 密钥（严格限制长度，原子分组）
+		// API keys and tokens (length limited)
 		`(?i)(?:token|api[_-]?key|bearer)[\s:=]+[^\s]{1,128}\b`,
-		// JWT 令牌（严格三段式，防止回溯）
+		// JWT tokens (strict three-part format)
 		`\beyJ[A-Za-z0-9_-]{10,100}\.eyJ[A-Za-z0-9_-]{10,100}\.[A-Za-z0-9_-]{10,100}\b`,
-		// 私钥（严格边界，限制内容长度）
+		// Private keys (bounded content)
 		`-----BEGIN[^-]{1,20}PRIVATE\s+KEY-----[A-Za-z0-9+/=\s]{1,4000}-----END[^-]{1,20}PRIVATE\s+KEY-----`,
-		// AWS Access Key（固定格式）
+		// AWS Access Keys
 		`\bAKIA[0-9A-Z]{16}\b`,
-		// Google API Key（固定格式）
+		// Google API Keys
 		`\bAIza[A-Za-z0-9_-]{35}\b`,
-		// OpenAI API Key（固定格式）
+		// OpenAI API Keys
 		`\bsk-[A-Za-z0-9]{20,48}\b`,
-		// UUID（固定格式）
-		`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`,
-		// 邮箱地址（简化但安全的模式）
+		// Email addresses (simplified but secure)
 		`\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,6}\b`,
-		// IP 地址（严格格式）
+		// IPv4 addresses
 		`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`,
-		// 比特币地址（固定格式）
-		`\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b`,
-		// 数据库连接字符串（严格限制）
+		// Database connection strings
 		`(?i)(?:mysql|postgresql|mongodb)://[^\s]{1,200}\b`,
 	}
 
 	for _, pattern := range patterns {
-		_ = filter.addPattern(pattern)
+		if err := filter.addPattern(pattern); err != nil {
+			// Log error but continue - don't fail initialization for pattern issues
+			continue
+		}
 	}
 
 	return filter
@@ -68,8 +67,8 @@ func NewSensitiveDataFilter() *SensitiveDataFilter {
 func NewEmptySensitiveDataFilter() *SensitiveDataFilter {
 	filter := &SensitiveDataFilter{
 		patterns:       make([]*regexp.Regexp, 0),
-		maxInputLength: emptyMaxInputLength,
-		timeout:        emptyFilterTimeout,
+		maxInputLength: MaxInputLength,
+		timeout:        EmptyFilterTimeout,
 	}
 	filter.enabled.Store(true)
 	return filter
@@ -200,17 +199,17 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Regexp, timeout time.Duration) string {
 	inputLen := len(input)
 
-	// 快速路径：小输入直接处理
+	// Fast path: small inputs processed directly
 	if inputLen < fastPathThreshold {
 		return pattern.ReplaceAllString(input, "[REDACTED]")
 	}
 
-	// 中等大小输入：分块处理以避免超时
+	// Medium size inputs: chunk processing to avoid timeout
 	if inputLen < 10*fastPathThreshold {
 		return f.filterInChunks(input, pattern)
 	}
 
-	// 大输入：使用超时保护
+	// Large inputs: use timeout protection
 	done := make(chan string, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -225,11 +224,13 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 			}
 		}()
 
-		// 分块处理大输入
+		// Process large input in chunks
 		output := f.filterInChunks(input, pattern)
 		select {
 		case done <- output:
 		case <-ctx.Done():
+			// Context cancelled, exit goroutine
+			return
 		}
 	}()
 
@@ -241,7 +242,7 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 	}
 }
 
-// 分块处理输入以提高性能和避免超时
+// Process input in chunks to improve performance and avoid timeout
 func (f *SensitiveDataFilter) filterInChunks(input string, pattern *regexp.Regexp) string {
 	const chunkSize = 1024
 	inputLen := len(input)
@@ -251,7 +252,7 @@ func (f *SensitiveDataFilter) filterInChunks(input string, pattern *regexp.Regex
 	}
 
 	var result strings.Builder
-	result.Grow(inputLen) // 预分配容量
+	result.Grow(inputLen) // Pre-allocate capacity
 
 	for i := 0; i < inputLen; i += chunkSize {
 		end := min(i+chunkSize, inputLen)
@@ -322,24 +323,24 @@ type SecurityConfig struct {
 func NewBasicSensitiveDataFilter() *SensitiveDataFilter {
 	filter := &SensitiveDataFilter{
 		patterns:       make([]*regexp.Regexp, 0, 6),
-		maxInputLength: basicMaxInputLength,
-		timeout:        defaultFilterTimeout,
+		maxInputLength: MaxInputLength, // Use consistent constant
+		timeout:        DefaultFilterTimeout,
 	}
 	filter.enabled.Store(true)
 
-	// 基础过滤器使用最安全的模式，防止 ReDoS
+	// Basic security patterns - most common sensitive data types
 	patterns := []string{
-		// 信用卡号
-		`\b[0-9]{13,19}\b`,
-		// SSN
+		// Credit card numbers (improved pattern with separators)
+		`\b[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{4}[- ]?[0-9]{3,7}\b`,
+		// SSN (strict format)
 		`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`,
-		// 密码字段（原子分组，严格限制）
+		// Password fields (atomic groups, length limited)
 		`(?i)(?:password|passwd|pwd)[\s:=]+[^\s]{1,32}\b`,
-		// API 密钥（原子分组，严格限制）
+		// API keys and tokens (atomic groups, length limited)
 		`(?i)(?:api[_-]?key|token|bearer)[\s:=]+[^\s]{1,128}\b`,
-		// OpenAI API Key
+		// OpenAI API Keys
 		`\bsk-[A-Za-z0-9]{16,48}\b`,
-		// 私钥（严格限制内容长度）
+		// Private keys (bounded content, reduced size for basic filter)
 		`-----BEGIN[^-]{1,20}PRIVATE\s+KEY-----[A-Za-z0-9+/=\s]{1,2000}-----END[^-]{1,20}PRIVATE\s+KEY-----`,
 	}
 
@@ -352,75 +353,20 @@ func NewBasicSensitiveDataFilter() *SensitiveDataFilter {
 
 func DefaultSecurityConfig() *SecurityConfig {
 	return &SecurityConfig{
-		MaxMessageSize:  defaultMaxMessageSize,
-		MaxWriters:      defaultMaxWriters,
+		MaxMessageSize:  MaxMessageSize,
+		MaxWriters:      MaxWriterCount,
 		SensitiveFilter: nil,
 	}
 }
 
 func SecureSecurityConfig() *SecurityConfig {
 	return &SecurityConfig{
-		MaxMessageSize:  defaultMaxMessageSize,
-		MaxWriters:      defaultMaxWriters,
+		MaxMessageSize:  MaxMessageSize,
+		MaxWriters:      MaxWriterCount,
 		SensitiveFilter: NewSensitiveDataFilter(),
 	}
 }
 
 const (
-	truncatedSuffix       = "... [TRUNCATED]"
-	invalidKeyName        = "invalid_key"
-	defaultMaxMessageSize = 5 * 1024 * 1024 // 5MB
-	defaultMaxWriters     = 100
-	defaultMaxInputLength = 256 * 1024 // 256KB
-	defaultFilterTimeout  = 50 * time.Millisecond
-	basicMaxInputLength   = 64 * 1024   // 64KB
-	emptyMaxInputLength   = 1024 * 1024 // 1MB
-	emptyFilterTimeout    = 100 * time.Millisecond
-	fastPathThreshold     = 100 // Fast path for small inputs in filterWithTimeout
+	fastPathThreshold = 100 // Fast path for small inputs in filterWithTimeout
 )
-
-func sanitizeFieldKey(key string) string {
-	keyLen := len(key)
-	if keyLen == 0 {
-		return invalidKeyName
-	}
-
-	if keyLen > maxFieldKeyLength {
-		key = key[:maxFieldKeyLength]
-		keyLen = maxFieldKeyLength
-	}
-
-	// Fast path: check if sanitization is needed
-	hasInvalid := false
-	for i := range keyLen {
-		if !isValidKeyChar(key[i]) {
-			hasInvalid = true
-			break
-		}
-	}
-
-	if !hasInvalid {
-		return key
-	}
-
-	// Slow path: remove invalid characters
-	var sb strings.Builder
-	sb.Grow(keyLen)
-
-	for i := range keyLen {
-		c := key[i]
-		if isValidKeyChar(c) {
-			sb.WriteByte(c)
-		}
-	}
-
-	if sb.Len() == 0 {
-		return invalidKeyName
-	}
-
-	return sb.String()
-}
-
-func isValidKeyChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'
-}

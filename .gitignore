@@ -40,3 +40,6 @@ logs/
 tmp/
 temp/
 
+# Override global gitignore for development tracking
+!change_logs.md
+

@@ -83,17 +83,9 @@ func NewFileWriter(path string, config FileWriterConfig) (*FileWriter, error) {
 }
 
 const (
-	maxPathLength      = 4096
-	maxFileSizeMB      = 10240 // 10GB
-	maxBackupCount     = 1000
-	defaultMaxSizeMB   = 100
-	defaultMaxAge      = 30 * 24 * time.Hour
-	defaultMaxBackups  = 10
-	defaultBufferSize  = 1024
-	maxBufferSize      = 10 * 1024 * 1024 // 10MB
-	autoFlushThreshold = 2                // buffer_size / 2
-	autoFlushInterval  = 100 * time.Millisecond
-	dirPermissions     = 0700
+	autoFlushThreshold = AutoFlushThreshold
+	autoFlushInterval  = AutoFlushInterval
+	dirPermissions     = DirPermissions
 )
 
 func validateAndSecurePath(path string) (string, error) {
@@ -105,8 +97,8 @@ func validateAndSecurePath(path string) (string, error) {
 		return "", ErrNullByte
 	}
 
-	if len(path) > maxPathLength {
-		return "", fmt.Errorf("%w (max %d characters)", ErrPathTooLong, maxPathLength)
+	if len(path) > MaxPathLength {
+		return "", fmt.Errorf("%w (max %d characters)", ErrPathTooLong, MaxPathLength)
 	}
 
 	cleanPath := filepath.Clean(path)
@@ -124,20 +116,20 @@ func validateAndSecurePath(path string) (string, error) {
 
 func validateFileWriterConfig(config *FileWriterConfig) error {
 	if config.MaxSizeMB <= 0 {
-		config.MaxSizeMB = defaultMaxSizeMB
+		config.MaxSizeMB = DefaultMaxSizeMB
 	}
 	if config.MaxAge <= 0 {
-		config.MaxAge = defaultMaxAge
+		config.MaxAge = DefaultMaxAge
 	}
 	if config.MaxBackups < 0 {
-		config.MaxBackups = defaultMaxBackups
+		config.MaxBackups = DefaultMaxBackups
 	}
 
-	if config.MaxSizeMB > maxFileSizeMB {
-		return fmt.Errorf("%w: maximum %dMB", ErrMaxSizeExceeded, maxFileSizeMB)
+	if config.MaxSizeMB > MaxFileSizeMB {
+		return fmt.Errorf("%w: maximum %dMB", ErrMaxSizeExceeded, MaxFileSizeMB)
 	}
-	if config.MaxBackups > maxBackupCount {
-		return fmt.Errorf("%w: maximum %d", ErrMaxBackupsExceeded, maxBackupCount)
+	if config.MaxBackups > MaxBackupCount {
+		return fmt.Errorf("%w: maximum %d", ErrMaxBackupsExceeded, MaxBackupCount)
 	}
 
 	return nil
@@ -168,28 +160,18 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 }
 
 func (fw *FileWriter) Close() error {
-	// 确保只关闭一次
-	var closeErr error
-	var closeOnce sync.Once
+	fw.cancel()
+	fw.wg.Wait()
 
-	closeOnce.Do(func() {
-		if fw.cancel != nil {
-			fw.cancel()
-		}
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
 
-		// 等待后台 goroutine 完成
-		fw.wg.Wait()
-
-		fw.mu.Lock()
-		defer fw.mu.Unlock()
-
-		if fw.file != nil {
-			closeErr = fw.file.Close()
-			fw.file = nil
-		}
-	})
-
-	return closeErr
+	if fw.file != nil {
+		err := fw.file.Close()
+		fw.file = nil
+		return err
+	}
+	return nil
 }
 
 func (fw *FileWriter) rotate() error {
@@ -274,11 +256,11 @@ func NewBufferedWriter(w io.Writer, bufferSize int) (*BufferedWriter, error) {
 		return nil, ErrNilWriter
 	}
 
-	if bufferSize < defaultBufferSize {
-		bufferSize = defaultBufferSize
+	if bufferSize < DefaultBufferSizeKB*1024 {
+		bufferSize = DefaultBufferSizeKB * 1024
 	}
-	if bufferSize > maxBufferSize {
-		return nil, fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSize/(1024*1024))
+	if bufferSize > MaxBufferSizeKB*1024 {
+		return nil, fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, MaxBufferSizeKB/1024)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
