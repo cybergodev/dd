@@ -8,7 +8,7 @@ const (
 	DefaultCallerDepth      = 3 // Default depth for caller detection
 	ConvenienceDepth        = 4 // Depth for convenience functions
 	StructuredDepth         = 4 // Depth for structured logging
-	DebugVisualizationDepth = 4 // Depth for debug visualization
+	DebugVisualizationDepth = 2 // Depth for debug visualization
 
 	// Buffer and pool constants
 	DefaultBufferSize    = 1024     // Default message buffer size
