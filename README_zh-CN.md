@@ -329,6 +329,46 @@ dd.DevelopmentConfig() *LoggerConfig  // 开发配置（Debug级别，带调用�
 dd.JSONConfig() *LoggerConfig         // JSON配置（适配云日志系统）
 ```
 
+### fmt包 平替方法
+
+DD 为 Go 语言的标准 `fmt` 包提供了一个完全替代方案，该方案具有与之相同的 API，并且还增强了日志集成功能：
+```go
+// 直接输出（标准输出） - 与 fmt 相同
+dd.Printf(format, args...)     // 将输出格式化后显示在标准输出端口上
+dd.Print(args...)              // 默认格式输出至标准输出流
+dd.Println(args...)            // 默认格式输出，并带有换行符
+
+// 字符串 返回值 - 与 fmt 相同
+dd.Sprintf(format, args...)    // 返回格式化后的字符串
+dd.Sprint(args...)             // 返回默认格式字符串
+dd.Sprintln(args...)           // 返回带有换行符的默认格式字符串
+
+// 作者输出 - 与 fmt 完全相同
+dd.Fprintf(w, format, args...) // 向写作者输出格式化内容
+dd.Fprint(w, args...)          // 默认格式输出给写入器
+dd.Fprintln(w, args...)        // 以换行的方式将默认格式输出至写入器中
+
+// 输入扫描 - 与 fmt 相同
+dd.Scan(a...)                  // 从标准输入获取以空格分隔的输入
+dd.Scanf(format, a...)         // 从标准输入获取的格式化输入
+dd.Scanln(a...)                // 从标准输入获取基于行的输入
+dd.Fscan(r, a...) / Fscanf / Fscanln    // 来自 io 的输入
+dd.Sscan(str, a...) / Sscanf / Sscanln  // 字符串输入
+
+// 错误生成 - 改进的命名方式
+dd.NewError(format, args...)   // 生成错误（例如 fmt.Errorf 函数）
+dd.NewErrorWith(format, args...) // 产生错误并记录下来
+
+// 缓冲区操作 - 与 fmt 相同
+dd.AppendFormat(dst, format, args...) // 将格式化内容写入缓冲区
+dd.Append(dst, args...)        // 将默认格式添加到缓冲区中
+dd.Appendln(dst, args...)      // 向缓冲区追加换行符
+
+// 增强功能与日志集成
+dd.PrintfWith(format, args...) // 将输出发送至标准输出以及记录消息
+dd.PrintlnWith(args...)        // 将输出发送至标准输出以及记录消息
+```
+
 ### 字段构造器
 
 ```go

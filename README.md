@@ -328,6 +328,47 @@ dd.DevelopmentConfig() *LoggerConfig  // Development config (Debug level, with c
 dd.JSONConfig() *LoggerConfig         // JSON config (cloud log system compatible)
 ```
 
+### fmt Package alternative method
+
+DD provides a complete replacement for Go's standard `fmt` package with identical APIs plus enhanced logging integration:
+
+```go
+// Direct Output (stdout) - identical to fmt
+dd.Printf(format, args...)     // Formatted output to stdout
+dd.Print(args...)              // Default format output to stdout  
+dd.Println(args...)            // Default format output with newline
+
+// String Return - identical to fmt
+dd.Sprintf(format, args...)    // Return formatted string
+dd.Sprint(args...)             // Return default format string
+dd.Sprintln(args...)           // Return default format string with newline
+
+// Writer Output - identical to fmt
+dd.Fprintf(w, format, args...) // Formatted output to writer
+dd.Fprint(w, args...)          // Default format output to writer
+dd.Fprintln(w, args...)        // Default format output with newline to writer
+
+// Input Scanning - identical to fmt
+dd.Scan(a...)                  // Space-separated input from stdin
+dd.Scanf(format, a...)         // Formatted input from stdin
+dd.Scanln(a...)                // Line-based input from stdin
+dd.Fscan(r, a...) / Fscanf / Fscanln    // Input from io.Reader
+dd.Sscan(str, a...) / Sscanf / Sscanln  // Input from string
+
+// Error Creation - enhanced naming
+dd.NewError(format, args...)   // Create error (like fmt.Errorf)
+dd.NewErrorWith(format, args...) // Create error AND log it
+
+// Buffer Operations - identical to fmt
+dd.AppendFormat(dst, format, args...) // Append formatted to buffer
+dd.Append(dst, args...)        // Append default format to buffer
+dd.Appendln(dst, args...)      // Append with newline to buffer
+
+// Enhanced Functions with Logging Integration
+dd.PrintfWith(format, args...) // Output to stdout AND log message
+dd.PrintlnWith(args...)        // Output to stdout AND log message
+```
+
 ### Field Constructors
 
 ```go
