@@ -451,7 +451,8 @@ logger, err := dd.New(cfg)
 ```go
 // Create audit logger
 auditCfg := dd.DefaultAuditConfig()
-auditLogger := dd.NewAuditLogger(auditCfg)
+auditLogger, err := dd.NewAuditLogger(auditCfg)
+if err != nil { /* handle error */ }
 defer auditLogger.Close()
 
 // Log security events
@@ -465,8 +466,10 @@ auditLogger.LogSecurityViolation("LOG4SHELL", "Pattern detected", map[string]any
 ### Log Integrity
 
 ```go
-// Create signer with secret key
-integrityCfg := dd.DefaultIntegrityConfig()
+// Create signer with auto-generated secret key
+integrityCfg, err := dd.DefaultIntegrityConfigSafe()
+if err != nil { /* handle error */ }
+
 signer, err := dd.NewIntegritySigner(integrityCfg)
 if err != nil { /* handle error */ }
 
@@ -480,6 +483,123 @@ result := dd.VerifyAuditEvent(message+" "+signature, signer)
 if result.Valid {
     fmt.Println("Signature valid")
 }
+```
+
+---
+
+## 🧪 Testing
+
+### LoggerRecorder
+
+Use `LoggerRecorder` to capture and assert log output in tests:
+
+```go
+recorder := dd.NewLoggerRecorder()
+
+// Create a logger that writes to the recorder
+logger, err := recorder.NewLogger()
+if err != nil { /* handle error */ }
+
+logger.InfoWith("User login",
+    dd.String("user_id", "123"),
+    dd.String("action", "login"),
+)
+
+// Assert on captured entries
+fmt.Printf("Total entries: %d\n", recorder.Count())           // 1
+fmt.Printf("Has entries: %v\n", recorder.HasEntries())         // true
+
+// Inspect the last entry
+entry := recorder.LastEntry()
+fmt.Printf("Level: %v\n", entry.Level)      // Info
+fmt.Printf("Message: %s\n", entry.Message)  // "User login"
+
+// Search entries
+recorder.ContainsMessage("User login")          // true
+recorder.ContainsField("user_id")               // true
+recorder.GetFieldValue("user_id")               // "123"
+recorder.EntriesAtLevel(dd.LevelInfo)           // []LogEntry{...}
+```
+
+---
+
+## 🔬 Advanced Features
+
+### Log Sampling
+
+Reduce log volume in high-throughput scenarios:
+
+```go
+cfg := dd.DefaultConfig()
+cfg.Sampling = &dd.SamplingConfig{
+    Enabled:    true,
+    Initial:    100,              // Always log first 100 messages
+    Thereafter: 10,               // Then log 1 in every 10
+    Tick:       time.Second,      // Reset counters every second
+}
+logger, err := dd.New(cfg)
+```
+
+### Field Validation
+
+Enforce naming conventions on field keys:
+
+```go
+// Strict snake_case validation
+logger.SetFieldValidation(dd.StrictSnakeCaseConfig())
+
+// Custom validation
+fv := &dd.FieldValidationConfig{
+    Mode:                     dd.FieldValidationStrict,
+    Convention:               dd.NamingConventionSnakeCase,
+    AllowCommonAbbreviations: true,
+}
+logger.SetFieldValidation(fv)
+```
+
+### Dynamic Level Resolution
+
+Adjust log levels at runtime based on conditions:
+
+```go
+var errorCount atomic.Int64
+
+logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
+    if errorCount.Load() > 100 {
+        return dd.LevelWarn  // Reduce logging under high error rate
+    }
+    return dd.LevelDebug
+})
+```
+
+### Graceful Shutdown
+
+Use `Shutdown` for clean shutdown with timeout:
+
+```go
+logger, _ := dd.New(dd.DefaultConfig())
+defer func() {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    if err := logger.Shutdown(ctx); err != nil {
+        fmt.Fprintf(os.Stderr, "Logger shutdown error: %v\n", err)
+    }
+}()
+```
+
+### Debug Utilities
+
+Quick data inspection (writes to stdout, no security filtering):
+
+```go
+dd.Text(myStruct)                      // Pretty-printed output
+dd.Textf("Value: %v", data)            // Formatted text
+dd.JSON(myStruct)                      // JSON with caller info
+dd.JSONF("Result: %v", data)           // Formatted JSON
+
+// Also available on logger instances
+logger.Text(myStruct)
+logger.JSON(myStruct)
 ```
 
 ---
@@ -536,10 +656,41 @@ dd.ErrorWith(msg string, fields ...dd.Field)
 // ... DebugWith, WarnWith, FatalWith
 
 // Global logger management
-dd.InitDefault(cfg *Config) error    // Initialize default logger with config
+dd.InitDefault(cfg ...Config) error  // Initialize default logger with config
 dd.SetDefault(logger *Logger)
-dd.SetLevel(level LogLevel)
+dd.Default() *Logger                 // Get default logger
+dd.DefaultWithErr() (*Logger, error) // Get default logger with init error
+dd.DefaultInitError() error          // Check if default init failed
+dd.SetLevel(level LogLevel) error
 dd.GetLevel() LogLevel
+
+// Generic level logging
+dd.Log(level LogLevel, args ...any)
+dd.Logf(level LogLevel, format string, args ...any)
+dd.LogWith(level LogLevel, msg string, fields ...Field)
+
+// Level check functions
+dd.IsLevelEnabled(level LogLevel) bool
+dd.IsEnabled()  // IsDebugEnabled, IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+
+// Print functions (filtered, uses LevelInfo)
+dd.Print(args ...any)
+dd.Println(args ...any)
+dd.Printf(format string, args ...any)
+
+// Field chaining (package-level)
+dd.WithFields(fields ...Field) *LoggerEntry
+dd.WithField(key string, value any) *LoggerEntry
+
+// Sampling
+dd.SetSampling(config *SamplingConfig)
+dd.GetSampling() *SamplingConfig
+
+// Lifecycle
+dd.Flush() error
+dd.AddWriter(w io.Writer) error
+dd.RemoveWriter(w io.Writer) error
+dd.WriterCount() int
 ```
 
 ### Logger Methods
@@ -552,10 +703,23 @@ logger.Info(args ...any)
 logger.Infof(format string, args ...any)
 logger.InfoWith(msg string, fields ...Field)
 
+// Generic level logging
+logger.Log(level LogLevel, args ...any)
+logger.Logf(level LogLevel, format string, args ...any)
+logger.LogWith(level LogLevel, msg string, fields ...Field)
+
+// Print methods (filtered, uses LevelInfo)
+logger.Print(args ...any)
+logger.Println(args ...any)
+logger.Printf(format string, args ...any)
+
 // Level management
 logger.SetLevel(level LogLevel) error
 logger.GetLevel() LogLevel
 logger.IsLevelEnabled(level LogLevel) bool
+logger.IsDebugEnabled() bool    // + IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+logger.SetLevelResolver(resolver LevelResolver)
+logger.GetLevelResolver() LevelResolver
 
 // Writer management
 logger.AddWriter(w io.Writer) error
@@ -565,11 +729,36 @@ logger.WriterCount() int
 // Lifecycle
 logger.Flush() error
 logger.Close() error
+logger.Shutdown(ctx context.Context) error  // Graceful shutdown with timeout
 logger.IsClosed() bool
 
 // Field chaining
 logger.WithFields(fields ...Field) *LoggerEntry
 logger.WithField(key string, value any) *LoggerEntry
+
+// Security
+logger.SetSecurityConfig(config *SecurityConfig)
+logger.GetSecurityConfig() *SecurityConfig
+logger.ActiveFilterGoroutines() int32
+logger.WaitForFilterGoroutines(timeout time.Duration) bool
+
+// Context extractors
+logger.AddContextExtractor(extractor ContextExtractor) error
+logger.SetContextExtractors(extractors ...ContextExtractor) error
+logger.GetContextExtractors() []ContextExtractor
+
+// Hooks
+logger.AddHook(event HookEvent, hook Hook) error
+logger.SetHooks(registry *HookRegistry) error
+logger.GetHooks() *HookRegistry
+
+// Sampling
+logger.SetSampling(config *SamplingConfig)
+logger.GetSampling() *SamplingConfig
+
+// Field validation
+logger.SetFieldValidation(config *FieldValidationConfig)
+logger.GetFieldValidation() *FieldValidationConfig
 ```
 
 ### Field Constructors
@@ -577,12 +766,22 @@ logger.WithField(key string, value any) *LoggerEntry
 ```go
 dd.String(key, value string)
 dd.Int(key string, value int)
+dd.Int8(key string, value int8)
+dd.Int16(key string, value int16)
+dd.Int32(key string, value int32)
 dd.Int64(key string, value int64)
+dd.Uint(key string, value uint)
+dd.Uint8(key string, value uint8)
+dd.Uint16(key string, value uint16)
+dd.Uint32(key string, value uint32)
+dd.Uint64(key string, value uint64)
+dd.Float32(key string, value float32)
 dd.Float64(key string, value float64)
 dd.Bool(key string, value bool)
 dd.Time(key string, value time.Time)
 dd.Duration(key string, value time.Duration)
-dd.Err(err error)                    // Error field
+dd.Err(err error)                    // Error field (key: "error")
+dd.ErrWithKey(key string, err error) // Error field with custom key
 dd.ErrWithStack(err error)           // Error with stack trace
 dd.Any(key string, value any)        // Any type
 ```
@@ -613,6 +812,52 @@ dd.GetRequestID(ctx context.Context) string
 | `ToWriter(w)` | Single io.Writer |
 | `ToWriters(...w)` | Multiple io.Writer |
 
+### Interfaces for Dependency Injection
+
+```go
+// CoreLogger - basic logging methods
+type CoreLogger interface {
+    Debug/Info/Warn/Error/Fatal(args ...any)
+    Debugf/Infof/Warnf/Errorf/Fatalf(format string, args ...any)
+    DebugWith/InfoWith/WarnWith/ErrorWith/FatalWith(msg string, fields ...Field)
+    WithFields(fields ...Field) *LoggerEntry
+    WithField(key string, value any) *LoggerEntry
+}
+
+// LevelLogger - adds level management
+type LevelLogger interface {
+    CoreLogger
+    GetLevel() LogLevel
+    SetLevel(level LogLevel) error
+    IsLevelEnabled(level LogLevel) bool
+    IsDebugEnabled() bool  // + IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+}
+
+// ConfigurableLogger - adds writer, lifecycle, and configuration methods
+type ConfigurableLogger interface {
+    CoreLogger
+    GetLevel() LogLevel
+    SetLevel(level LogLevel) error
+    AddWriter/RemoveWriter, Flush/Close/IsClosed
+    SetSecurityConfig/GetSecurityConfig
+    AddContextExtractor/SetContextExtractors/GetContextExtractors
+    AddHook/SetHooks/GetHooks
+    SetSampling/GetSampling
+}
+
+// LogProvider - full interface for DI/testing (includes Print/Text/JSON debug methods)
+type LogProvider interface {
+    // Includes all CoreLogger, LevelLogger, ConfigurableLogger methods
+    // Plus debug utilities: Print/Println/Printf, Text/Textf, JSON/JSONF
+    // Plus filter goroutine monitoring: ActiveFilterGoroutines/WaitForFilterGoroutines
+}
+
+// Usage in services:
+type Service struct {
+    logger dd.LogProvider
+}
+```
+
 ---
 
 ## 📁 Examples
@@ -631,6 +876,7 @@ See the [examples](examples) directory for complete, runnable examples:
 | [08_production.go](examples/08_production.go) | Production patterns |
 | [09_advanced.go](examples/09_advanced.go) | Sampling, validation |
 | [10_audit_integrity.go](examples/10_audit_integrity.go) | Audit, integrity |
+| [11_testing.go](examples/11_testing.go) | Testing with LoggerRecorder |
 
 ---
 

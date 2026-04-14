@@ -943,17 +943,6 @@ func TestLoggerRecorder_AllFieldTypes(t *testing.T) {
 }
 
 // ============================================================================
-// BOUNDARY: ERROR CODE VALIDATION
-// ============================================================================
-
-func TestValidateErrorCodeMapping(t *testing.T) {
-	result := validateErrorCodeMapping()
-	if result != nil {
-		t.Errorf("validateErrorCodeMapping should return nil, got %v", result)
-	}
-}
-
-// ============================================================================
 // BOUNDARY: WRITER ERROR WITH HANDLER
 // ============================================================================
 

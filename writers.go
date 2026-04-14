@@ -15,15 +15,29 @@ import (
 	"github.com/cybergodev/dd/internal"
 )
 
+// standardStreams caches the original standard stream pointers at init time.
+// This avoids reading the global os.Stdout/os.Stderr/os.Stdin variables in
+// background goroutines, which would race with tests that modify those globals.
+var standardStreams = struct {
+	stdout *os.File
+	stderr *os.File
+	stdin  *os.File
+}{
+	stdout: os.Stdout,
+	stderr: os.Stderr,
+	stdin:  os.Stdin,
+}
+
 // closeWriter safely closes a writer if it implements io.Closer.
 // Standard streams (os.Stdout, os.Stderr, os.Stdin) are never closed.
+// Uses cached stream pointers to avoid data races with tests that modify os.Stdout.
 // Returns the error from Close() if one occurs, nil otherwise.
 func closeWriter(w io.Writer) error {
 	if w == nil {
 		return nil
 	}
-	// Never close standard streams
-	if w == os.Stdout || w == os.Stderr || w == os.Stdin {
+	// Never close standard streams (use cached pointers to avoid reading globals)
+	if w == standardStreams.stdout || w == standardStreams.stderr || w == standardStreams.stdin {
 		return nil
 	}
 	if closer, ok := w.(io.Closer); ok {
@@ -44,6 +58,7 @@ type FileWriter struct {
 	mu          sync.Mutex
 	file        *os.File
 	currentSize atomic.Int64
+	closed      atomic.Bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -215,7 +230,12 @@ func applyFileWriterDefaults(config FileWriterConfig) FileWriterConfig {
 }
 
 // Write writes data to the log file. Triggers rotation if the file exceeds MaxSizeMB.
+// Returns os.ErrClosed if the writer has been closed.
 func (fw *FileWriter) Write(p []byte) (int, error) {
+	if fw.closed.Load() {
+		return 0, os.ErrClosed
+	}
+
 	pLen := len(p)
 	if pLen == 0 {
 		return 0, nil
@@ -240,7 +260,12 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 }
 
 // Close stops cleanup goroutines and closes the underlying file.
+// Returns os.ErrClosed if already closed. Safe to call multiple times.
 func (fw *FileWriter) Close() error {
+	if !fw.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
 	fw.cancel()
 	fw.wg.Wait()
 

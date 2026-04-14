@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/maphash"
+	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -437,6 +438,7 @@ func (f *SensitiveDataFilter) WaitForGoroutines(timeout time.Duration) bool {
 // Close marks the filter as closed and waits for active goroutines to complete.
 // After calling Close, the Filter method will return input unchanged without
 // spawning new goroutines. This prevents goroutine leaks during shutdown.
+// Also releases the filter cache to free memory.
 //
 // IMPORTANT: Always call Close (or WaitForGoroutines) before program exit to
 // ensure all background goroutines complete gracefully.
@@ -448,7 +450,14 @@ func (f *SensitiveDataFilter) Close() bool {
 	}
 
 	f.closed.Store(true)
-	return f.WaitForGoroutines(defaultFilterTimeout * 2)
+	result := f.WaitForGoroutines(defaultFilterTimeout * 2)
+
+	// Release cache memory
+	f.cacheMu.Lock()
+	f.cache = nil
+	f.cacheMu.Unlock()
+
+	return result
 }
 
 // Clone creates a copy of the SensitiveDataFilter.
@@ -1130,7 +1139,16 @@ func (f *SensitiveDataFilter) FilterFieldValue(key string, value any) any {
 // It processes maps, slices, arrays, and structs to filter sensitive values.
 // Circular references are detected and replaced with "[CIRCULAR_REFERENCE]".
 // Maximum recursion depth is limited to maxRecursionDepth to prevent stack overflow.
-func (f *SensitiveDataFilter) FilterValueRecursive(key string, value any) any {
+func (f *SensitiveDataFilter) FilterValueRecursive(key string, value any) (result any) {
+	// SEC-003: Recover from panics in reflection-based recursive filtering.
+	// Return the original value on panic so logging continues without disruption.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: recovered from panic in FilterValueRecursive: %v\n", r)
+			result = value
+		}
+	}()
+
 	// Get pooled visited map to reduce allocations
 	visited := visitedMapPool.Get().(map[uintptr]bool)
 	defer func() {

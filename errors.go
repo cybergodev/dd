@@ -111,14 +111,6 @@ var errorCodeToSentinel = map[string]error{
 	errCodeNilMultiWriter:     ErrNilMultiWriter,
 }
 
-
-// validateErrorCodeMapping is a no-op kept for backward compatibility.
-// Deprecated: Error codes are derived from errorCodeToSentinel keys at runtime.
-// This function always returns nil and should not be used in new code.
-func validateErrorCodeMapping() []string {
-	return nil
-}
-
 // Is enables matching against sentinel errors using errors.Is().
 // This allows LoggerError instances to match their corresponding sentinel errors.
 func (e *LoggerError) Is(target error) bool {

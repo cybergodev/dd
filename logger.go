@@ -934,7 +934,7 @@ func (l *Logger) writeMessage(message string) {
 
 	if writerCount == 1 {
 		w := writers[0]
-		if _, err := w.Write(buf); err != nil {
+		if _, err := l.safeWrite(w, buf); err != nil {
 			l.handleWriteError(w, err)
 		}
 		return
@@ -942,7 +942,7 @@ func (l *Logger) writeMessage(message string) {
 
 	// Iterate directly over the immutable slice - no copy needed
 	for _, writer := range writers {
-		if _, err := writer.Write(buf); err != nil {
+		if _, err := l.safeWrite(writer, buf); err != nil {
 			l.handleWriteError(writer, err)
 		}
 	}
@@ -963,6 +963,18 @@ func (l *Logger) handleWriteError(writer io.Writer, err error) {
 		Timestamp: time.Now(),
 	}
 	_ = l.triggerHooks(l.ctx, hookCtx)
+}
+
+// safeWrite writes to a writer with panic recovery.
+// Prevents a panicking writer from crashing the entire application
+// or blocking other writers in a multi-writer setup.
+func (l *Logger) safeWrite(writer io.Writer, buf []byte) (n int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("writer panic: %v", r)
+		}
+	}()
+	return writer.Write(buf)
 }
 
 // ============================================================================
@@ -999,6 +1011,7 @@ func (l *Logger) closeWritersLocked(ctx context.Context) error {
 // Close closes the logger and all associated resources (thread-safe).
 // If multiple writers fail to close, all errors are collected and returned.
 // Triggers OnClose hooks before closing writers.
+// Waits for in-flight security filter goroutines to complete before closing writers.
 func (l *Logger) Close() error {
 	if !l.closed.CompareAndSwap(false, true) {
 		return nil
@@ -1012,6 +1025,14 @@ func (l *Logger) Close() error {
 	_ = l.triggerHooks(context.Background(), hookCtx)
 
 	l.cancel()
+
+	// Wait for in-flight security filter goroutines before closing writers.
+	// This prevents filter goroutines from attempting to use closed writers.
+	// Filter goroutines are bounded by defaultFilterTimeout (50ms), so
+	// waiting 200ms (4x) provides generous headroom.
+	if !l.WaitForFilterGoroutines(defaultFilterTimeout * 4) {
+		fmt.Fprintln(os.Stderr, "[dd] Warning: some filter goroutines did not complete during Close()")
+	}
 
 	l.writersMu.Lock()
 	defer l.writersMu.Unlock()
@@ -1162,6 +1183,14 @@ func (l *Logger) logCore(level LogLevel, entry logEntry) {
 // logCoreWithDepth is like logCore but accepts an additional caller depth offset.
 // This is used by LoggerEntry to skip the extra stack frames introduced by the entry wrapper.
 func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int) {
+	// SEC-003: Recover from panics in formatting, field processing, hooks, and writing.
+	// A logging library must never crash the application.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: recovered from panic in logCore: %v\n", r)
+		}
+	}()
+
 	// Fast path: check if hooks exist before allocating HookContext
 	hasHooks := l.hooks.Load() != nil
 
@@ -1198,6 +1227,9 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 
 // Log logs a message at the specified level
 func (l *Logger) Log(level LogLevel, args ...any) {
+	if l == nil {
+		return
+	}
 	if !l.shouldLog(level) {
 		return
 	}
@@ -1208,6 +1240,9 @@ func (l *Logger) Log(level LogLevel, args ...any) {
 
 // Logf logs a formatted message at the specified level
 func (l *Logger) Logf(level LogLevel, format string, args ...any) {
+	if l == nil {
+		return
+	}
 	if !l.shouldLog(level) {
 		return
 	}
@@ -1218,6 +1253,9 @@ func (l *Logger) Logf(level LogLevel, format string, args ...any) {
 
 // LogWith logs a structured message with fields at the specified level
 func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {
+	if l == nil {
+		return
+	}
 	if !l.shouldLog(level) {
 		return
 	}
@@ -1347,6 +1385,10 @@ var (
 	defaultOnce         sync.Once
 	defaultInitErr      atomic.Value // stores error from initialization (errNoInit means no error)
 	defaultUsedFallback atomic.Bool  // true if fallback logger was created
+
+	// backgroundCloseWg tracks goroutines spawned by SetDefault/InitDefault
+	// to close old loggers. This prevents goroutine leaks during rapid replacement.
+	backgroundCloseWg sync.WaitGroup
 )
 
 func init() {
@@ -1456,7 +1498,9 @@ func SetDefault(logger *Logger) {
 	oldLogger := defaultLogger.Swap(logger)
 
 	if oldLogger != nil {
+		backgroundCloseWg.Add(1)
 		go func() {
+			defer backgroundCloseWg.Done()
 			time.Sleep(defaultLoggerCloseDelay)
 			_ = oldLogger.Close()
 		}()
@@ -1488,7 +1532,9 @@ func InitDefault(cfg ...Config) error {
 
 	oldLogger := defaultLogger.Swap(logger)
 	if oldLogger != nil {
+		backgroundCloseWg.Add(1)
 		go func() {
+			defer backgroundCloseWg.Done()
 			time.Sleep(defaultLoggerCloseDelay)
 			_ = oldLogger.Close()
 		}()
@@ -1499,6 +1545,34 @@ func InitDefault(cfg ...Config) error {
 	defaultUsedFallback.Store(false)
 
 	return nil
+}
+
+// WaitForBackgroundCloses waits for all background goroutines spawned by
+// SetDefault and InitDefault to close old loggers. This is useful in test
+// teardown and graceful shutdown to ensure no goroutines are leaked.
+//
+// Returns true if all goroutines completed, false if the timeout was reached.
+//
+// Example:
+//
+//	dd.SetDefault(newLogger)
+//	// ... later in cleanup ...
+//	if !dd.WaitForBackgroundCloses(2 * time.Second) {
+//	    log.Println("Warning: background logger closes still pending")
+//	}
+func WaitForBackgroundCloses(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		backgroundCloseWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // ============================================================================

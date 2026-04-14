@@ -101,49 +101,56 @@ func extractTraceFields(ctx context.Context) []dd.Field {
 	return fields
 }
 
-// Section 3: Custom context extraction pattern
+// Section 3: Registered context extractors
 func section3CustomExtractors() {
-	fmt.Println("3. Custom Context Extraction Pattern")
-	fmt.Println("---------------------------------------")
+	fmt.Println("3. Registered Context Extractors")
+	fmt.Println("-----------------------------------")
 
-	logger, _ := dd.New()
+	// Custom extractor that reads application-specific context values
+	tenantExtractor := func(ctx context.Context) []dd.Field {
+		var fields []dd.Field
+		if v := ctx.Value("tenant_id"); v != nil {
+			if s, ok := v.(string); ok {
+				fields = append(fields, dd.String("tenant_id", s))
+			}
+		}
+		return fields
+	}
+
+	// Register extractor via Config — fields are auto-injected into every log
+	cfg := dd.DefaultConfig()
+	cfg.Format = dd.FormatJSON
+	cfg.ContextExtractors = []dd.ContextExtractor{tenantExtractor}
+
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 
-	// Context with custom values
+	// Context with tenant info
 	ctx := context.WithValue(context.Background(), "tenant_id", "tenant-abc")
-	ctx = context.WithValue(ctx, "user_id", 12345)
 
-	// Pattern: Create a reusable extractor function for your context
-	tenantFields := extractTenantFields(ctx)
-
-	// Use extracted fields with logger
-	logger.InfoWith("Custom context extracted", append(tenantFields,
+	// tenant_id is automatically included — no manual extraction needed
+	logger.InfoWith("Auto-extracted tenant context",
 		dd.String("action", "data_access"),
-	)...)
+	)
 
-	// You can also combine multiple extraction functions
-	allFields := append(extractTraceFields(ctx), extractTenantFields(ctx)...)
-	logger.InfoWith("Combined context fields", append(allFields,
-		dd.String("operation", "combined"),
-	)...)
+	// Add another extractor at runtime
+	logger.AddContextExtractor(func(ctx context.Context) []dd.Field {
+		if v := ctx.Value("user_id"); v != nil {
+			if i, ok := v.(int); ok {
+				return []dd.Field{dd.Int("user_id", i)}
+			}
+		}
+		return nil
+	})
 
+	ctx = context.WithValue(ctx, "user_id", 12345)
+	logger.InfoWith("Both extractors active",
+		dd.String("action", "update"),
+	)
+
+	fmt.Println("  Note: Built-in extractors for trace_id/span_id/request_id are")
+	fmt.Println("  enabled by default when you set context values via dd.WithTraceID etc.")
 	fmt.Println()
-}
-
-// extractTenantFields extracts tenant-specific context data
-func extractTenantFields(ctx context.Context) []dd.Field {
-	var fields []dd.Field
-	if tenantID := ctx.Value("tenant_id"); tenantID != nil {
-		if s, ok := tenantID.(string); ok {
-			fields = append(fields, dd.String("tenant_id", s))
-		}
-	}
-	if userID := ctx.Value("user_id"); userID != nil {
-		if i, ok := userID.(int); ok {
-			fields = append(fields, dd.Int("user_id", i))
-		}
-	}
-	return fields
 }
 
 // Section 4: Hook system

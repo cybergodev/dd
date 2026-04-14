@@ -1041,8 +1041,8 @@ func TestDebugVisualization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			oldStdout := os.Stdout
 			r, w, _ := os.Pipe()
+			oldStdout := os.Stdout
 			os.Stdout = w
 
 			tt.call()
@@ -1091,8 +1091,8 @@ func TestTypeConverter(t *testing.T) {
 }
 
 func TestTypeConverterComplexTypes(t *testing.T) {
-	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
+	oldStdout := os.Stdout
 	os.Stdout = w
 
 	// Test slice

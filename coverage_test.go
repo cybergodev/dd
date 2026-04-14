@@ -113,42 +113,37 @@ func TestLoggerPrintMethods(t *testing.T) {
 
 func TestLoggerVisualizationMethods(t *testing.T) {
 	tests := []struct {
-		name      string
-		logFunc   func(*Logger)
-		expected  []string
-		setupPipe bool
+		name     string
+		logFunc  func(*Logger)
+		expected []string
 	}{
 		{
 			name: "Text",
 			logFunc: func(l *Logger) {
 				l.Text("test data")
 			},
-			expected:  []string{"test data"},
-			setupPipe: true,
+			expected: []string{"test data"},
 		},
 		{
 			name: "Textf",
 			logFunc: func(l *Logger) {
 				l.Textf("test %s", "formatted")
 			},
-			expected:  []string{"test formatted"},
-			setupPipe: true,
+			expected: []string{"test formatted"},
 		},
 		{
 			name: "JSON",
 			logFunc: func(l *Logger) {
 				l.JSON(map[string]string{"key": "value"})
 			},
-			expected:  []string{`"key"`, `"value"`},
-			setupPipe: true,
+			expected: []string{`"key"`, `"value"`},
 		},
 		{
 			name: "JSONF",
 			logFunc: func(l *Logger) {
 				l.JSONF("test: %s", "formatted")
 			},
-			expected:  []string{"test: formatted"},
-			setupPipe: true,
+			expected: []string{"test: formatted"},
 		},
 	}
 
@@ -160,22 +155,18 @@ func TestLoggerVisualizationMethods(t *testing.T) {
 			}
 			defer logger.Close()
 
-			var output string
-			if tt.setupPipe {
-				oldStdout := os.Stdout
-				r, w, _ := os.Pipe()
-				os.Stdout = w
+			r, w, _ := os.Pipe()
+			oldStdout := os.Stdout
+			os.Stdout = w
 
-				tt.logFunc(logger)
+			tt.logFunc(logger)
 
-				w.Close()
-				var buf bytes.Buffer
-				buf.ReadFrom(r)
-				output = buf.String()
-				os.Stdout = oldStdout
-			} else {
-				tt.logFunc(logger)
-			}
+			w.Close()
+			os.Stdout = oldStdout
+
+			var buf bytes.Buffer
+			buf.ReadFrom(r)
+			output := buf.String()
 
 			for _, exp := range tt.expected {
 				if !strings.Contains(output, exp) {
