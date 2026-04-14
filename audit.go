@@ -191,18 +191,6 @@ func NewAuditLogger(cfg ...AuditConfig) (*AuditLogger, error) {
 	return newAuditLoggerWithConfig(config)
 }
 
-// NewAuditLoggerWithConfig creates a new AuditLogger using the standard Config pattern.
-// Prefer this over the variadic NewAuditLogger for explicit configuration.
-//
-// Example:
-//
-//	cfg := dd.DefaultAuditConfig()
-//	cfg.BufferSize = 2000
-//	al, err := dd.NewAuditLoggerWithConfig(cfg)
-func NewAuditLoggerWithConfig(cfg AuditConfig) (*AuditLogger, error) {
-	return newAuditLoggerWithConfig(cfg)
-}
-
 func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err

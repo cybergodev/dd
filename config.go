@@ -176,7 +176,6 @@ func (c *Config) Clone() Config {
 		FullPath:          c.FullPath,
 		DynamicCaller:     c.DynamicCaller,
 		Output:            c.Output,
-		Security:          c.Security,
 		FieldValidation:   c.FieldValidation,
 		FatalHandler:      c.FatalHandler,
 		WriteErrorHandler: c.WriteErrorHandler,

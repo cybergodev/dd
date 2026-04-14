@@ -69,22 +69,6 @@ func (c IntegrityConfig) Validate() error {
 	return nil
 }
 
-// DefaultIntegrityConfig returns an IntegrityConfig with sensible defaults.
-// Note: A cryptographically secure random key is generated but should be replaced for production use.
-// IMPORTANT: Store the generated key securely if you need to verify logs across restarts.
-//
-// For production environments where panic is unacceptable, use DefaultIntegrityConfigSafe() instead.
-func DefaultIntegrityConfig() IntegrityConfig {
-	cfg, err := DefaultIntegrityConfigSafe()
-	if err != nil {
-		// This should never happen with crypto/rand, but panic if it does
-		// as we cannot safely continue without a secure key.
-		// Use DefaultIntegrityConfigSafe() for panic-free initialization.
-		panic("dd: failed to generate secure random key for integrity config: " + err.Error())
-	}
-	return cfg
-}
-
 // DefaultIntegrityConfigSafe returns an IntegrityConfig with sensible defaults.
 // Unlike DefaultIntegrityConfig, this function returns an error instead of panicking
 // if the secure random key generation fails.
@@ -137,32 +121,21 @@ func NewIntegritySigner(cfg ...IntegrityConfig) (*IntegritySigner, error) {
 			return nil, fmt.Errorf("failed to create default integrity config: %w", err)
 		}
 	}
-	return NewIntegritySignerWithConfig(config)
-}
 
-// NewIntegritySignerWithConfig creates a new IntegritySigner using the standard Config pattern.
-// Prefer this over the variadic NewIntegritySigner for explicit configuration.
-//
-// Example:
-//
-//	cfg := dd.DefaultIntegrityConfig()
-//	cfg.IncludeSequence = true
-//	signer, err := dd.NewIntegritySignerWithConfig(cfg)
-func NewIntegritySignerWithConfig(cfg IntegrityConfig) (*IntegritySigner, error) {
-	if err := cfg.Validate(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 
-	if cfg.SignaturePrefix == "" {
-		cfg.SignaturePrefix = "[SIG:"
+	if config.SignaturePrefix == "" {
+		config.SignaturePrefix = "[SIG:"
 	}
 
 	// Copy the secret key to ensure we own the memory
-	secretKey := make([]byte, len(cfg.SecretKey))
-	copy(secretKey, cfg.SecretKey)
+	secretKey := make([]byte, len(config.SecretKey))
+	copy(secretKey, config.SecretKey)
 
 	return &IntegritySigner{
-		config:    &cfg,
+		config:    &config,
 		secretKey: secretKey,
 	}, nil
 }

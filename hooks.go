@@ -104,7 +104,7 @@ type HookErrorHandler func(event HookEvent, hookCtx *HookContext, err error)
 
 // defaultHookErrorHandler logs hook errors to stderr.
 // This is the default error handler used when no custom handler is set.
-func defaultHookErrorHandler(event HookEvent, hookCtx *HookContext, err error) {
+func defaultHookErrorHandler(event HookEvent, _ *HookContext, err error) {
 	fmt.Fprintf(os.Stderr, "dd: hook error for event %s: %v\n", event, err)
 }
 

@@ -278,7 +278,10 @@ func TestIntegrityConfig_CloneNil(t *testing.T) {
 }
 
 func TestDefaultIntegrityConfig(t *testing.T) {
-	config := DefaultIntegrityConfig()
+	config, err := DefaultIntegrityConfigSafe()
+	if err != nil {
+		t.Fatalf("DefaultIntegrityConfigSafe error = %v", err)
+	}
 
 	if len(config.SecretKey) != 32 {
 		t.Errorf("Default SecretKey length should be 32, got %d", len(config.SecretKey))

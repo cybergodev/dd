@@ -442,14 +442,14 @@ func TestInitDefaultWithConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Level = LevelDebug
 
-	err := InitDefaultWithConfig(cfg)
+	err := InitDefault(cfg)
 	if err != nil {
-		t.Errorf("InitDefaultWithConfig error = %v", err)
+		t.Errorf("InitDefault error = %v", err)
 	}
 
 	logger := Default()
 	if logger == nil {
-		t.Fatal("Default() should return non-nil after InitDefaultWithConfig")
+		t.Fatal("Default() should return non-nil after InitDefault")
 	}
 }
 
@@ -519,7 +519,10 @@ func TestIntegritySignerBoundaryKeys(t *testing.T) {
 }
 
 func TestIntegritySignerSignEmptyMessage(t *testing.T) {
-	config := DefaultIntegrityConfig()
+	config, err := DefaultIntegrityConfigSafe()
+	if err != nil {
+		t.Fatalf("DefaultIntegrityConfigSafe error = %v", err)
+	}
 	signer, _ := NewIntegritySigner(config)
 
 	sig := signer.Sign("")
@@ -566,12 +569,12 @@ func TestIntegrityConfigCloneCompleteness(t *testing.T) {
 
 func TestNewAuditLoggerWithConfig(t *testing.T) {
 	cfg := DefaultAuditConfig()
-	logger, err := NewAuditLoggerWithConfig(cfg)
+	logger, err := NewAuditLogger(cfg)
 	if err != nil {
-		t.Fatalf("NewAuditLoggerWithConfig error = %v", err)
+		t.Fatalf("NewAuditLogger error = %v", err)
 	}
 	if logger == nil {
-		t.Fatal("NewAuditLoggerWithConfig returned nil")
+		t.Fatal("NewAuditLogger returned nil")
 	}
 }
 
@@ -673,9 +676,9 @@ func TestNewFileWriterWithConfig(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.log")
 	cfg := FileWriterConfig{MaxSizeMB: 1, MaxBackups: 3}
 
-	fw, err := NewFileWriterWithConfig(tmpFile, cfg)
+	fw, err := NewFileWriter(tmpFile, cfg)
 	if err != nil {
-		t.Fatalf("NewFileWriterWithConfig error = %v", err)
+		t.Fatalf("NewFileWriter error = %v", err)
 	}
 	defer fw.Close()
 
@@ -691,11 +694,10 @@ func TestNewFileWriterWithConfig(t *testing.T) {
 
 func TestNewBufferedWriterWithConfig(t *testing.T) {
 	var buf bytes.Buffer
-	cfg := DefaultBufferedWriterConfig()
 
-	bw, err := NewBufferedWriterWithConfig(&buf, cfg)
+	bw, err := NewBufferedWriter(&buf, 1024)
 	if err != nil {
-		t.Fatalf("NewBufferedWriterWithConfig error = %v", err)
+		t.Fatalf("NewBufferedWriter error = %v", err)
 	}
 	defer bw.Close()
 
@@ -715,10 +717,9 @@ func TestNewBufferedWriterWithConfig(t *testing.T) {
 }
 
 func TestNewBufferedWriterWithConfigNil(t *testing.T) {
-	cfg := DefaultBufferedWriterConfig()
-	_, err := NewBufferedWriterWithConfig(nil, cfg)
+	_, err := NewBufferedWriter(nil)
 	if err == nil {
-		t.Error("NewBufferedWriterWithConfig(nil, _) should return error")
+		t.Error("NewBufferedWriter(nil, _) should return error")
 	}
 }
 

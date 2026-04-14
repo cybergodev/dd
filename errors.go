@@ -111,26 +111,12 @@ var errorCodeToSentinel = map[string]error{
 	errCodeNilMultiWriter:     ErrNilMultiWriter,
 }
 
-// allErrorCodes is derived from errorCodeToSentinel keys to avoid
-// dual-maintenance of error code constants and a separate validation list.
-// Adding a new error code only requires updating errorCodeToSentinel.
-var allErrorCodes []string
-
-func init() {
-	// Derive allErrorCodes from map keys — single source of truth.
-	// Adding a new error code only requires updating errorCodeToSentinel.
-	allErrorCodes = make([]string, 0, len(errorCodeToSentinel))
-	for code := range errorCodeToSentinel {
-		allErrorCodes = append(allErrorCodes, code)
-	}
-}
 
 // validateErrorCodeMapping is a no-op kept for backward compatibility.
-// Error codes are now derived from errorCodeToSentinel keys, so the mapping
-// is inherently consistent. The function is retained for any external tests
-// that reference it.
+// Deprecated: Error codes are derived from errorCodeToSentinel keys at runtime.
+// This function always returns nil and should not be used in new code.
 func validateErrorCodeMapping() []string {
-	return nil // Derived from map keys — always consistent
+	return nil
 }
 
 // Is enables matching against sentinel errors using errors.Is().
@@ -265,7 +251,7 @@ func (e *MultiWriterError) Error() string {
 		return e.Errors[0].Error()
 	}
 
-	var msgs []string
+	msgs := make([]string, 0, len(e.Errors))
 	for _, err := range e.Errors {
 		msgs = append(msgs, err.Error())
 	}

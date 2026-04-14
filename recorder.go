@@ -263,22 +263,8 @@ func (r *LoggerRecorder) NewLogger(cfg ...Config) (*Logger, error) {
 	} else {
 		c = DefaultConfig()
 	}
-	return r.NewLoggerWithConfig(c)
-}
-
-// NewLoggerWithConfig creates a new Logger configured to write to this recorder,
-// using the standard Config pattern.
-// Returns an error if logger creation fails.
-//
-// Example:
-//
-//	recorder := dd.NewLoggerRecorder()
-//	cfg := dd.DefaultConfig()
-//	cfg.Level = dd.LevelDebug
-//	logger, err := recorder.NewLoggerWithConfig(cfg)
-func (r *LoggerRecorder) NewLoggerWithConfig(cfg Config) (*Logger, error) {
-	cfg.Output = r.Writer()
-	return NewWithConfig(cfg)
+	c.Output = r.Writer()
+	return c.build()
 }
 
 // Entries returns all captured log entries.
@@ -384,4 +370,4 @@ func (r *LoggerRecorder) GetFieldValue(key string) any {
 	return nil
 }
 
-// parseLevelString converts a level string to LogLevel
+// NOTE: parseLevelString is defined above (line ~213).

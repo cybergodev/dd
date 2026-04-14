@@ -32,6 +32,8 @@ func closeWriter(w io.Writer) error {
 	return nil
 }
 
+// FileWriter provides thread-safe file writing with log rotation support.
+// It supports size-based rotation, compression, and age-based cleanup of old log files.
 type FileWriter struct {
 	path       string
 	maxSize    int64
@@ -125,18 +127,6 @@ func NewFileWriter(path string, cfg ...FileWriterConfig) (*FileWriter, error) {
 	return newFileWriterWithConfig(path, config)
 }
 
-// NewFileWriterWithConfig creates a thread-safe file writer using the standard Config pattern.
-// Prefer this over the variadic NewFileWriter for explicit configuration.
-//
-// Example:
-//
-//	cfg := dd.DefaultFileWriterConfig()
-//	cfg.MaxSizeMB = 50
-//	fw, err := dd.NewFileWriterWithConfig("logs/app.log", cfg)
-func NewFileWriterWithConfig(path string, cfg FileWriterConfig) (*FileWriter, error) {
-	return newFileWriterWithConfig(path, cfg)
-}
-
 func newFileWriterWithConfig(path string, config FileWriterConfig) (*FileWriter, error) {
 	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath)
 	if err != nil {
@@ -224,6 +214,7 @@ func applyFileWriterDefaults(config FileWriterConfig) FileWriterConfig {
 	return config
 }
 
+// Write writes data to the log file. Triggers rotation if the file exceeds MaxSizeMB.
 func (fw *FileWriter) Write(p []byte) (int, error) {
 	pLen := len(p)
 	if pLen == 0 {
@@ -248,6 +239,7 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// Close stops cleanup goroutines and closes the underlying file.
 func (fw *FileWriter) Close() error {
 	fw.cancel()
 	fw.wg.Wait()
@@ -376,18 +368,6 @@ func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error)
 	return newBufferedWriterWithConfig(w, cfg)
 }
 
-// NewBufferedWriterWithConfig creates a new BufferedWriter using the standard Config pattern.
-// Prefer this over the variadic NewBufferedWriter for explicit configuration.
-//
-// Example:
-//
-//	cfg := dd.DefaultBufferedWriterConfig()
-//	cfg.BufferSize = 4096
-//	bw, err := dd.NewBufferedWriterWithConfig(fileWriter, cfg)
-func NewBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
-	return newBufferedWriterWithConfig(w, cfg)
-}
-
 func newBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
 	if w == nil {
 		return nil, ErrNilWriter
@@ -466,7 +446,8 @@ func (bw *BufferedWriter) Close() error {
 		return nil
 	}
 
-	var errs []error
+	// Pre-allocate error slice: max 2 errors (flush + close writer)
+	errs := make([]error, 0, 2)
 
 	// Flush buffer BEFORE canceling context and stopping goroutine
 	// This ensures no data is lost if the goroutine was about to flush
@@ -527,6 +508,8 @@ func (bw *BufferedWriter) autoFlushRoutine() {
 	}
 }
 
+// MultiWriter distributes writes across multiple writers.
+// It uses atomic pointer for lock-free reads on the write hot path.
 type MultiWriter struct {
 	// writersPtr stores an immutable slice of writers using atomic pointer.
 	// This eliminates slice copying during write operations (hot path).
@@ -536,8 +519,9 @@ type MultiWriter struct {
 	closed     atomic.Bool
 }
 
+// NewMultiWriter creates a new MultiWriter. Nil writers are silently ignored.
 func NewMultiWriter(writers ...io.Writer) *MultiWriter {
-	var validWriters []io.Writer
+	validWriters := make([]io.Writer, 0, len(writers))
 	for _, w := range writers {
 		if w != nil {
 			validWriters = append(validWriters, w)
@@ -549,6 +533,7 @@ func NewMultiWriter(writers ...io.Writer) *MultiWriter {
 	return mw
 }
 
+// Write writes data to all registered writers. Collects errors from failed writers.
 func (mw *MultiWriter) Write(p []byte) (int, error) {
 	pLen := len(p)
 	if pLen == 0 {
@@ -599,6 +584,7 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 	return pLen, nil
 }
 
+// AddWriter adds a writer to the MultiWriter. Duplicate writers are silently accepted.
 func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	if mw == nil {
 		return ErrNilMultiWriter
@@ -637,6 +623,7 @@ func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	return nil
 }
 
+// RemoveWriter removes a writer from the MultiWriter.
 func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 	if mw == nil {
 		return ErrNilMultiWriter
@@ -668,6 +655,7 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 	return ErrWriterNotFound
 }
 
+// Close closes all registered writers that implement io.Closer.
 func (mw *MultiWriter) Close() error {
 	if !mw.closed.CompareAndSwap(false, true) {
 		return nil // Already closed
@@ -680,7 +668,7 @@ func (mw *MultiWriter) Close() error {
 	}
 	writers := *writersPtr
 
-	var errs []error
+	errs := make([]error, 0, len(writers))
 	for _, w := range writers {
 		if err := closeWriter(w); err != nil {
 			errs = append(errs, err)

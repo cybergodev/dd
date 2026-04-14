@@ -598,7 +598,11 @@ func TestVerifyAuditEventWithNilSigner(t *testing.T) {
 }
 
 func TestVerifyAuditEventWithEmptyEntry(t *testing.T) {
-	signer, _ := NewIntegritySigner(DefaultIntegrityConfig())
+	config, err := DefaultIntegrityConfigSafe()
+	if err != nil {
+		t.Fatalf("DefaultIntegrityConfigSafe error = %v", err)
+	}
+	signer, _ := NewIntegritySigner(config)
 
 	result := VerifyAuditEvent("", signer)
 	if result.Valid {

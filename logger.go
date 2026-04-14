@@ -149,21 +149,7 @@ func New(cfg ...Config) (*Logger, error) {
 	if len(cfg) == 0 {
 		return defaultConfig().build()
 	}
-	return NewWithConfig(cfg[0])
-}
-
-// NewWithConfig creates a new Logger using the standard Config pattern.
-// Prefer this over the variadic New for explicit configuration.
-// The caller starts from DefaultConfig(), modifies as needed, and passes
-// the Config directly.
-//
-// Example:
-//
-//	cfg := dd.DefaultConfig()
-//	cfg.Level = dd.LevelDebug
-//	logger, err := dd.NewWithConfig(cfg)
-func NewWithConfig(cfg Config) (*Logger, error) {
-	return cfg.build()
+	return cfg[0].build()
 }
 
 // newFromInternalConfig creates a Logger from the internal configuration.
@@ -991,7 +977,7 @@ func (l *Logger) closeWritersLocked(ctx context.Context) error {
 		return nil
 	}
 
-	var errs []error
+	errs := make([]error, 0, len(*currentWriters))
 	for _, writer := range *currentWriters {
 		// Check context for cancellation (Shutdown path)
 		if ctx != nil {
@@ -1389,13 +1375,6 @@ func DefaultInitError() error {
 	return nil
 }
 
-// defaultUsedFallbackFlag returns true if the default logger was created using
-// a fallback configuration due to an initialization error.
-// This indicates the default logger may not be configured as expected.
-func defaultUsedFallbackFlag() bool {
-	return defaultUsedFallback.Load()
-}
-
 // DefaultWithErr returns the default logger and any initialization error.
 // This is useful when you need to verify the default logger was created correctly.
 //
@@ -1430,7 +1409,7 @@ func Default() *Logger {
 	defaultOnce.Do(func() {
 		// Only create if not already set by SetDefault()
 		if defaultLogger.Load() == nil {
-			logger, err := NewWithConfig(DefaultConfig())
+			logger, err := DefaultConfig().build()
 			if err != nil {
 				// Store the error for later retrieval
 				defaultInitErr.Store(err)
@@ -1502,21 +1481,7 @@ func InitDefault(cfg ...Config) error {
 	} else {
 		c = DefaultConfig()
 	}
-	return InitDefaultWithConfig(c)
-}
-
-// InitDefaultWithConfig initializes the global default logger using the standard Config pattern.
-// Prefer this over the variadic InitDefault for explicit configuration.
-//
-// Example:
-//
-//	cfg := dd.DefaultConfig()
-//	cfg.Level = dd.LevelDebug
-//	if err := dd.InitDefaultWithConfig(cfg); err != nil {
-//	    log.Fatalf("Failed to initialize logger: %v", err)
-//	}
-func InitDefaultWithConfig(cfg Config) error {
-	logger, err := NewWithConfig(cfg)
+	logger, err := c.build()
 	if err != nil {
 		return err
 	}

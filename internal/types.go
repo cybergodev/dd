@@ -4,9 +4,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// MapKeyToString converts a reflect.Value map key to its string representation.
+// Shared by ConvertValue (internal) and FilterValueRecursive (security) to avoid duplication.
+func MapKeyToString(key reflect.Value) string {
+	switch k := key.Interface().(type) {
+	case string:
+		return k
+	case int:
+		return strconv.FormatInt(int64(k), 10)
+	case int64:
+		return strconv.FormatInt(k, 10)
+	case float64:
+		return strconv.FormatFloat(k, 'g', -1, 64)
+	case bool:
+		if k {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", k)
+	}
+}
 
 // DefaultJSONIndent is the default indentation string for JSON output.
 const DefaultJSONIndent = "  "
@@ -307,11 +330,11 @@ func convertMapWithDepth(val reflect.Value, depth int) any {
 		return nil
 	}
 
-	result := make(map[string]any)
 	keys := val.MapKeys()
+	result := make(map[string]any, len(keys))
 
 	for _, key := range keys {
-		keyStr := fmt.Sprintf("%v", key.Interface())
+		keyStr := MapKeyToString(key)
 		result[keyStr] = convertValueWithDepth(val.MapIndex(key).Interface(), depth+1)
 	}
 

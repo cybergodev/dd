@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -210,12 +211,16 @@ func (r *ContextExtractorRegistry) Extract(ctx context.Context) []Field {
 		return nil
 	}
 
-	// Pre-allocate result slice with estimated capacity
+	// Pre-allocate result slice with estimated capacity (1 field per extractor is typical)
 	var fields []Field
 	for _, extractor := range extractors {
 		// Execute extractor with panic recovery
 		extracted := r.executeExtractorWithRecovery(ctx, extractor)
 		if len(extracted) > 0 {
+			if fields == nil {
+				// Lazy allocation: only allocate when we have actual results
+				fields = make([]Field, 0, len(extractors))
+			}
 			fields = append(fields, extracted...)
 		}
 	}
@@ -334,6 +339,7 @@ var (
 )
 
 // stringValue converts any value to its string representation.
+// Uses type switch for common types to avoid fmt.Sprintf allocation.
 func stringValue(v any) string {
 	if v == nil {
 		return ""
@@ -341,6 +347,23 @@ func stringValue(v any) string {
 	switch val := v.(type) {
 	case string:
 		return val
+	case int:
+		return strconv.FormatInt(int64(val), 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case int32:
+		return strconv.FormatInt(int64(val), 10)
+	case uint:
+		return strconv.FormatUint(uint64(val), 10)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'g', -1, 64)
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
 	case fmt.Stringer:
 		return val.String()
 	default:

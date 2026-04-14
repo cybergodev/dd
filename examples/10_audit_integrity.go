@@ -82,7 +82,11 @@ func section2IntegritySigning() {
 	// Create integrity config with a secret key
 	// IMPORTANT: In production, use a securely generated key (32+ bytes)
 	// and store it securely (e.g., environment variable, secret manager)
-	integrityCfg := dd.DefaultIntegrityConfig()
+	integrityCfg, err := dd.DefaultIntegrityConfigSafe()
+	if err != nil {
+		fmt.Printf("  Error creating integrity config: %v\n", err)
+		return
+	}
 
 	// Create signer
 	signer, err := dd.NewIntegritySigner(integrityCfg)

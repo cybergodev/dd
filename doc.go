@@ -121,8 +121,11 @@
 //	cfg.Security = dd.DefaultSecurityConfig()
 //	logger, _ := dd.New(cfg)
 //
-//	logger.Info("User logged in", "password", "secret123")
-//	// Output: User logged in password=***REDACTED***
+//	logger.InfoWith("User logged in",
+//	    dd.String("username", "john"),
+//	    dd.String("password", "secret123"),
+//	)
+//	// Output: User logged in password=[REDACTED]
 //
 // # File Output with Rotation
 //
