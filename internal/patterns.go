@@ -439,7 +439,7 @@ var (
 	sortedSensitiveKeywords []string
 	// sortedExactMatchKeywords is a pre-sorted slice of ExactMatchOnlyKeywords for binary search
 	sortedExactMatchKeywords []string
-	// substringCheckKeywords contains keywords sorted by length (longest first) for substring matching
+	// substringCheckKeywords contains keywords sorted alphabetically for substring matching
 	substringCheckKeywords []string
 	// keywordInitOnce ensures keyword slices are initialized only once
 	keywordInitOnce sync.Once
@@ -454,13 +454,13 @@ func initKeywordSlices() {
 		for k := range SensitiveKeywords {
 			sortedSensitiveKeywords = append(sortedSensitiveKeywords, k)
 		}
-		sortStrings(sortedSensitiveKeywords)
+		sort.Strings(sortedSensitiveKeywords)
 
 		sortedExactMatchKeywords = make([]string, 0, len(ExactMatchOnlyKeywords))
 		for k := range ExactMatchOnlyKeywords {
 			sortedExactMatchKeywords = append(sortedExactMatchKeywords, k)
 		}
-		sortStrings(sortedExactMatchKeywords)
+		sort.Strings(sortedExactMatchKeywords)
 
 		// Initialize substring check keywords (same as sensitive keywords)
 		substringCheckKeywords = make([]string, len(sortedSensitiveKeywords))
@@ -468,10 +468,7 @@ func initKeywordSlices() {
 	})
 }
 
-// sortStrings sorts a string slice in place using the standard library.
-func sortStrings(s []string) {
-	sort.Strings(s)
-}
+
 
 // binarySearchString performs binary search on a sorted string slice.
 // Returns true if the target is found.

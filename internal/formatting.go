@@ -299,11 +299,7 @@ func (f *MessageFormatter) FormatArgsToString(args ...any) string {
 			return
 		}
 		// Zero the buffer contents for security
-		b := buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		argsBuilderPool.Put(buf)
 	}()
 
@@ -407,11 +403,7 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 			return
 		}
 		// Zero the buffer contents for security
-		b := buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		textBuilderPool.Put(buf)
 	}()
 

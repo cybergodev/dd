@@ -189,7 +189,11 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 	}
 
 	l.level.Store(int32(config.level))
-	l.securityConfig.Store(config.securityConfig)
+	if config.securityConfig != nil {
+		l.securityConfig.Store(config.securityConfig.Clone())
+	} else {
+		l.securityConfig.Store(DefaultSecurityConfig())
+	}
 
 	// Initialize field validation
 	if config.fieldValidation != nil && config.fieldValidation.Mode != FieldValidationNone {

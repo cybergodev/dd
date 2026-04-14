@@ -45,7 +45,7 @@ const (
 )
 
 // Pre-cached level strings to avoid allocations in hot path
-var levelStrings = [6]string{
+var levelStrings = [5]string{
 	"DEBUG",
 	"INFO",
 	"WARN",
@@ -350,7 +350,7 @@ func convertStructWithDepth(val reflect.Value, depth int) any {
 		field := val.Field(i)
 		fieldType := typ.Field(i)
 
-		if !field.CanInterface() && !fieldType.IsExported() {
+		if !field.CanInterface() {
 			continue
 		}
 

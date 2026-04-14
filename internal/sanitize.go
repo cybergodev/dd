@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"strings"
 	"sync"
 )
@@ -8,6 +9,25 @@ import (
 // HexChars is a package-level constant for hex digit conversion.
 // Avoids allocation in SanitizeControlChars hot path.
 const HexChars = "0123456789abcdef"
+
+// zeroBuffer securely zeroes the contents of a bytes.Buffer.
+// Used before returning buffers to sync.Pool to prevent sensitive data retention.
+func zeroBuffer(buf *bytes.Buffer) {
+	b := buf.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	buf.Reset()
+}
+
+// zeroSlice securely zeroes the contents of a byte slice pointer.
+// Used before returning slices to sync.Pool to prevent sensitive data retention.
+func zeroSlice(ptr *[]byte) {
+	for i := range *ptr {
+		(*ptr)[i] = 0
+	}
+	*ptr = (*ptr)[:0]
+}
 
 // sanitizeBufferPool pools byte slices for sanitization to reduce allocations.
 // Initial capacity of 256 bytes covers most common messages.
@@ -154,10 +174,7 @@ func SanitizeControlChars(message string) string {
 
 	// SECURITY: Zero buffer contents before returning to pool
 	// This prevents sensitive data from remaining in pooled memory
-	for i := range *resultPtr {
-		(*resultPtr)[i] = 0
-	}
-	*resultPtr = (*resultPtr)[:0]
+	zeroSlice(resultPtr)
 	sanitizeBufferPool.Put(resultPtr)
 
 	return resultStr

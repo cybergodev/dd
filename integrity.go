@@ -10,19 +10,9 @@ import (
 	"hash"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 )
-
-// hasherPool is a pool for reusing HMAC hashers.
-// This avoids allocating a new hasher for each Sign/Verify operation
-// while ensuring thread-safe concurrent access.
-var hasherPool = sync.Pool{
-	New: func() any {
-		return hmac.New(sha256.New, nil)
-	},
-}
 
 // HashAlgorithm defines the hash algorithm for integrity verification.
 type HashAlgorithm int
@@ -110,7 +100,8 @@ func DefaultIntegrityConfigSafe() (*IntegrityConfig, error) {
 }
 
 // IntegritySigner signs log entries for integrity verification.
-// It uses a sync.Pool for hashers to ensure thread-safe concurrent access.
+// It creates a new HMAC hasher for each Sign/Verify operation to ensure
+// correct key management without pool-related complications.
 type IntegritySigner struct {
 	config    *IntegrityConfig
 	secretKey []byte // Store key for creating new hashers
@@ -124,7 +115,7 @@ type IntegritySigner struct {
 func NewIntegritySigner(configs ...*IntegrityConfig) (*IntegritySigner, error) {
 	var config *IntegrityConfig
 	if len(configs) > 0 {
-		config = configs[0]
+		config = configs[0].Clone() // Deep copy to avoid mutating caller's config
 	}
 	if config == nil {
 		var err error
@@ -160,18 +151,12 @@ func NewIntegritySigner(configs ...*IntegrityConfig) (*IntegritySigner, error) {
 	}, nil
 }
 
-// getHasher returns an HMAC hasher from the pool, configured with the secret key.
-func (s *IntegritySigner) getHasher() hash.Hash {
-	h := hasherPool.Get().(hash.Hash)
-	h.Reset()
-	h.Write(s.secretKey)
-	return h
-}
-
-// putHasher returns a hasher to the pool after resetting it.
-func (s *IntegritySigner) putHasher(h hash.Hash) {
-	h.Reset()
-	hasherPool.Put(h)
+// newHasher creates a new HMAC-SHA256 hasher configured with the secret key.
+// Each operation gets a fresh hasher to avoid pool-related key management issues
+// where hmac.Reset() restores the original creation key rather than a nil-key state.
+// The allocation cost is negligible compared to the crypto operation itself.
+func (s *IntegritySigner) newHasher() hash.Hash {
+	return hmac.New(sha256.New, s.secretKey)
 }
 
 // signResult contains the components needed to build a signature string
@@ -199,10 +184,8 @@ func (s *IntegritySigner) signData(data *strings.Builder) signResult {
 		data.WriteString(strconv.FormatUint(sequence, 10))
 	}
 
-	// Get hasher from pool and compute HMAC
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
-
+	// Create a fresh hasher and compute HMAC
+	hasher := s.newHasher()
 	hasher.Write([]byte(data.String()))
 	signature := hasher.Sum(nil)
 
@@ -271,7 +254,7 @@ func (s *IntegritySigner) SignFields(message string, fields []Field) string {
 		data.WriteString("|")
 		data.WriteString(f.Key)
 		data.WriteString("=")
-		data.WriteString(fmt.Sprintf("%v", f.Value))
+		fmt.Fprintf(&data, "%v", f.Value)
 	}
 
 	result := s.signData(&data)
@@ -381,10 +364,8 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		data.WriteString(sequenceStr)
 	}
 
-	// Get hasher from pool and recompute signature
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
-
+	// Create a fresh hasher and recompute signature
+	hasher := s.newHasher()
 	hasher.Write([]byte(data.String()))
 	expectedSig := hasher.Sum(nil)
 
@@ -417,10 +398,8 @@ func (s *IntegritySigner) verifyLegacy(message, sigStr string) (*LogIntegrity, e
 	}
 
 	// For legacy signatures, we can only verify the message portion
-	// Get hasher from pool and recompute signature
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
-
+	// Create a fresh hasher and recompute signature
+	hasher := s.newHasher()
 	hasher.Write([]byte(message))
 	expectedSig := hasher.Sum(nil)
 

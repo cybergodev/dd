@@ -336,7 +336,9 @@ func (f *SensitiveDataFilter) WaitForGoroutines(timeout time.Duration) bool {
 	case <-done:
 		return true
 	case <-time.After(timeout):
-		// Timeout reached, signal the waiting goroutine to stop
+		// Timeout reached: mark closed so the waiting goroutine exits its loop,
+		// then broadcast to wake it from Cond.Wait().
+		f.closed.Store(true)
 		f.goroutineCond.Broadcast()
 		return f.activeGoroutines.Load() == 0
 	}
@@ -389,6 +391,7 @@ func (f *SensitiveDataFilter) Clone() *SensitiveDataFilter {
 		timeout:        f.timeout,
 		semaphore:      make(chan struct{}, maxConcurrentFilters),
 		hashSeed:       f.hashSeed, // Share the same seed (read-only after initialization)
+		goroutineCond:  *sync.NewCond(&sync.Mutex{}),
 	}
 	clone.enabled.Store(f.enabled.Load())
 
@@ -963,8 +966,9 @@ func (f *SensitiveDataFilter) filterInChunksWithContext(ctx context.Context, inp
 		}
 	}
 
-	// Final pass to ensure consistency and catch any remaining patterns
-	return f.replaceWithPatternWithContext(ctx, result.String(), pattern)
+	// The overlap-based chunking already covers boundary patterns between chunks.
+	// No additional full-string pass is needed — it would double the work for large inputs.
+	return result.String()
 }
 
 // replaceWithPatternWithContext applies regex replacement with context awareness.

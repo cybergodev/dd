@@ -136,11 +136,7 @@ func formatJSONFast(entry map[string]any) (string, bool) {
 	// SECURITY: Clear buffer contents before returning to pool
 	defer func() {
 		// Zero the buffer contents for security before returning to pool
-		bytes := buf.Bytes()
-		for i := range bytes {
-			bytes[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		jsonBuilderPool.Put(buf)
 	}()
 
@@ -397,7 +393,7 @@ func formatJSONStandard(entry map[string]any, opts *JSONOptions) string {
 		jsonEncoderPool.Put(pe)
 	}()
 
-	// Reset encoder settings (escape HTML is already false from pool init)
+	// Reset encoder settings (escape HTML is already true from pool init)
 	if opts.PrettyPrint {
 		pe.enc.SetIndent("", opts.Indent)
 	} else {
