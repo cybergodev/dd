@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,6 +29,19 @@ type LoggerRecorder struct {
 	format  LogFormat
 	buf     bytes.Buffer
 }
+
+// Pre-compiled regex patterns for text log entry parsing.
+// Compiled once at package init to avoid recompilation on every parse call.
+var (
+	// levelRegex extracts log level from format "[TIMESTAMP  LEVEL]"
+	levelRegex = regexp.MustCompile(`\[\d{4}-\d{2}-\d{2}T[^\]]*?\s+(\w+)\]`)
+	// tsRegex extracts timestamp from "[YYYY-MM-DDTHH:MM:SS..."
+	tsRegex = regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2}T[^\s]+)`)
+	// afterBracketRegex extracts content after "] file:line "
+	afterBracketRegex = regexp.MustCompile(`\] [^:]+:\d+ (.*)$`)
+	// fieldStartRegex finds where key=value pairs begin
+	fieldStartRegex = regexp.MustCompile(`\s+(\w+=)`)
+)
 
 // NewLoggerRecorder creates a new LoggerRecorder.
 // The format parameter specifies the expected log format for parsing.
@@ -121,14 +135,11 @@ func (r *LoggerRecorder) parseTextEntry(entry *LogEntry, raw string) {
 	raw = trimNewline(raw)
 
 	// Extract level - format is "[TIMESTAMP  LEVEL]"
-	// Level is right before the closing bracket with spaces
-	levelRegex := regexp.MustCompile(`\[\d{4}-\d{2}-\d{2}T[^\]]*?\s+(\w+)\]`)
 	if matches := levelRegex.FindStringSubmatch(raw); len(matches) > 1 {
 		entry.Level = parseLevelString(matches[1])
 	}
 
 	// Extract timestamp (ISO format with timezone)
-	tsRegex := regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2}T[^\s]+)`)
 	if matches := tsRegex.FindStringSubmatch(raw); len(matches) > 1 {
 		if t, err := time.Parse(time.RFC3339, matches[1]); err == nil {
 			entry.Timestamp = t
@@ -136,15 +147,10 @@ func (r *LoggerRecorder) parseTextEntry(entry *LogEntry, raw string) {
 	}
 
 	// Extract message and fields
-	// After "] file:line " comes the message, then optionally " key=value ..."
-	// Format: ] filename.go:123 message
-	afterBracket := regexp.MustCompile(`\] [^:]+:\d+ (.*)$`)
-	if matches := afterBracket.FindStringSubmatch(raw); len(matches) > 1 {
+	if matches := afterBracketRegex.FindStringSubmatch(raw); len(matches) > 1 {
 		remainder := matches[1]
-		// Split into message and key=value pairs
 		// Find where key=value pairs start
-		fieldStart := regexp.MustCompile(`\s+(\w+=)`)
-		if idx := fieldStart.FindStringIndex(remainder); idx != nil {
+		if idx := fieldStartRegex.FindStringIndex(remainder); idx != nil {
 			entry.Message = remainder[:idx[0]]
 			// Parse fields
 			fieldPart := remainder[idx[0]+1:]
@@ -172,7 +178,7 @@ func parseKeyValueFields(s string) []Field {
 	// Simple parsing - split by space, then by =
 	parts := splitFields(s)
 	for _, part := range parts {
-		if eq := findEqual(part); eq > 0 {
+		if eq := strings.IndexByte(part, '='); eq > 0 {
 			key := part[:eq]
 			value := part[eq+1:]
 			fields = append(fields, Field{Key: key, Value: value})
@@ -201,16 +207,6 @@ func splitFields(s string) []string {
 		result = append(result, s[start:])
 	}
 	return result
-}
-
-// findEqual finds the first '=' in a string
-func findEqual(s string) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '=' {
-			return i
-		}
-	}
-	return -1
 }
 
 // parseLevelString converts a level string to LogLevel
@@ -250,22 +246,39 @@ func extractFieldsFromJSON(data map[string]any) []Field {
 
 // NewLogger creates a new Logger configured to write to this recorder.
 // This is a convenience method for quickly creating a test logger.
+// Returns an error if logger creation fails.
 //
 // Example:
 //
 //	recorder := dd.NewLoggerRecorder()
-//	logger := recorder.NewLogger()
+//	logger, err := recorder.NewLogger()
+//	if err != nil {
+//	    t.Fatal(err)
+//	}
 //	logger.Info("test")
-func (r *LoggerRecorder) NewLogger(cfgs ...*Config) *Logger {
-	var cfg *Config
-	if len(cfgs) > 0 && cfgs[0] != nil {
-		cfg = cfgs[0]
+func (r *LoggerRecorder) NewLogger(cfg ...Config) (*Logger, error) {
+	var c Config
+	if len(cfg) > 0 {
+		c = cfg[0]
 	} else {
-		cfg = DefaultConfig()
+		c = DefaultConfig()
 	}
+	return r.NewLoggerWithConfig(c)
+}
+
+// NewLoggerWithConfig creates a new Logger configured to write to this recorder,
+// using the standard Config pattern.
+// Returns an error if logger creation fails.
+//
+// Example:
+//
+//	recorder := dd.NewLoggerRecorder()
+//	cfg := dd.DefaultConfig()
+//	cfg.Level = dd.LevelDebug
+//	logger, err := recorder.NewLoggerWithConfig(cfg)
+func (r *LoggerRecorder) NewLoggerWithConfig(cfg Config) (*Logger, error) {
 	cfg.Output = r.Writer()
-	logger, _ := New(cfg)
-	return logger
+	return NewWithConfig(cfg)
 }
 
 // Entries returns all captured log entries.
@@ -333,7 +346,7 @@ func (r *LoggerRecorder) ContainsMessage(msg string) bool {
 	defer r.mu.Unlock()
 
 	for _, entry := range r.entries {
-		if entry.Message == msg || contains(entry.Message, msg) {
+		if entry.Message == msg || strings.Contains(entry.Message, msg) {
 			return true
 		}
 	}
@@ -371,12 +384,4 @@ func (r *LoggerRecorder) GetFieldValue(key string) any {
 	return nil
 }
 
-// contains checks if s contains substr (case-sensitive)
-func contains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
+// parseLevelString converts a level string to LogLevel

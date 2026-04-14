@@ -46,7 +46,7 @@ const (
 // Example:
 //
 //	ctx := dd.WithTraceID(context.Background(), "trace-123")
-//	logger.InfoCtx(ctx, "processing request") // Will include trace_id field
+//	logger.InfoWith("processing request", dd.String("trace_id", dd.GetTraceID(ctx)))
 func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, ContextKeyTraceID, traceID)
 }
@@ -58,7 +58,7 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 // Example:
 //
 //	ctx := dd.WithSpanID(context.Background(), "span-456")
-//	logger.InfoCtx(ctx, "processing request") // Will include span_id field
+//	logger.InfoWith("processing request", dd.String("span_id", dd.GetSpanID(ctx)))
 func WithSpanID(ctx context.Context, spanID string) context.Context {
 	return context.WithValue(ctx, ContextKeySpanID, spanID)
 }
@@ -70,7 +70,7 @@ func WithSpanID(ctx context.Context, spanID string) context.Context {
 // Example:
 //
 //	ctx := dd.WithRequestID(context.Background(), "req-789")
-//	logger.InfoCtx(ctx, "processing request") // Will include request_id field
+//	logger.InfoWith("processing request", dd.String("request_id", dd.GetRequestID(ctx)))
 func WithRequestID(ctx context.Context, requestID string) context.Context {
 	return context.WithValue(ctx, ContextKeyRequestID, requestID)
 }
@@ -237,9 +237,9 @@ func (r *ContextExtractorRegistry) executeExtractorWithRecovery(ctx context.Cont
 	return extractor(ctx)
 }
 
-// Clone creates a copy of the registry with the same extractors.
+// clone creates a copy of the registry with the same extractors.
 // The extractors themselves are shared (functions are not copied).
-func (r *ContextExtractorRegistry) Clone() *ContextExtractorRegistry {
+func (r *ContextExtractorRegistry) clone() *ContextExtractorRegistry {
 	if r == nil {
 		return nil
 	}
@@ -258,8 +258,8 @@ func (r *ContextExtractorRegistry) Clone() *ContextExtractorRegistry {
 	return clone
 }
 
-// Count returns the number of registered extractors.
-func (r *ContextExtractorRegistry) Count() int {
+// count returns the number of registered extractors.
+func (r *ContextExtractorRegistry) count() int {
 	if r == nil {
 		return 0
 	}
@@ -270,8 +270,8 @@ func (r *ContextExtractorRegistry) Count() int {
 	return len(*extractorsPtr)
 }
 
-// Clear removes all registered extractors.
-func (r *ContextExtractorRegistry) Clear() {
+// clear removes all registered extractors.
+func (r *ContextExtractorRegistry) clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -285,10 +285,10 @@ var (
 	defaultRegistryOnce sync.Once
 )
 
-// DefaultContextExtractorRegistry returns a singleton registry with the default extractors.
+// defaultContextExtractorRegistry returns a singleton registry with the default extractors.
 // The default extractors extract trace_id, span_id, and request_id from context values.
 // This function is thread-safe and uses sync.Once for initialization.
-func DefaultContextExtractorRegistry() *ContextExtractorRegistry {
+func defaultContextExtractorRegistry() *ContextExtractorRegistry {
 	defaultRegistryOnce.Do(func() {
 		registry := NewContextExtractorRegistry()
 		registry.Add(defaultTraceIDExtractor)

@@ -18,7 +18,7 @@ import (
 func TestConfigChainMethods(t *testing.T) {
 	t.Run("DisableFiltering", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.Security = &SecurityConfig{SensitiveFilter: NewBasicSensitiveDataFilter()}
+		cfg.Security = &SecurityConfig{SensitiveFilter: newBasicSensitiveDataFilter()}
 		cfg.Security.SensitiveFilter = nil
 		if cfg.Security.SensitiveFilter != nil {
 			t.Error("DisableFiltering() should remove filter")
@@ -27,7 +27,7 @@ func TestConfigChainMethods(t *testing.T) {
 
 	t.Run("EnableBasicFiltering", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.Security = &SecurityConfig{SensitiveFilter: NewBasicSensitiveDataFilter()}
+		cfg.Security = &SecurityConfig{SensitiveFilter: newBasicSensitiveDataFilter()}
 		if cfg.Security.SensitiveFilter == nil {
 			t.Error("EnableBasicFiltering() should add filter")
 		}
@@ -43,7 +43,7 @@ func TestConfigChainMethods(t *testing.T) {
 
 	t.Run("ChainMultiple", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.Security = &SecurityConfig{SensitiveFilter: NewBasicSensitiveDataFilter()}
+		cfg.Security = &SecurityConfig{SensitiveFilter: newBasicSensitiveDataFilter()}
 
 		if cfg.Security.SensitiveFilter == nil {
 			t.Error("Chained EnableBasicFiltering failed")
@@ -566,13 +566,13 @@ func TestJSONOptionsCustomization(t *testing.T) {
 
 	// Check for custom field names
 	if jsonData["time"] == nil && jsonData["timestamp"] != nil {
-		t.Log("Custom timestamp field not being used, may need implementation update")
+		t.Error("Custom timestamp field name 'time' not applied")
 	}
 	if jsonData["severity"] == nil && jsonData["level"] != nil {
-		t.Log("Custom level field not being used, may need implementation update")
+		t.Error("Custom level field name 'severity' not applied")
 	}
 	if jsonData["msg"] == nil && jsonData["message"] != nil {
-		t.Log("Custom message field not being used, may need implementation update")
+		t.Error("Custom message field name 'msg' not applied")
 	}
 
 	// At least verify the message was logged
@@ -849,7 +849,7 @@ func TestPackageLevelPrintWithSecurityFilter(t *testing.T) {
 	cfg.Output = &buf
 	cfg.Level = LevelDebug
 	cfg.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(cfg)

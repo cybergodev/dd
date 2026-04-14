@@ -107,7 +107,7 @@ func FuzzSensitiveDataFilter(f *testing.F) {
 	internal.InitPatterns()
 
 	// Create filter
-	filter := NewBasicSensitiveDataFilter()
+	filter := newBasicSensitiveDataFilter()
 
 	// Seed corpus with various inputs
 	f.Add("hello world")
@@ -144,7 +144,7 @@ func FuzzSensitiveDataFilter(f *testing.F) {
 
 // FuzzFilterFieldValue tests field value filtering with random key-value pairs.
 func FuzzFilterFieldValue(f *testing.F) {
-	filter := NewBasicSensitiveDataFilter()
+	filter := newBasicSensitiveDataFilter()
 
 	// Seed corpus
 	f.Add("username", "john_doe")

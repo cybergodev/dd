@@ -439,7 +439,7 @@ func BenchmarkFilterComparison(b *testing.B) {
 	b.Run("BasicFilter", func(b *testing.B) {
 		cfg := DefaultConfig()
 		cfg.Outputs = []io.Writer{io.Discard}
-		cfg.Security = &SecurityConfig{SensitiveFilter: NewBasicSensitiveDataFilter()}
+		cfg.Security = &SecurityConfig{SensitiveFilter: newBasicSensitiveDataFilter()}
 
 		logger, _ := New(cfg)
 		defer logger.Close()
@@ -468,7 +468,7 @@ func BenchmarkFilterComparison(b *testing.B) {
 }
 
 func BenchmarkBasicFilter(b *testing.B) {
-	filter := NewBasicSensitiveDataFilter()
+	filter := newBasicSensitiveDataFilter()
 	message := "User password: secret123 and card 4532015112830366"
 
 	b.ResetTimer()

@@ -66,6 +66,7 @@ type Config struct {
 }
 
 // DefaultConfig creates a new Config with default settings.
+// Returns a value type; callers modify their own copy without affecting defaults.
 //
 // Example:
 //
@@ -73,12 +74,12 @@ type Config struct {
 //	cfg.Level = dd.LevelDebug
 //	cfg.Format = dd.FormatJSON
 //	logger, _ := dd.New(cfg)
-func DefaultConfig() *Config {
+func DefaultConfig() Config {
 	return defaultConfig()
 }
 
-func defaultConfig() *Config {
-	return &Config{
+func defaultConfig() Config {
+	return Config{
 		Level:         LevelInfo,
 		Format:        FormatText,
 		TimeFormat:    DefaultTimeFormat,
@@ -101,8 +102,8 @@ func defaultConfig() *Config {
 //	cfg := dd.DevelopmentConfig()
 //	cfg.File = &dd.FileConfig{Path: "dev.log"}
 //	logger, _ := dd.New(cfg)
-func DevelopmentConfig() *Config {
-	return &Config{
+func DevelopmentConfig() Config {
+	return Config{
 		Level:         LevelDebug,
 		Format:        FormatText,
 		TimeFormat:    devTimeFormat,
@@ -124,8 +125,8 @@ func DevelopmentConfig() *Config {
 //	cfg := dd.JSONConfig()
 //	cfg.Level = dd.LevelInfo
 //	logger, _ := dd.New(cfg)
-func JSONConfig() *Config {
-	return &Config{
+func JSONConfig() Config {
+	return Config{
 		Level:         LevelDebug,
 		Format:        FormatJSON,
 		TimeFormat:    time.RFC3339,
@@ -162,11 +163,11 @@ func JSONConfig() *Config {
 //	appCfg := base.Clone()
 //	appCfg.File = &dd.FileConfig{Path: "app.log"}
 //	logger, _ := dd.New(appCfg)
-func (c *Config) Clone() *Config {
+func (c *Config) Clone() Config {
 	if c == nil {
-		return nil
+		return Config{}
 	}
-	clone := &Config{
+	clone := Config{
 		Level:             c.Level,
 		Format:            c.Format,
 		TimeFormat:        c.TimeFormat,
@@ -224,7 +225,7 @@ func (c *Config) Clone() *Config {
 
 	// Copy Hooks
 	if c.Hooks != nil {
-		clone.Hooks = c.Hooks.Clone()
+		clone.Hooks = c.Hooks.clone()
 	}
 
 	// Copy Security config

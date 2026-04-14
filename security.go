@@ -378,7 +378,7 @@ func (f *SensitiveDataFilter) Close() bool {
 //   - counters (reset to 0)
 //
 // Returns nil if the receiver is nil.
-func (f *SensitiveDataFilter) Clone() *SensitiveDataFilter {
+func (f *SensitiveDataFilter) clone() *SensitiveDataFilter {
 	if f == nil {
 		return nil
 	}
@@ -1237,7 +1237,7 @@ func SecurityConfigForLevel(level SecurityLevel) *SecurityConfig {
 		return &SecurityConfig{
 			MaxMessageSize:  maxMessageSize,
 			MaxWriters:      maxWriterCount,
-			SensitiveFilter: NewBasicSensitiveDataFilter(),
+			SensitiveFilter: newBasicSensitiveDataFilter(),
 		}
 
 	case SecurityLevelStandard:
@@ -1255,8 +1255,9 @@ func SecurityConfigForLevel(level SecurityLevel) *SecurityConfig {
 			`(?i)(?:confidential|classified|secret|private)[\s:=]+[^\s]{1,256}\b`,
 			`(?i)(?:internal[_-]?id|employee[_-]?id|user[_-]?id)[\s:=]+[A-Za-z0-9]{4,50}\b`,
 		}
-		for _, p := range strictPatterns {
-			filter.AddPattern(p)
+		// Hardcoded patterns must compile - failure is a developer error.
+		if err := filter.AddPatterns(strictPatterns...); err != nil {
+			panic(fmt.Sprintf("dd: internal error: invalid strict pattern: %v", err))
 		}
 		return &SecurityConfig{
 			MaxMessageSize:  maxMessageSize,
@@ -1277,8 +1278,9 @@ func SecurityConfigForLevel(level SecurityLevel) *SecurityConfig {
 			// Any UUID-like identifier
 			`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`,
 		}
-		for _, p := range paranoidPatterns {
-			filter.AddPattern(p)
+		// Hardcoded patterns must compile - failure is a developer error.
+		if err := filter.AddPatterns(paranoidPatterns...); err != nil {
+			panic(fmt.Sprintf("dd: internal error: invalid paranoid pattern: %v", err))
 		}
 		return &SecurityConfig{
 			MaxMessageSize:  maxMessageSize,
@@ -1307,12 +1309,12 @@ func (sc *SecurityConfig) Clone() *SecurityConfig {
 		MaxWriters:     sc.MaxWriters,
 	}
 	if sc.SensitiveFilter != nil {
-		clone.SensitiveFilter = sc.SensitiveFilter.Clone()
+		clone.SensitiveFilter = sc.SensitiveFilter.clone()
 	}
 	return clone
 }
 
-func NewBasicSensitiveDataFilter() *SensitiveDataFilter {
+func newBasicSensitiveDataFilter() *SensitiveDataFilter {
 	internal.InitPatterns()
 	return newSensitiveDataFilterWithPatterns(internal.CompiledBasicPatterns, defaultFilterTimeout)
 }
@@ -1328,7 +1330,7 @@ func DefaultSecurityConfig() *SecurityConfig {
 	return &SecurityConfig{
 		MaxMessageSize:  maxMessageSize,
 		MaxWriters:      maxWriterCount,
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 }
 
@@ -1370,8 +1372,9 @@ func HealthcareConfig() *SecurityConfig {
 		`(?i)(?:patient[_-]?identifier|patient[_-]?code)[\s:=]+[A-Za-z0-9]{6,20}\b`,
 	}
 
-	for _, pattern := range healthcarePatterns {
-		filter.AddPattern(pattern)
+	// Hardcoded patterns must compile - failure is a developer error.
+	if err := filter.AddPatterns(healthcarePatterns...); err != nil {
+		panic(fmt.Sprintf("dd: internal error: invalid healthcare pattern: %v", err))
 	}
 
 	return &SecurityConfig{
@@ -1407,8 +1410,9 @@ func FinancialConfig() *SecurityConfig {
 		`(?i)(?:routing[_-]?number|aba|aba[_-]?rn|routing)[\s:=]+[0-9]{9}\b`,
 	}
 
-	for _, pattern := range financialPatterns {
-		filter.AddPattern(pattern)
+	// Hardcoded patterns must compile - failure is a developer error.
+	if err := filter.AddPatterns(financialPatterns...); err != nil {
+		panic(fmt.Sprintf("dd: internal error: invalid financial pattern: %v", err))
 	}
 
 	return &SecurityConfig{
@@ -1447,8 +1451,9 @@ func GovernmentConfig() *SecurityConfig {
 		`(?i)(?:case[_-]?number|file[_-]?number|docket)[\s:=]+[A-Za-z0-9]{5,20}\b`,
 	}
 
-	for _, pattern := range governmentPatterns {
-		filter.AddPattern(pattern)
+	// Hardcoded patterns must compile - failure is a developer error.
+	if err := filter.AddPatterns(governmentPatterns...); err != nil {
+		panic(fmt.Sprintf("dd: internal error: invalid government pattern: %v", err))
 	}
 
 	return &SecurityConfig{

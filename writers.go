@@ -66,12 +66,78 @@ func DefaultFileWriterConfig() FileWriterConfig {
 	}
 }
 
-func NewFileWriter(path string, opts ...FileWriterConfig) (*FileWriter, error) {
-	var config FileWriterConfig
-	if len(opts) > 0 {
-		config = opts[0]
-	}
+// Validate checks the FileWriterConfig for invalid values.
+// Returns an error if MaxSizeMB or MaxBackups exceed their limits.
+func (c FileWriterConfig) Validate() error {
+	return validateFileWriterConfig(&c)
+}
 
+// BufferedWriterConfig configures a BufferedWriter.
+// Use DefaultBufferedWriterConfig() for sensible defaults.
+type BufferedWriterConfig struct {
+	// BufferSize in bytes. Default: 1024 (1KB). Maximum: 10MB.
+	// Values below the default are clamped to the default.
+	BufferSize int
+	// FlushTime is the auto-flush interval. Default: 100ms.
+	// The writer flushes when the buffer is half full or after this interval.
+	FlushTime time.Duration
+}
+
+// DefaultBufferedWriterConfig returns BufferedWriterConfig with sensible defaults.
+// Default values: BufferSize=1KB, FlushTime=100ms.
+func DefaultBufferedWriterConfig() BufferedWriterConfig {
+	return BufferedWriterConfig{
+		BufferSize: defaultBufferSizeKB * 1024,
+		FlushTime:  autoFlushInterval,
+	}
+}
+
+// Validate checks the BufferedWriterConfig for invalid values.
+// Returns an error if BufferSize exceeds the maximum (10MB)
+// or if FlushTime is negative.
+func (c BufferedWriterConfig) Validate() error {
+	if c.BufferSize < 0 {
+		return fmt.Errorf("buffer size must be non-negative, got %d", c.BufferSize)
+	}
+	if c.BufferSize > maxBufferSizeKB*1024 {
+		return fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSizeKB/1024)
+	}
+	if c.FlushTime < 0 {
+		return fmt.Errorf("flush time must be non-negative, got %v", c.FlushTime)
+	}
+	return nil
+}
+
+// NewFileWriter creates a thread-safe file writer with rotation support.
+// The file is validated for security (path traversal, null bytes, symlinks).
+// If cfg fields are zero, DefaultFileWriterConfig values are applied.
+//
+// Example:
+//
+//	cfg := dd.DefaultFileWriterConfig()
+//	cfg.MaxSizeMB = 50
+//	fw, err := dd.NewFileWriter("logs/app.log", cfg)
+func NewFileWriter(path string, cfg ...FileWriterConfig) (*FileWriter, error) {
+	var config FileWriterConfig
+	if len(cfg) > 0 {
+		config = cfg[0]
+	}
+	return newFileWriterWithConfig(path, config)
+}
+
+// NewFileWriterWithConfig creates a thread-safe file writer using the standard Config pattern.
+// Prefer this over the variadic NewFileWriter for explicit configuration.
+//
+// Example:
+//
+//	cfg := dd.DefaultFileWriterConfig()
+//	cfg.MaxSizeMB = 50
+//	fw, err := dd.NewFileWriterWithConfig("logs/app.log", cfg)
+func NewFileWriterWithConfig(path string, cfg FileWriterConfig) (*FileWriter, error) {
+	return newFileWriterWithConfig(path, cfg)
+}
+
+func newFileWriterWithConfig(path string, config FileWriterConfig) (*FileWriter, error) {
 	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath)
 	if err != nil {
 		return nil, err
@@ -303,19 +369,42 @@ type BufferedWriter struct {
 // Remember to call Close() to ensure all buffered data is written to the underlying writer.
 // If bufferSize is not specified or is 0, 1KB is used.
 func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error) {
+	cfg := DefaultBufferedWriterConfig()
+	if len(bufferSizes) > 0 {
+		cfg.BufferSize = bufferSizes[0]
+	}
+	return newBufferedWriterWithConfig(w, cfg)
+}
+
+// NewBufferedWriterWithConfig creates a new BufferedWriter using the standard Config pattern.
+// Prefer this over the variadic NewBufferedWriter for explicit configuration.
+//
+// Example:
+//
+//	cfg := dd.DefaultBufferedWriterConfig()
+//	cfg.BufferSize = 4096
+//	bw, err := dd.NewBufferedWriterWithConfig(fileWriter, cfg)
+func NewBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
+	return newBufferedWriterWithConfig(w, cfg)
+}
+
+func newBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
 	if w == nil {
 		return nil, ErrNilWriter
 	}
 
-	bufferSize := 0
-	if len(bufferSizes) > 0 {
-		bufferSize = bufferSizes[0]
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+
+	bufferSize := cfg.BufferSize
 	if bufferSize < defaultBufferSizeKB*1024 {
 		bufferSize = defaultBufferSizeKB * 1024
 	}
-	if bufferSize > maxBufferSizeKB*1024 {
-		return nil, fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSizeKB/1024)
+
+	flushTime := cfg.FlushTime
+	if flushTime <= 0 {
+		flushTime = autoFlushInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -324,7 +413,7 @@ func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error)
 		writer:    w,
 		buffer:    bufio.NewWriterSize(w, bufferSize),
 		flushSize: bufferSize / autoFlushThreshold,
-		flushTime: autoFlushInterval,
+		flushTime: flushTime,
 		ctx:       ctx,
 		cancel:    cancel,
 		lastFlush: time.Now(),
@@ -444,6 +533,7 @@ type MultiWriter struct {
 	// The slice is replaced atomically when writers are added/removed.
 	writersPtr atomic.Pointer[[]io.Writer]
 	mu         sync.Mutex // protects AddWriter/RemoveWriter operations
+	closed     atomic.Bool
 }
 
 func NewMultiWriter(writers ...io.Writer) *MultiWriter {
@@ -486,11 +576,11 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 	for i := 0; i < writerCount; i++ {
 		n, err := writers[i].Write(p)
 		if err != nil {
-			allErrors.AddError(i, writers[i], err)
+			allErrors.addError(i, writers[i], err)
 			continue
 		}
 		if n != pLen {
-			allErrors.AddError(i, writers[i], fmt.Errorf("short write (%d/%d bytes)", n, pLen))
+			allErrors.addError(i, writers[i], fmt.Errorf("short write (%d/%d bytes)", n, pLen))
 			continue
 		}
 		successCount++
@@ -579,6 +669,10 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 }
 
 func (mw *MultiWriter) Close() error {
+	if !mw.closed.CompareAndSwap(false, true) {
+		return nil // Already closed
+	}
+
 	// Load writers atomically
 	writersPtr := mw.writersPtr.Load()
 	if writersPtr == nil {

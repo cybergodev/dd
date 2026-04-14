@@ -126,47 +126,6 @@ func TestConfigFileOutput(t *testing.T) {
 	})
 }
 
-func TestConfigLevelFields(t *testing.T) {
-	tests := []struct {
-		level    LogLevel
-		expected LogLevel
-	}{
-		{LevelDebug, LevelDebug},
-		{LevelInfo, LevelInfo},
-		{LevelWarn, LevelWarn},
-		{LevelError, LevelError},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected.String(), func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Level = tt.level
-
-			if cfg.Level != tt.expected {
-				t.Errorf("Expected level %v, got %v", tt.expected, cfg.Level)
-			}
-		})
-	}
-}
-
-func TestConfigFormatFields(t *testing.T) {
-	t.Run("FormatJSON", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Format = FormatJSON
-		if cfg.Format != FormatJSON {
-			t.Errorf("Expected FormatJSON, got %v", cfg.Format)
-		}
-	})
-
-	t.Run("FormatText", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Format = FormatText
-		if cfg.Format != FormatText {
-			t.Errorf("Expected FormatText, got %v", cfg.Format)
-		}
-	})
-}
-
 func TestBuilderConfigClone(t *testing.T) {
 	t.Run("clone preserves settings", func(t *testing.T) {
 		original := DefaultConfig()
@@ -236,7 +195,8 @@ func TestBuilderConfigClone(t *testing.T) {
 	t.Run("clone nil config", func(t *testing.T) {
 		var nilCfg *Config
 		cloned := nilCfg.Clone()
-		if cloned != nil {
+		// Cloning nil pointer returns zero-value Config
+		if cloned.Level != 0 || cloned.Format != 0 {
 			t.Error("Clone of nil config should return nil")
 		}
 	})
@@ -402,8 +362,8 @@ func TestConfigAddHook(t *testing.T) {
 	if cfg.Hooks == nil {
 		t.Fatal("Expected Hooks to be initialized")
 	}
-	if cfg.Hooks.Count() != 1 {
-		t.Errorf("Expected 1 hook, got %d", cfg.Hooks.Count())
+	if cfg.Hooks.count() != 1 {
+		t.Errorf("Expected 1 hook, got %d", cfg.Hooks.count())
 	}
 }
 

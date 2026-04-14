@@ -102,51 +102,51 @@ type Hook func(ctx context.Context, hookCtx *HookContext) error
 // and logged to stderr.
 type HookErrorHandler func(event HookEvent, hookCtx *HookContext, err error)
 
-// DefaultHookErrorHandler logs hook errors to stderr.
+// defaultHookErrorHandler logs hook errors to stderr.
 // This is the default error handler used when no custom handler is set.
-func DefaultHookErrorHandler(event HookEvent, hookCtx *HookContext, err error) {
+func defaultHookErrorHandler(event HookEvent, hookCtx *HookContext, err error) {
 	fmt.Fprintf(os.Stderr, "dd: hook error for event %s: %v\n", event, err)
 }
 
-// HookErrorRecorder records hook errors for later inspection.
+// hookErrorRecorder records hook errors for later inspection.
 // This is useful for testing or monitoring hook health.
 //
 // Usage:
 //
-//	recorder := NewHookErrorRecorder()
-//	registry := NewHookRegistryWithErrorHandler(recorder.Handler())
+//	recorder := newHookErrorRecorder()
+//	registry := newHookRegistryWithErrorHandler(recorder.handler())
 //	// ... after hooks run ...
-//	errors := recorder.Errors()
-//	for _, err := range errors {
+//	errs := recorder.errors()
+//	for _, err := range errs {
 //	    log.Printf("Hook error: %v", err)
 //	}
-type HookErrorRecorder struct {
-	mu     sync.Mutex
-	errors []HookErrorInfo
+type hookErrorRecorder struct {
+	mu    sync.Mutex
+	errs  []hookErrorInfo
 }
 
-// HookErrorInfo contains information about a hook error.
-type HookErrorInfo struct {
+// hookErrorInfo contains information about a hook error.
+type hookErrorInfo struct {
 	Event     HookEvent
 	Timestamp time.Time
 	Error     error
 	Message   string // The log message being processed (if applicable)
 }
 
-// NewHookErrorRecorder creates a new HookErrorRecorder.
-func NewHookErrorRecorder() *HookErrorRecorder {
-	return &HookErrorRecorder{
-		errors: make([]HookErrorInfo, 0),
+// newHookErrorRecorder creates a new hookErrorRecorder.
+func newHookErrorRecorder() *hookErrorRecorder {
+	return &hookErrorRecorder{
+		errs: make([]hookErrorInfo, 0),
 	}
 }
 
-// Handler returns a HookErrorHandler that records errors to this recorder.
-func (r *HookErrorRecorder) Handler() HookErrorHandler {
+// handler returns a HookErrorHandler that records errors to this recorder.
+func (r *hookErrorRecorder) handler() HookErrorHandler {
 	return func(event HookEvent, hookCtx *HookContext, err error) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 
-		info := HookErrorInfo{
+		info := hookErrorInfo{
 			Event:     event,
 			Timestamp: time.Now(),
 			Error:     err,
@@ -155,39 +155,39 @@ func (r *HookErrorRecorder) Handler() HookErrorHandler {
 			info.Message = hookCtx.Message
 		}
 
-		r.errors = append(r.errors, info)
+		r.errs = append(r.errs, info)
 	}
 }
 
-// Errors returns all recorded errors.
-func (r *HookErrorRecorder) Errors() []HookErrorInfo {
+// errors returns all recorded errors.
+func (r *hookErrorRecorder) errors() []hookErrorInfo {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	result := make([]HookErrorInfo, len(r.errors))
-	copy(result, r.errors)
+	result := make([]hookErrorInfo, len(r.errs))
+	copy(result, r.errs)
 	return result
 }
 
-// Count returns the number of recorded errors.
-func (r *HookErrorRecorder) Count() int {
+// count returns the number of recorded errors.
+func (r *hookErrorRecorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.errors)
+	return len(r.errs)
 }
 
-// Clear removes all recorded errors.
-func (r *HookErrorRecorder) Clear() {
+// clear removes all recorded errors.
+func (r *hookErrorRecorder) clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.errors = r.errors[:0]
+	r.errs = r.errs[:0]
 }
 
-// HasErrors returns true if any errors have been recorded.
-func (r *HookErrorRecorder) HasErrors() bool {
+// hasErrors returns true if any errors have been recorded.
+func (r *hookErrorRecorder) hasErrors() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.errors) > 0
+	return len(r.errs) > 0
 }
 
 // HookRegistry manages a collection of hooks organized by event type.
@@ -212,10 +212,10 @@ func NewHookRegistry() *HookRegistry {
 	}
 }
 
-// NewHookRegistryWithErrorHandler creates a registry with a custom error handler.
+// newHookRegistryWithErrorHandler creates a registry with a custom error handler.
 // When an error handler is set, all hooks are executed even if some fail,
 // and errors are passed to the handler instead of being returned immediately.
-func NewHookRegistryWithErrorHandler(handler HookErrorHandler) *HookRegistry {
+func newHookRegistryWithErrorHandler(handler HookErrorHandler) *HookRegistry {
 	return &HookRegistry{
 		hooks:        make(map[HookEvent][]Hook),
 		errorHandler: handler,
@@ -316,9 +316,9 @@ func (r *HookRegistry) executeHookWithRecovery(ctx context.Context, hook Hook, h
 	return hook(ctx, hookCtx)
 }
 
-// Clone creates a copy of the registry with the same hooks and error handler.
+// clone creates a copy of the registry with the same hooks and error handler.
 // The hooks themselves are shared (functions are not copied).
-func (r *HookRegistry) Clone() *HookRegistry {
+func (r *HookRegistry) clone() *HookRegistry {
 	if r == nil {
 		return nil
 	}
@@ -338,8 +338,8 @@ func (r *HookRegistry) Clone() *HookRegistry {
 	return clone
 }
 
-// Count returns the total number of registered hooks.
-func (r *HookRegistry) Count() int {
+// count returns the total number of registered hooks.
+func (r *HookRegistry) count() int {
 	if r == nil {
 		return 0
 	}
@@ -353,8 +353,8 @@ func (r *HookRegistry) Count() int {
 	return count
 }
 
-// CountFor returns the number of hooks registered for a specific event.
-func (r *HookRegistry) CountFor(event HookEvent) int {
+// countFor returns the number of hooks registered for a specific event.
+func (r *HookRegistry) countFor(event HookEvent) int {
 	if r == nil {
 		return 0
 	}

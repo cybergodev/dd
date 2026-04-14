@@ -30,8 +30,8 @@ type internalConfig struct {
 
 // build creates a new Logger from the configuration.
 // This is an internal method used by dd.New().
-func (c *Config) build() (*Logger, error) {
-	if err := c.validate(); err != nil {
+func (c Config) build() (*Logger, error) {
+	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -99,7 +99,7 @@ func (c *Config) build() (*Logger, error) {
 }
 
 // createFileWriter creates a FileWriter from FileConfig.
-func (c *Config) createFileWriter() (*FileWriter, error) {
+func (c Config) createFileWriter() (*FileWriter, error) {
 	if c.File == nil || c.File.Path == "" {
 		return nil, nil
 	}
@@ -114,12 +114,9 @@ func (c *Config) createFileWriter() (*FileWriter, error) {
 	return NewFileWriter(c.File.Path, config)
 }
 
-// validate validates the configuration.
-func (c *Config) validate() error {
-	if c == nil {
-		return ErrNilConfig
-	}
-
+// Validate validates the configuration and returns an error if any field is invalid.
+// Call this before passing a Config to New() to catch configuration errors early.
+func (c Config) Validate() error {
 	// Validate log level
 	if c.Level < LevelDebug || c.Level > LevelFatal {
 		return fmt.Errorf("%w: %d (valid range: %d-%d)", ErrInvalidLevel, c.Level, LevelDebug, LevelFatal)

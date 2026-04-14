@@ -13,7 +13,7 @@ import (
 // TestLoggerBuilder provides a fluent API for creating test loggers.
 // This reduces repetitive DefaultConfig() + modification patterns across tests.
 type TestLoggerBuilder struct {
-	cfg *Config
+	cfg Config
 }
 
 // NewTestLoggerBuilder creates a new test logger builder with default config.
@@ -106,10 +106,11 @@ func (b *TestLoggerBuilder) BuildNoError() (*Logger, error) {
 	return New(b.cfg)
 }
 
-// Config returns the underlying config for advanced modifications.
+// Config returns a pointer to the underlying config for advanced modifications.
 func (b *TestLoggerBuilder) Config() *Config {
-	return b.cfg
+	return &b.cfg
 }
+
 
 // ============================================================================
 // ASSERTION HELPERS
@@ -195,7 +196,7 @@ func ResetAndGet(buf *bytes.Buffer) string {
 
 // NewTestConfigWithBuffer returns a default config with output set to the buffer.
 // This is a convenience function for simple test cases.
-func NewTestConfigWithBuffer(buf *bytes.Buffer) *Config {
+func NewTestConfigWithBuffer(buf *bytes.Buffer) Config {
 	cfg := DefaultConfig()
 	cfg.Output = buf
 	cfg.Level = LevelDebug
@@ -203,7 +204,7 @@ func NewTestConfigWithBuffer(buf *bytes.Buffer) *Config {
 }
 
 // NewTestJSONConfigWithBuffer returns a JSON format config with output set to the buffer.
-func NewTestJSONConfigWithBuffer(buf *bytes.Buffer) *Config {
+func NewTestJSONConfigWithBuffer(buf *bytes.Buffer) Config {
 	cfg := DefaultConfig()
 	cfg.Output = buf
 	cfg.Level = LevelDebug

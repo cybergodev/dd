@@ -141,10 +141,18 @@ type AuditConfig struct {
 	IntegritySigner *IntegritySigner
 }
 
+// Validate validates the AuditConfig and returns an error if any field is invalid.
+func (c AuditConfig) Validate() error {
+	if c.BufferSize < 0 {
+		return fmt.Errorf("audit buffer size must be non-negative, got %d", c.BufferSize)
+	}
+	return nil
+}
+
 // DefaultAuditConfig returns an AuditConfig with sensible defaults.
 // Note: Audit logging is enabled by default for security monitoring.
-func DefaultAuditConfig() *AuditConfig {
-	return &AuditConfig{
+func DefaultAuditConfig() AuditConfig {
+	return AuditConfig{
 		Enabled:          true,
 		Output:           os.Stderr,
 		BufferSize:       1000,
@@ -172,17 +180,36 @@ type AuditLogger struct {
 
 // NewAuditLogger creates a new AuditLogger with the given configuration.
 // If no configuration is provided, DefaultAuditConfig() is used.
-func NewAuditLogger(configs ...*AuditConfig) *AuditLogger {
-	var config *AuditConfig
-	if len(configs) > 0 {
-		config = configs[0]
-	}
-	if config == nil {
+// Returns an error if the configuration is invalid.
+func NewAuditLogger(cfg ...AuditConfig) (*AuditLogger, error) {
+	var config AuditConfig
+	if len(cfg) > 0 {
+		config = cfg[0]
+	} else {
 		config = DefaultAuditConfig()
+	}
+	return newAuditLoggerWithConfig(config)
+}
+
+// NewAuditLoggerWithConfig creates a new AuditLogger using the standard Config pattern.
+// Prefer this over the variadic NewAuditLogger for explicit configuration.
+//
+// Example:
+//
+//	cfg := dd.DefaultAuditConfig()
+//	cfg.BufferSize = 2000
+//	al, err := dd.NewAuditLoggerWithConfig(cfg)
+func NewAuditLoggerWithConfig(cfg AuditConfig) (*AuditLogger, error) {
+	return newAuditLoggerWithConfig(cfg)
+}
+
+func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 
 	al := &AuditLogger{
-		config: config,
+		config: &config,
 		events: make(chan AuditEvent, config.BufferSize),
 		done:   make(chan struct{}),
 	}
@@ -192,7 +219,7 @@ func NewAuditLogger(configs ...*AuditConfig) *AuditLogger {
 		go al.processEvents()
 	}
 
-	return al
+	return al, nil
 }
 
 // Log records an audit event asynchronously.
@@ -421,12 +448,12 @@ func (al *AuditLogger) Close() error {
 
 // Clone creates a copy of the AuditConfig.
 // Note: IntegritySigner is shared (not cloned) as it maintains internal state.
-func (c *AuditConfig) Clone() *AuditConfig {
+func (c *AuditConfig) Clone() AuditConfig {
 	if c == nil {
-		return nil
+		return AuditConfig{}
 	}
 
-	return &AuditConfig{
+	return AuditConfig{
 		Enabled:          c.Enabled,
 		Output:           c.Output,
 		BufferSize:       c.BufferSize,

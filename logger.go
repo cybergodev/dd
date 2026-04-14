@@ -141,18 +141,29 @@ var (
 //	cfg.Level = dd.LevelDebug
 //	cfg.Format = dd.FormatJSON
 //	logger, _ := dd.New(cfg)
-func New(cfgs ...*Config) (*Logger, error) {
+func New(cfg ...Config) (*Logger, error) {
 	// Return error if multiple configs provided - this is likely a developer mistake
-	if len(cfgs) > 1 {
-		return nil, fmt.Errorf("%w: %d configs provided, expected 0 or 1", ErrMultipleConfigs, len(cfgs))
+	if len(cfg) > 1 {
+		return nil, fmt.Errorf("%w: %d configs provided, expected 0 or 1", ErrMultipleConfigs, len(cfg))
 	}
-	if len(cfgs) == 0 {
+	if len(cfg) == 0 {
 		return defaultConfig().build()
 	}
-	if cfgs[0] == nil {
-		return nil, ErrNilConfig
-	}
-	return cfgs[0].build()
+	return NewWithConfig(cfg[0])
+}
+
+// NewWithConfig creates a new Logger using the standard Config pattern.
+// Prefer this over the variadic New for explicit configuration.
+// The caller starts from DefaultConfig(), modifies as needed, and passes
+// the Config directly.
+//
+// Example:
+//
+//	cfg := dd.DefaultConfig()
+//	cfg.Level = dd.LevelDebug
+//	logger, err := dd.NewWithConfig(cfg)
+func NewWithConfig(cfg Config) (*Logger, error) {
+	return cfg.build()
 }
 
 // newFromInternalConfig creates a Logger from the internal configuration.
@@ -210,8 +221,8 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 	}
 
 	// Initialize hooks
-	if config.hooks != nil && config.hooks.Count() > 0 {
-		l.hooks.Store(config.hooks.Clone())
+	if config.hooks != nil && config.hooks.count() > 0 {
+		l.hooks.Store(config.hooks.clone())
 	}
 
 	// Initialize sampling
@@ -389,7 +400,7 @@ func (l *Logger) AddContextExtractor(extractor ContextExtractor) error {
 	// Load existing registry or create new one
 	var registry *ContextExtractorRegistry
 	if v := l.contextExtractors.Load(); v != nil {
-		registry = v.(*ContextExtractorRegistry).Clone()
+		registry = v.(*ContextExtractorRegistry).clone()
 	} else {
 		registry = NewContextExtractorRegistry()
 	}
@@ -458,7 +469,7 @@ func (l *Logger) AddHook(event HookEvent, hook Hook) error {
 	// Load existing registry or create new one
 	var registry *HookRegistry
 	if v := l.hooks.Load(); v != nil {
-		registry = v.(*HookRegistry).Clone()
+		registry = v.(*HookRegistry).clone()
 	} else {
 		registry = NewHookRegistry()
 	}
@@ -485,7 +496,7 @@ func (l *Logger) SetHooks(registry *HookRegistry) error {
 		return nil
 	}
 
-	l.hooks.Store(registry.Clone())
+	l.hooks.Store(registry.clone())
 	return nil
 }
 
@@ -493,7 +504,7 @@ func (l *Logger) SetHooks(registry *HookRegistry) error {
 // Returns nil if no hooks are registered.
 func (l *Logger) GetHooks() *HookRegistry {
 	if v := l.hooks.Load(); v != nil {
-		return v.(*HookRegistry).Clone()
+		return v.(*HookRegistry).clone()
 	}
 	return nil
 }
@@ -972,6 +983,33 @@ func (l *Logger) handleWriteError(writer io.Writer, err error) {
 // Lifecycle Methods
 // ============================================================================
 
+// closeWritersLocked closes all writers. Must be called with writersMu held.
+// If ctx is provided (non-nil), it checks for cancellation between writer closes.
+func (l *Logger) closeWritersLocked(ctx context.Context) error {
+	currentWriters := l.writersPtr.Swap(nil)
+	if currentWriters == nil {
+		return nil
+	}
+
+	var errs []error
+	for _, writer := range *currentWriters {
+		// Check context for cancellation (Shutdown path)
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+		}
+
+		if err := closeWriter(writer); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close writer: %w", err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
 // Close closes the logger and all associated resources (thread-safe).
 // If multiple writers fail to close, all errors are collected and returned.
 // Triggers OnClose hooks before closing writers.
@@ -992,20 +1030,7 @@ func (l *Logger) Close() error {
 	l.writersMu.Lock()
 	defer l.writersMu.Unlock()
 
-	// Load and clear writers atomically
-	currentWriters := l.writersPtr.Swap(nil)
-	if currentWriters == nil {
-		return nil
-	}
-
-	var errs []error
-	for _, writer := range *currentWriters {
-		if err := closeWriter(writer); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close writer: %w", err))
-		}
-	}
-
-	return errors.Join(errs...)
+	return l.closeWritersLocked(nil) //nolint:staticcheck // intentional: Close() has no context
 }
 
 // Shutdown gracefully closes the logger with a timeout.
@@ -1051,29 +1076,7 @@ func (l *Logger) Shutdown(ctx context.Context) error {
 		l.writersMu.Lock()
 		defer l.writersMu.Unlock()
 
-		// Load and clear writers atomically
-		currentWriters := l.writersPtr.Swap(nil)
-		if currentWriters == nil {
-			done <- nil
-			return
-		}
-
-		var errs []error
-		for _, writer := range *currentWriters {
-			// Check context for cancellation
-			select {
-			case <-ctx.Done():
-				done <- ctx.Err()
-				return
-			default:
-			}
-
-			if err := closeWriter(writer); err != nil {
-				errs = append(errs, fmt.Errorf("failed to close writer: %w", err))
-			}
-		}
-
-		done <- errors.Join(errs...)
+		done <- l.closeWritersLocked(ctx)
 	}()
 
 	// Wait for completion or timeout
@@ -1386,10 +1389,10 @@ func DefaultInitError() error {
 	return nil
 }
 
-// DefaultUsedFallback returns true if the default logger was created using
+// defaultUsedFallbackFlag returns true if the default logger was created using
 // a fallback configuration due to an initialization error.
 // This indicates the default logger may not be configured as expected.
-func DefaultUsedFallback() bool {
+func defaultUsedFallbackFlag() bool {
 	return defaultUsedFallback.Load()
 }
 
@@ -1427,7 +1430,7 @@ func Default() *Logger {
 	defaultOnce.Do(func() {
 		// Only create if not already set by SetDefault()
 		if defaultLogger.Load() == nil {
-			logger, err := New()
+			logger, err := NewWithConfig(DefaultConfig())
 			if err != nil {
 				// Store the error for later retrieval
 				defaultInitErr.Store(err)
@@ -1492,12 +1495,28 @@ func SetDefault(logger *Logger) {
 //	if err := dd.InitDefault(cfg); err != nil {
 //	    log.Fatalf("Failed to initialize logger: %v", err)
 //	}
-func InitDefault(cfg *Config) error {
-	if cfg == nil {
-		cfg = DefaultConfig()
+func InitDefault(cfg ...Config) error {
+	var c Config
+	if len(cfg) > 0 {
+		c = cfg[0]
+	} else {
+		c = DefaultConfig()
 	}
+	return InitDefaultWithConfig(c)
+}
 
-	logger, err := New(cfg)
+// InitDefaultWithConfig initializes the global default logger using the standard Config pattern.
+// Prefer this over the variadic InitDefault for explicit configuration.
+//
+// Example:
+//
+//	cfg := dd.DefaultConfig()
+//	cfg.Level = dd.LevelDebug
+//	if err := dd.InitDefaultWithConfig(cfg); err != nil {
+//	    log.Fatalf("Failed to initialize logger: %v", err)
+//	}
+func InitDefaultWithConfig(cfg Config) error {
+	logger, err := NewWithConfig(cfg)
 	if err != nil {
 		return err
 	}

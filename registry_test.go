@@ -17,8 +17,8 @@ func TestNewHookRegistry(t *testing.T) {
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
-	if registry.Count() != 0 {
-		t.Errorf("expected empty registry, got %d hooks", registry.Count())
+	if registry.count() != 0 {
+		t.Errorf("expected empty registry, got %d hooks", registry.count())
 	}
 }
 
@@ -30,23 +30,23 @@ func TestHookRegistry_Add(t *testing.T) {
 	}
 	registry.Add(HookBeforeLog, hook)
 
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 hook, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 hook, got %d", registry.count())
 	}
-	if registry.CountFor(HookBeforeLog) != 1 {
-		t.Errorf("expected 1 BeforeLog hook, got %d", registry.CountFor(HookBeforeLog))
+	if registry.countFor(HookBeforeLog) != 1 {
+		t.Errorf("expected 1 BeforeLog hook, got %d", registry.countFor(HookBeforeLog))
 	}
 
 	// Test adding nil hook (should be ignored)
 	registry.Add(HookBeforeLog, nil)
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 hook after adding nil, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 hook after adding nil, got %d", registry.count())
 	}
 
 	// Add hook for different event
 	registry.Add(HookAfterLog, hook)
-	if registry.Count() != 2 {
-		t.Errorf("expected 2 hooks, got %d", registry.Count())
+	if registry.count() != 2 {
+		t.Errorf("expected 2 hooks, got %d", registry.count())
 	}
 }
 
@@ -58,16 +58,16 @@ func TestHookRegistry_Remove(t *testing.T) {
 	registry.Add(HookBeforeLog, hook)
 	registry.Add(HookAfterLog, hook)
 
-	if registry.Count() != 2 {
-		t.Fatalf("expected 2 hooks, got %d", registry.Count())
+	if registry.count() != 2 {
+		t.Fatalf("expected 2 hooks, got %d", registry.count())
 	}
 
 	registry.Remove(HookBeforeLog)
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 hook after remove, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 hook after remove, got %d", registry.count())
 	}
-	if registry.CountFor(HookBeforeLog) != 0 {
-		t.Errorf("expected 0 BeforeLog hooks, got %d", registry.CountFor(HookBeforeLog))
+	if registry.countFor(HookBeforeLog) != 0 {
+		t.Errorf("expected 0 BeforeLog hooks, got %d", registry.countFor(HookBeforeLog))
 	}
 }
 
@@ -174,13 +174,13 @@ func TestHookRegistry_Clone(t *testing.T) {
 		return nil
 	})
 
-	clone := registry.Clone()
+	clone := registry.clone()
 	if clone == nil {
 		t.Fatal("expected non-nil clone")
 	}
 
-	if clone.Count() != registry.Count() {
-		t.Errorf("clone count mismatch: got %d, want %d", clone.Count(), registry.Count())
+	if clone.count() != registry.count() {
+		t.Errorf("clone count mismatch: got %d, want %d", clone.count(), registry.count())
 	}
 
 	// Modify original and verify clone is independent
@@ -188,13 +188,13 @@ func TestHookRegistry_Clone(t *testing.T) {
 		return nil
 	})
 
-	if registry.Count() == clone.Count() {
+	if registry.count() == clone.count() {
 		t.Error("clone should be independent of original")
 	}
 
 	// Test nil registry
 	var nilRegistry *HookRegistry
-	if nilRegistry.Clone() != nil {
+	if nilRegistry.clone() != nil {
 		t.Error("expected nil for nil registry clone")
 	}
 }
@@ -208,13 +208,13 @@ func TestHookRegistry_Clear(t *testing.T) {
 		return nil
 	})
 
-	if registry.Count() != 2 {
-		t.Fatalf("expected 2 hooks, got %d", registry.Count())
+	if registry.count() != 2 {
+		t.Fatalf("expected 2 hooks, got %d", registry.count())
 	}
 
 	registry.Clear()
-	if registry.Count() != 0 {
-		t.Errorf("expected 0 hooks after clear, got %d", registry.Count())
+	if registry.count() != 0 {
+		t.Errorf("expected 0 hooks after clear, got %d", registry.count())
 	}
 }
 
@@ -228,11 +228,11 @@ func TestHookRegistry_ClearFor(t *testing.T) {
 	})
 
 	registry.ClearFor(HookBeforeLog)
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 hook after ClearFor, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 hook after ClearFor, got %d", registry.count())
 	}
-	if registry.CountFor(HookBeforeLog) != 0 {
-		t.Errorf("expected 0 BeforeLog hooks, got %d", registry.CountFor(HookBeforeLog))
+	if registry.countFor(HookBeforeLog) != 0 {
+		t.Errorf("expected 0 BeforeLog hooks, got %d", registry.countFor(HookBeforeLog))
 	}
 }
 
@@ -307,15 +307,15 @@ func TestHooksConfig(t *testing.T) {
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
-	if registry.Count() != 6 {
-		t.Errorf("expected 6 hooks, got %d", registry.Count())
+	if registry.count() != 6 {
+		t.Errorf("expected 6 hooks, got %d", registry.count())
 	}
 
 	// Verify each event has one hook
 	events := []HookEvent{HookBeforeLog, HookAfterLog, HookOnFilter, HookOnRotate, HookOnClose, HookOnError}
 	for _, event := range events {
-		if registry.CountFor(event) != 1 {
-			t.Errorf("expected 1 hook for %v, got %d", event, registry.CountFor(event))
+		if registry.countFor(event) != 1 {
+			t.Errorf("expected 1 hook for %v, got %d", event, registry.countFor(event))
 		}
 	}
 }
@@ -352,14 +352,14 @@ func TestHookRegistry_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = registry.Count()
+			_ = registry.count()
 		}()
 	}
 
 	wg.Wait()
 
-	if registry.CountFor(HookBeforeLog) != numGoroutines {
-		t.Errorf("expected %d BeforeLog hooks, got %d", numGoroutines, registry.CountFor(HookBeforeLog))
+	if registry.countFor(HookBeforeLog) != numGoroutines {
+		t.Errorf("expected %d BeforeLog hooks, got %d", numGoroutines, registry.countFor(HookBeforeLog))
 	}
 }
 
@@ -410,7 +410,7 @@ func TestHookRegistry_PanicRecovery_ContinuesWithErrorHandler(t *testing.T) {
 	secondHookCalled := false
 	var recordedErrors []error
 
-	registry := NewHookRegistryWithErrorHandler(func(event HookEvent, hc *HookContext, err error) {
+	registry := newHookRegistryWithErrorHandler(func(event HookEvent, hc *HookContext, err error) {
 		recordedErrors = append(recordedErrors, err)
 	})
 
@@ -448,7 +448,7 @@ func TestHookRegistry_PanicRecovery_ContinuesWithErrorHandler(t *testing.T) {
 
 func TestHookRegistry_PanicRecovery_WithErrorHandler(t *testing.T) {
 	var recordedErrors []error
-	registry := NewHookRegistryWithErrorHandler(func(event HookEvent, hc *HookContext, err error) {
+	registry := newHookRegistryWithErrorHandler(func(event HookEvent, hc *HookContext, err error) {
 		recordedErrors = append(recordedErrors, err)
 	})
 
@@ -480,8 +480,8 @@ func TestNewContextExtractorRegistry(t *testing.T) {
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
-	if registry.Count() != 0 {
-		t.Errorf("expected empty registry, got %d extractors", registry.Count())
+	if registry.count() != 0 {
+		t.Errorf("expected empty registry, got %d extractors", registry.count())
 	}
 }
 
@@ -494,14 +494,14 @@ func TestContextExtractorRegistry_Add(t *testing.T) {
 	}
 	registry.Add(extractor)
 
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 extractor, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 extractor, got %d", registry.count())
 	}
 
 	// Test adding nil extractor (should be ignored)
 	registry.Add(nil)
-	if registry.Count() != 1 {
-		t.Errorf("expected 1 extractor after adding nil, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Errorf("expected 1 extractor after adding nil, got %d", registry.count())
 	}
 }
 
@@ -588,13 +588,13 @@ func TestContextExtractorRegistry_Clone(t *testing.T) {
 		return []Field{String("key1", "value1")}
 	})
 
-	clone := registry.Clone()
+	clone := registry.clone()
 	if clone == nil {
 		t.Fatal("expected non-nil clone")
 	}
 
-	if clone.Count() != registry.Count() {
-		t.Errorf("clone count mismatch: got %d, want %d", clone.Count(), registry.Count())
+	if clone.count() != registry.count() {
+		t.Errorf("clone count mismatch: got %d, want %d", clone.count(), registry.count())
 	}
 
 	// Modify original and verify clone is independent
@@ -602,13 +602,13 @@ func TestContextExtractorRegistry_Clone(t *testing.T) {
 		return []Field{String("key2", "value2")}
 	})
 
-	if registry.Count() == clone.Count() {
+	if registry.count() == clone.count() {
 		t.Error("clone should be independent of original")
 	}
 
 	// Test nil registry
 	var nilRegistry *ContextExtractorRegistry
-	if nilRegistry.Clone() != nil {
+	if nilRegistry.clone() != nil {
 		t.Error("expected nil for nil registry clone")
 	}
 }
@@ -619,23 +619,23 @@ func TestContextExtractorRegistry_Clear(t *testing.T) {
 		return []Field{String("key1", "value1")}
 	})
 
-	if registry.Count() != 1 {
-		t.Fatalf("expected 1 extractor, got %d", registry.Count())
+	if registry.count() != 1 {
+		t.Fatalf("expected 1 extractor, got %d", registry.count())
 	}
 
-	registry.Clear()
-	if registry.Count() != 0 {
-		t.Errorf("expected 0 extractors after clear, got %d", registry.Count())
+	registry.clear()
+	if registry.count() != 0 {
+		t.Errorf("expected 0 extractors after clear, got %d", registry.count())
 	}
 }
 
 func TestDefaultContextExtractorRegistry(t *testing.T) {
-	registry := DefaultContextExtractorRegistry()
+	registry := defaultContextExtractorRegistry()
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
-	if registry.Count() != 3 {
-		t.Errorf("expected 3 default extractors, got %d", registry.Count())
+	if registry.count() != 3 {
+		t.Errorf("expected 3 default extractors, got %d", registry.count())
 	}
 
 	t.Run("extracts trace_id", func(t *testing.T) {
@@ -740,14 +740,14 @@ func TestContextExtractorRegistry_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = registry.Count()
+			_ = registry.count()
 		}()
 	}
 
 	wg.Wait()
 
-	if registry.Count() != numGoroutines {
-		t.Errorf("expected %d extractors, got %d", numGoroutines, registry.Count())
+	if registry.count() != numGoroutines {
+		t.Errorf("expected %d extractors, got %d", numGoroutines, registry.count())
 	}
 }
 

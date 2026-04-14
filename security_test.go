@@ -278,7 +278,7 @@ func TestFilterClone(t *testing.T) {
 	original := NewSensitiveDataFilter()
 	originalCount := original.PatternCount()
 
-	clone := original.Clone()
+	clone := original.clone()
 
 	if clone == nil {
 		t.Fatal("Clone should not be nil")
@@ -299,7 +299,7 @@ func TestFilterClone(t *testing.T) {
 
 func TestNilFilterClone(t *testing.T) {
 	var filter *SensitiveDataFilter
-	clone := filter.Clone()
+	clone := filter.clone()
 
 	if clone != nil {
 		t.Error("Cloning nil filter should return nil")
@@ -568,7 +568,7 @@ func TestSecurityIntegrationWithLogger(t *testing.T) {
 	config.Security = &SecurityConfig{
 		MaxMessageSize:  1024,
 		MaxWriters:      10,
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -623,7 +623,7 @@ func TestSecurityFieldFiltering(t *testing.T) {
 	config := JSONConfig()
 	config.Output = &buf
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -867,7 +867,7 @@ func TestPhoneNumberFieldFiltering(t *testing.T) {
 	config := JSONConfig()
 	config.Output = &buf
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -1106,7 +1106,7 @@ func TestDatabaseConnectionFieldFiltering(t *testing.T) {
 	config := JSONConfig()
 	config.Output = &buf
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -1146,7 +1146,7 @@ func TestDatabaseConnectionInMessage(t *testing.T) {
 	config := JSONConfig()
 	config.Output = &buf
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)

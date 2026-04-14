@@ -53,56 +53,33 @@ func TestFatalfWithCustomHandler(t *testing.T) {
 }
 
 func TestLoggerEntryFatal(t *testing.T) {
-	called := make(chan bool, 1)
-	cfg := DefaultConfig()
-	cfg.Output = io.Discard
-	cfg.FatalHandler = func() { called <- true }
-	logger, _ := New(cfg)
-
-	entry := logger.WithFields(String("service", "test"))
-	entry.Fatal("entry fatal message")
-
-	select {
-	case <-called:
-		// Success
-	case <-time.After(time.Second):
-		t.Error("FatalHandler not called for LoggerEntry.Fatal")
+	tests := []struct {
+		name   string
+		call   func(*LoggerEntry)
+	}{
+		{"Fatal", func(e *LoggerEntry) { e.Fatal("entry fatal message") }},
+		{"Fatalf", func(e *LoggerEntry) { e.Fatalf("entry fatalf %s", "message") }},
+		{"FatalWith", func(e *LoggerEntry) { e.FatalWith("fatal with message", String("extra", "field")) }},
 	}
-}
 
-func TestLoggerEntryFatalf(t *testing.T) {
-	called := make(chan bool, 1)
-	cfg := DefaultConfig()
-	cfg.Output = io.Discard
-	cfg.FatalHandler = func() { called <- true }
-	logger, _ := New(cfg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := make(chan bool, 1)
+			cfg := DefaultConfig()
+			cfg.Output = io.Discard
+			cfg.FatalHandler = func() { called <- true }
+			logger, _ := New(cfg)
 
-	entry := logger.WithFields(String("service", "test"))
-	entry.Fatalf("entry fatalf %s", "message")
+			entry := logger.WithFields(String("service", "test"))
+			tt.call(entry)
 
-	select {
-	case <-called:
-		// Success
-	case <-time.After(time.Second):
-		t.Error("FatalHandler not called for LoggerEntry.Fatalf")
-	}
-}
-
-func TestLoggerEntryFatalWith(t *testing.T) {
-	called := make(chan bool, 1)
-	cfg := DefaultConfig()
-	cfg.Output = io.Discard
-	cfg.FatalHandler = func() { called <- true }
-	logger, _ := New(cfg)
-
-	entry := logger.WithFields(String("service", "test"))
-	entry.FatalWith("fatal with message", String("extra", "field"))
-
-	select {
-	case <-called:
-		// Success
-	case <-time.After(time.Second):
-		t.Error("FatalHandler not called for LoggerEntry.FatalWith")
+			select {
+			case <-called:
+				// Success
+			case <-time.After(time.Second):
+				t.Errorf("FatalHandler not called for LoggerEntry.%s", tt.name)
+			}
+		})
 	}
 }
 
@@ -172,7 +149,7 @@ func TestDefaultHookErrorHandler(t *testing.T) {
 	}
 	testErr := errors.New("test hook error")
 
-	DefaultHookErrorHandler(HookBeforeLog, hookCtx, testErr)
+	defaultHookErrorHandler(HookBeforeLog, hookCtx, testErr)
 
 	w.Close()
 	os.Stderr = oldStderr
@@ -182,26 +159,26 @@ func TestDefaultHookErrorHandler(t *testing.T) {
 	output := buf.String()
 
 	if !strings.Contains(output, "hook error") {
-		t.Errorf("DefaultHookErrorHandler should log error, got: %s", output)
+		t.Errorf("defaultHookErrorHandler should log error, got: %s", output)
 	}
 	if !strings.Contains(output, "BeforeLog") {
-		t.Errorf("DefaultHookErrorHandler should include event name, got: %s", output)
+		t.Errorf("defaultHookErrorHandler should include event name, got: %s", output)
 	}
 }
 
 func TestNewHookErrorRecorder(t *testing.T) {
-	recorder := NewHookErrorRecorder()
+	recorder := newHookErrorRecorder()
 	if recorder == nil {
-		t.Fatal("NewHookErrorRecorder returned nil")
+		t.Fatal("newHookErrorRecorder returned nil")
 	}
-	if recorder.Count() != 0 {
+	if recorder.count() != 0 {
 		t.Error("New recorder should have no errors")
 	}
 }
 
 func TestHookErrorRecorderHandler(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
 	hookCtx := &HookContext{
 		Event:   HookBeforeLog,
@@ -211,11 +188,11 @@ func TestHookErrorRecorderHandler(t *testing.T) {
 
 	handler(HookBeforeLog, hookCtx, testErr)
 
-	if recorder.Count() != 1 {
-		t.Errorf("Expected 1 error, got %d", recorder.Count())
+	if recorder.count() != 1 {
+		t.Errorf("Expected 1 error, got %d", recorder.count())
 	}
 
-	errors := recorder.Errors()
+	errors := recorder.errors()
 	if len(errors) != 1 {
 		t.Fatalf("Expected 1 error, got %d", len(errors))
 	}
@@ -228,108 +205,108 @@ func TestHookErrorRecorderHandler(t *testing.T) {
 }
 
 func TestHookErrorRecorderHandlerNilContext(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
 	testErr := errors.New("test error")
 
 	// Should not panic with nil context
 	handler(HookAfterLog, nil, testErr)
 
-	if recorder.Count() != 1 {
-		t.Errorf("Expected 1 error, got %d", recorder.Count())
+	if recorder.count() != 1 {
+		t.Errorf("Expected 1 error, got %d", recorder.count())
 	}
 
-	errors := recorder.Errors()
+	errors := recorder.errors()
 	if errors[0].Message != "" {
 		t.Errorf("Expected empty message for nil context, got %s", errors[0].Message)
 	}
 }
 
 func TestHookErrorRecorderErrors(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
 	// Add multiple errors
 	handler(HookBeforeLog, &HookContext{Message: "msg1"}, errors.New("err1"))
 	handler(HookAfterLog, &HookContext{Message: "msg2"}, errors.New("err2"))
 	handler(HookOnError, &HookContext{Message: "msg3"}, errors.New("err3"))
 
-	errors := recorder.Errors()
+	errors := recorder.errors()
 	if len(errors) != 3 {
 		t.Errorf("Expected 3 errors, got %d", len(errors))
 	}
 
 	// Verify it's a copy (modifying shouldn't affect original)
-	errors[0] = HookErrorInfo{Event: HookOnClose}
-	errors2 := recorder.Errors()
+	errors[0] = hookErrorInfo{Event: HookOnClose}
+	errors2 := recorder.errors()
 	if errors2[0].Event == HookOnClose {
 		t.Error("Errors() should return a copy")
 	}
 }
 
 func TestHookErrorRecorderCount(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
-	if recorder.Count() != 0 {
+	if recorder.count() != 0 {
 		t.Error("New recorder should have count 0")
 	}
 
 	handler(HookBeforeLog, nil, errors.New("err1"))
-	if recorder.Count() != 1 {
-		t.Errorf("Expected count 1, got %d", recorder.Count())
+	if recorder.count() != 1 {
+		t.Errorf("Expected count 1, got %d", recorder.count())
 	}
 
 	handler(HookAfterLog, nil, errors.New("err2"))
-	if recorder.Count() != 2 {
-		t.Errorf("Expected count 2, got %d", recorder.Count())
+	if recorder.count() != 2 {
+		t.Errorf("Expected count 2, got %d", recorder.count())
 	}
 }
 
 func TestHookErrorRecorderClear(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
 	handler(HookBeforeLog, nil, errors.New("err1"))
 	handler(HookAfterLog, nil, errors.New("err2"))
 
-	if recorder.Count() != 2 {
-		t.Fatalf("Expected 2 errors before clear, got %d", recorder.Count())
+	if recorder.count() != 2 {
+		t.Fatalf("Expected 2 errors before clear, got %d", recorder.count())
 	}
 
-	recorder.Clear()
+	recorder.clear()
 
-	if recorder.Count() != 0 {
-		t.Errorf("Expected 0 errors after clear, got %d", recorder.Count())
+	if recorder.count() != 0 {
+		t.Errorf("Expected 0 errors after clear, got %d", recorder.count())
 	}
 }
 
 func TestHookErrorRecorderHasErrors(t *testing.T) {
-	recorder := NewHookErrorRecorder()
-	handler := recorder.Handler()
+	recorder := newHookErrorRecorder()
+	handler := recorder.handler()
 
-	if recorder.HasErrors() {
+	if recorder.hasErrors() {
 		t.Error("New recorder should not have errors")
 	}
 
 	handler(HookBeforeLog, nil, errors.New("err1"))
 
-	if !recorder.HasErrors() {
+	if !recorder.hasErrors() {
 		t.Error("Recorder should have errors after adding one")
 	}
 
-	recorder.Clear()
+	recorder.clear()
 
-	if recorder.HasErrors() {
+	if recorder.hasErrors() {
 		t.Error("Recorder should not have errors after clear")
 	}
 }
 
 func TestHookRegistrySetErrorHandler(t *testing.T) {
 	registry := NewHookRegistry()
-	recorder := NewHookErrorRecorder()
-	registry.SetErrorHandler(recorder.Handler())
+	recorder := newHookErrorRecorder()
+	registry.SetErrorHandler(recorder.handler())
 
 	// Add a hook that always fails
 	registry.Add(HookBeforeLog, func(ctx context.Context, hc *HookContext) error {
@@ -339,7 +316,7 @@ func TestHookRegistrySetErrorHandler(t *testing.T) {
 	// Trigger the hook
 	_ = registry.Trigger(context.Background(), HookBeforeLog, &HookContext{})
 
-	if !recorder.HasErrors() {
+	if !recorder.hasErrors() {
 		t.Error("Error handler should have been called")
 	}
 }
@@ -552,12 +529,12 @@ func TestMultiWriterErrorAddError(t *testing.T) {
 		t.Error("Initial error count should be 0")
 	}
 
-	err.AddError(0, io.Discard, errors.New("error 1"))
+	err.addError(0, io.Discard, errors.New("error 1"))
 	if err.ErrorCount() != 1 {
 		t.Errorf("Error count should be 1, got %d", err.ErrorCount())
 	}
 
-	err.AddError(1, io.Discard, errors.New("error 2"))
+	err.addError(1, io.Discard, errors.New("error 2"))
 	if err.ErrorCount() != 2 {
 		t.Errorf("Error count should be 2, got %d", err.ErrorCount())
 	}
@@ -569,7 +546,7 @@ func TestMultiWriterErrorAddError(t *testing.T) {
 
 func TestVerifyAuditEvent(t *testing.T) {
 	// Create a signer with predictable settings for testing
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: false, // Disable for predictable signatures
@@ -634,7 +611,7 @@ func TestVerifyAuditEventWithEmptyEntry(t *testing.T) {
 // ============================================================================
 
 func TestLoggerErrorWithField(t *testing.T) {
-	err := NewError(ErrCodeInvalidLevel, "invalid level")
+	err := newError(errCodeInvalidLevel, "invalid level")
 	errWithField := err.WithField("key", "value")
 
 	if errWithField == nil {
@@ -647,7 +624,7 @@ func TestLoggerErrorWithField(t *testing.T) {
 }
 
 func TestLoggerErrorIs(t *testing.T) {
-	err := NewError(ErrCodeInvalidLevel, "invalid level")
+	err := newError(errCodeInvalidLevel, "invalid level")
 
 	if !errors.Is(err, ErrInvalidLevel) {
 		t.Error("errors.Is should match sentinel error")

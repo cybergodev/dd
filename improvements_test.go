@@ -539,7 +539,7 @@ func TestHookContextOriginalFields(t *testing.T) {
 // TestFilterPerformanceMetrics tests the filter performance monitoring
 func TestFilterPerformanceMetrics(t *testing.T) {
 	t.Run("GetFilterStats returns metrics", func(t *testing.T) {
-		filter := NewBasicSensitiveDataFilter()
+		filter := newBasicSensitiveDataFilter()
 
 		// Process some inputs
 		filter.Filter("hello world")
@@ -562,7 +562,7 @@ func TestFilterPerformanceMetrics(t *testing.T) {
 	})
 
 	t.Run("redactions are tracked", func(t *testing.T) {
-		filter := NewBasicSensitiveDataFilter()
+		filter := newBasicSensitiveDataFilter()
 
 		// Log something with a password pattern that should be redacted
 		filter.Filter("password=test123")
@@ -581,7 +581,7 @@ func TestFilterPerformanceMetrics(t *testing.T) {
 	})
 
 	t.Run("average latency is calculated", func(t *testing.T) {
-		filter := NewBasicSensitiveDataFilter()
+		filter := newBasicSensitiveDataFilter()
 
 		// Process many inputs to get meaningful average
 		for i := 0; i < 100; i++ {
@@ -1356,15 +1356,15 @@ func TestLogger_GetHooks(t *testing.T) {
 		if hooks == nil {
 			t.Fatal("Expected non-nil hooks")
 		}
-		if hooks.CountFor(HookBeforeLog) != 1 {
-			t.Errorf("Expected 1 BeforeLog hook, got %d", hooks.CountFor(HookBeforeLog))
+		if hooks.countFor(HookBeforeLog) != 1 {
+			t.Errorf("Expected 1 BeforeLog hook, got %d", hooks.countFor(HookBeforeLog))
 		}
 
 		// Verify it's a copy
 		hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {
 			return nil
 		})
-		if logger.GetHooks().CountFor(HookBeforeLog) != 1 {
+		if logger.GetHooks().countFor(HookBeforeLog) != 1 {
 			t.Error("Modifying returned hooks should not affect logger")
 		}
 	})
@@ -1609,8 +1609,8 @@ func TestErrorFieldConstructors(t *testing.T) {
 		}
 	})
 
-	t.Run("NamedErr is alias for ErrWithKey", func(t *testing.T) {
-		field := NamedErr("named_error", errors.New("test error"))
+	t.Run("ErrWithKey creates field with custom key", func(t *testing.T) {
+		field := ErrWithKey("named_error", errors.New("test error"))
 		if field.Key != "named_error" {
 			t.Errorf("Expected key 'named_error', got %q", field.Key)
 		}

@@ -16,7 +16,7 @@ func TestLoggerRecorder_NewLoggerRecorder(t *testing.T) {
 
 func TestLoggerRecorder_NewLogger(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.Info("test message")
 
@@ -39,7 +39,7 @@ func TestLoggerRecorder_Levels(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Level = LevelDebug
-	logger := recorder.NewLogger(cfg)
+	logger, _ := recorder.NewLogger(cfg)
 
 	logger.Debug("debug message")
 	logger.Info("info message")
@@ -61,7 +61,7 @@ func TestLoggerRecorder_Levels(t *testing.T) {
 
 func TestLoggerRecorder_EntriesAtLevel(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.Info("info 1")
 	logger.Warn("warn 1")
@@ -81,7 +81,7 @@ func TestLoggerRecorder_EntriesAtLevel(t *testing.T) {
 
 func TestLoggerRecorder_LastEntry(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	if recorder.LastEntry() != nil {
 		t.Error("Expected nil for empty recorder")
@@ -101,7 +101,7 @@ func TestLoggerRecorder_LastEntry(t *testing.T) {
 
 func TestLoggerRecorder_ContainsMessage(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.Info("hello world")
 	logger.Info("another message")
@@ -119,7 +119,7 @@ func TestLoggerRecorder_ContainsMessage(t *testing.T) {
 
 func TestLoggerRecorder_Clear(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.Info("message 1")
 	logger.Info("message 2")
@@ -140,7 +140,7 @@ func TestLoggerRecorder_Clear(t *testing.T) {
 
 func TestLoggerRecorder_WithFields(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.InfoWith("test message",
 		String("user", "john"),
@@ -169,7 +169,7 @@ func TestLoggerRecorder_WithFields(t *testing.T) {
 
 func TestLoggerRecorder_RawOutput(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	logger.Info("test")
 
@@ -189,7 +189,7 @@ func TestLoggerRecorder_JSONFormat(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Format = FormatJSON
-	logger := recorder.NewLogger(cfg)
+	logger, _ := recorder.NewLogger(cfg)
 
 	logger.Info("json test")
 
@@ -208,7 +208,7 @@ func TestLoggerRecorder_CustomConfig(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.Level = LevelDebug
-	logger := recorder.NewLogger(cfg)
+	logger, _ := recorder.NewLogger(cfg)
 
 	logger.Debug("debug message")
 
@@ -219,7 +219,7 @@ func TestLoggerRecorder_CustomConfig(t *testing.T) {
 
 func TestLoggerRecorder_ThreadSafety(t *testing.T) {
 	recorder := NewLoggerRecorder()
-	logger := recorder.NewLogger()
+	logger, _ := recorder.NewLogger()
 
 	// Run multiple goroutines writing to the same recorder
 	done := make(chan bool)
@@ -268,24 +268,3 @@ func TestParseLevelString(t *testing.T) {
 	}
 }
 
-func TestContains(t *testing.T) {
-	tests := []struct {
-		s      string
-		substr string
-		want   bool
-	}{
-		{"hello world", "world", true},
-		{"hello world", "hello", true},
-		{"hello world", "foo", false},
-		{"short", "longer string", false},
-		{"", "", true},
-		{"abc", "", true},
-	}
-
-	for _, tc := range tests {
-		result := contains(tc.s, tc.substr)
-		if result != tc.want {
-			t.Errorf("contains(%q, %q) = %v, want %v", tc.s, tc.substr, result, tc.want)
-		}
-	}
-}

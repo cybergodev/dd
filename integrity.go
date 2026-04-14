@@ -55,12 +55,26 @@ type IntegrityConfig struct {
 	SignaturePrefix string
 }
 
+// Validate validates the IntegrityConfig and returns an error if any field is invalid.
+func (c IntegrityConfig) Validate() error {
+	if len(c.SecretKey) < 32 {
+		return fmt.Errorf("secret key must be at least 32 bytes, got %d", len(c.SecretKey))
+	}
+	switch c.HashAlgorithm {
+	case HashAlgorithmSHA256:
+		// Supported
+	default:
+		return fmt.Errorf("unsupported hash algorithm: %v", c.HashAlgorithm)
+	}
+	return nil
+}
+
 // DefaultIntegrityConfig returns an IntegrityConfig with sensible defaults.
 // Note: A cryptographically secure random key is generated but should be replaced for production use.
 // IMPORTANT: Store the generated key securely if you need to verify logs across restarts.
 //
 // For production environments where panic is unacceptable, use DefaultIntegrityConfigSafe() instead.
-func DefaultIntegrityConfig() *IntegrityConfig {
+func DefaultIntegrityConfig() IntegrityConfig {
 	cfg, err := DefaultIntegrityConfigSafe()
 	if err != nil {
 		// This should never happen with crypto/rand, but panic if it does
@@ -83,14 +97,14 @@ func DefaultIntegrityConfig() *IntegrityConfig {
 //	    // Handle error gracefully
 //	    log.Fatal(err)
 //	}
-func DefaultIntegrityConfigSafe() (*IntegrityConfig, error) {
+func DefaultIntegrityConfigSafe() (IntegrityConfig, error) {
 	// Generate a cryptographically secure random key
 	defaultKey := make([]byte, 32)
 	if _, err := rand.Read(defaultKey); err != nil {
-		return nil, fmt.Errorf("failed to generate secure random key: %w", err)
+		return IntegrityConfig{}, fmt.Errorf("failed to generate secure random key: %w", err)
 	}
 
-	return &IntegrityConfig{
+	return IntegrityConfig{
 		SecretKey:        defaultKey,
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -112,41 +126,43 @@ type IntegritySigner struct {
 // If no configuration is provided, a secure default configuration is generated.
 // Returns an error if the default configuration cannot be generated (extremely rare,
 // indicates system entropy exhaustion).
-func NewIntegritySigner(configs ...*IntegrityConfig) (*IntegritySigner, error) {
-	var config *IntegrityConfig
-	if len(configs) > 0 {
-		config = configs[0].Clone() // Deep copy to avoid mutating caller's config
-	}
-	if config == nil {
+func NewIntegritySigner(cfg ...IntegrityConfig) (*IntegritySigner, error) {
+	var config IntegrityConfig
+	if len(cfg) > 0 {
+		config = cfg[0]
+	} else {
 		var err error
 		config, err = DefaultIntegrityConfigSafe()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create default integrity config: %w", err)
 		}
 	}
+	return NewIntegritySignerWithConfig(config)
+}
 
-	if len(config.SecretKey) < 32 {
-		return nil, fmt.Errorf("secret key must be at least 32 bytes, got %d", len(config.SecretKey))
+// NewIntegritySignerWithConfig creates a new IntegritySigner using the standard Config pattern.
+// Prefer this over the variadic NewIntegritySigner for explicit configuration.
+//
+// Example:
+//
+//	cfg := dd.DefaultIntegrityConfig()
+//	cfg.IncludeSequence = true
+//	signer, err := dd.NewIntegritySignerWithConfig(cfg)
+func NewIntegritySignerWithConfig(cfg IntegrityConfig) (*IntegritySigner, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
-	if config.SignaturePrefix == "" {
-		config.SignaturePrefix = "[SIG:"
-	}
-
-	// Validate hash algorithm
-	switch config.HashAlgorithm {
-	case HashAlgorithmSHA256:
-		// Supported
-	default:
-		return nil, fmt.Errorf("unsupported hash algorithm: %v", config.HashAlgorithm)
+	if cfg.SignaturePrefix == "" {
+		cfg.SignaturePrefix = "[SIG:"
 	}
 
 	// Copy the secret key to ensure we own the memory
-	secretKey := make([]byte, len(config.SecretKey))
-	copy(secretKey, config.SecretKey)
+	secretKey := make([]byte, len(cfg.SecretKey))
+	copy(secretKey, cfg.SecretKey)
 
 	return &IntegritySigner{
-		config:    config,
+		config:    &cfg,
 		secretKey: secretKey,
 	}, nil
 }
@@ -437,15 +453,15 @@ func (s *IntegritySigner) ResetSequence() {
 }
 
 // Clone creates a copy of the IntegrityConfig.
-func (c *IntegrityConfig) Clone() *IntegrityConfig {
+func (c *IntegrityConfig) Clone() IntegrityConfig {
 	if c == nil {
-		return nil
+		return IntegrityConfig{}
 	}
 
 	copiedKey := make([]byte, len(c.SecretKey))
 	copy(copiedKey, c.SecretKey)
 
-	return &IntegrityConfig{
+	return IntegrityConfig{
 		SecretKey:        copiedKey,
 		HashAlgorithm:    c.HashAlgorithm,
 		IncludeTimestamp: c.IncludeTimestamp,

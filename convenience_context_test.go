@@ -13,69 +13,52 @@ import (
 // CONTEXT HELPER TESTS
 // ============================================================================
 
-func TestWithTraceID(t *testing.T) {
-	ctx := context.Background()
-	newCtx := WithTraceID(ctx, "trace-123")
-
-	if newCtx == nil {
-		t.Fatal("WithTraceID should return non-nil context")
+func TestContextSettersAndGetters(t *testing.T) {
+	tests := []struct {
+		name    string
+		setFunc func(context.Context, string) context.Context
+		getFunc func(context.Context) string
+		value   string
+	}{
+		{"TraceID", WithTraceID, GetTraceID, "trace-123"},
+		{"SpanID", WithSpanID, GetSpanID, "span-456"},
+		{"RequestID", WithRequestID, GetRequestID, "req-789"},
 	}
 
-	traceID := GetTraceID(newCtx)
-	if traceID != "trace-123" {
-		t.Errorf("GetTraceID() = %q, want %q", traceID, "trace-123")
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			newCtx := tt.setFunc(ctx, tt.value)
 
-func TestWithSpanID(t *testing.T) {
-	ctx := context.Background()
-	newCtx := WithSpanID(ctx, "span-456")
+			if newCtx == nil {
+				t.Fatalf("%s should return non-nil context", tt.name)
+			}
 
-	if newCtx == nil {
-		t.Fatal("WithSpanID should return non-nil context")
-	}
-
-	spanID := GetSpanID(newCtx)
-	if spanID != "span-456" {
-		t.Errorf("GetSpanID() = %q, want %q", spanID, "span-456")
-	}
-}
-
-func TestWithRequestID(t *testing.T) {
-	ctx := context.Background()
-	newCtx := WithRequestID(ctx, "req-789")
-
-	if newCtx == nil {
-		t.Fatal("WithRequestID should return non-nil context")
-	}
-
-	requestID := GetRequestID(newCtx)
-	if requestID != "req-789" {
-		t.Errorf("GetRequestID() = %q, want %q", requestID, "req-789")
+			got := tt.getFunc(newCtx)
+			if got != tt.value {
+				t.Errorf("got = %q, want %q", got, tt.value)
+			}
+		})
 	}
 }
 
-func TestGetTraceID_Empty(t *testing.T) {
+func TestContextGetters_Empty(t *testing.T) {
 	ctx := context.Background()
-	traceID := GetTraceID(ctx)
-	if traceID != "" {
-		t.Errorf("GetTraceID() on empty context = %q, want empty", traceID)
+	tests := []struct {
+		name string
+		got  string
+	}{
+		{"GetTraceID", GetTraceID(ctx)},
+		{"GetSpanID", GetSpanID(ctx)},
+		{"GetRequestID", GetRequestID(ctx)},
 	}
-}
 
-func TestGetSpanID_Empty(t *testing.T) {
-	ctx := context.Background()
-	spanID := GetSpanID(ctx)
-	if spanID != "" {
-		t.Errorf("GetSpanID() on empty context = %q, want empty", spanID)
-	}
-}
-
-func TestGetRequestID_Empty(t *testing.T) {
-	ctx := context.Background()
-	requestID := GetRequestID(ctx)
-	if requestID != "" {
-		t.Errorf("GetRequestID() on empty context = %q, want empty", requestID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != "" {
+				t.Errorf("%s() on empty context = %q, want empty", tt.name, tt.got)
+			}
+		})
 	}
 }
 
@@ -335,7 +318,7 @@ func TestContextKeys_LegacyStringKeys(t *testing.T) {
 	ctx = context.WithValue(ctx, "request_id", "legacy-request")
 
 	// Use the default extractors which should handle both key types
-	registry := DefaultContextExtractorRegistry()
+	registry := defaultContextExtractorRegistry()
 	fields := registry.Extract(ctx)
 
 	// Should extract all three IDs

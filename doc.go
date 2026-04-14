@@ -392,6 +392,7 @@ type LogProvider interface {
 	Text(data ...any)
 	Textf(format string, args ...any)
 	JSON(data ...any)
+	JSONF(format string, args ...any)
 
 	// Filter goroutine monitoring
 	ActiveFilterGoroutines() int32
