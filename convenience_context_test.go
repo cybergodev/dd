@@ -331,8 +331,8 @@ func TestContextKeys_LegacyStringKeys(t *testing.T) {
 // CONTEXT EXTRACTOR EDGE CASES
 // ============================================================================
 
-func TestContextExtractorRegistry_NilContext(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_NilContext(t *testing.T) {
+	registry := newContextExtractorRegistry()
 	registry.Add(func(ctx context.Context) []Field {
 		if ctx == nil {
 			return nil
@@ -347,8 +347,8 @@ func TestContextExtractorRegistry_NilContext(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_EmptyRegistry(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_EmptyRegistry(t *testing.T) {
+	registry := newContextExtractorRegistry()
 	ctx := context.Background()
 
 	fields := registry.Extract(ctx)

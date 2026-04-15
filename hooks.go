@@ -110,6 +110,7 @@ func defaultHookErrorHandler(event HookEvent, _ *HookContext, err error) {
 
 // hookErrorRecorder records hook errors for later inspection.
 // This is useful for testing or monitoring hook health.
+// Intended for internal use (e.g., tests that need to assert hook error behavior).
 //
 // Usage:
 //

@@ -57,7 +57,7 @@ func SanitizeControlChars(message string) string {
 	// Fast path: check if sanitization is needed using string indexing
 	// Avoids []byte allocation when no sanitization is needed
 	needsSanitization := false
-	for i := 0; i < msgLen; i++ {
+	for i := range msgLen {
 		b := message[i]
 		// 0x1b is ESC character (start of ANSI escape sequences)
 		// \n (0x0a) and \r (0x0d) are escaped to prevent CRLF injection
@@ -101,7 +101,10 @@ func SanitizeControlChars(message string) string {
 				i += 2
 				continue
 			}
-			result = append(result, b)
+			// Non-BOM 0xEF sequence: keep all 3 bytes as a unit
+			// Consistent with 0xE2 handling and correct for invalid UTF-8
+			result = append(result, b, message[i+1], message[i+2])
+			i += 2
 		case b == 0xE2 && i+2 < msgLen:
 			// Check for Unicode control characters
 			if isUnicodeControlSequence(message[i+1], message[i+2]) {
@@ -200,17 +203,50 @@ func SanitizeUnicodeControlChars(s string) string {
 		return s
 	}
 
-	// Build the result without the control characters
-	var result strings.Builder
-	result.Grow(len(s))
+	// Use pooled buffer instead of allocating a fresh strings.Builder per call
+	bufPtr := sanitizeBufferPool.Get().(*[]byte)
+	buf := (*bufPtr)[:0]
+
+	if cap(*bufPtr) < len(s) {
+		// Buffer too small, let it grow naturally via append
+	}
 
 	for _, r := range s {
 		if !isUnicodeControlRune(r) {
-			result.WriteRune(r)
+			buf = appendRune(buf, r)
 		}
 	}
 
-	return result.String()
+	result := string(buf)
+
+	// SECURITY: Zero buffer contents before returning to pool
+	zeroSlice(bufPtr)
+	sanitizeBufferPool.Put(bufPtr)
+
+	return result
+}
+
+// appendRune appends a rune to a byte slice, growing as needed.
+func appendRune(buf []byte, r rune) []byte {
+	if r < 0x80 {
+		return append(buf, byte(r))
+	}
+	if r < 0x800 {
+		return append(buf, byte(0xC0|(r>>6)), byte(0x80|(r&0x3F)))
+	}
+	if r >= 0x10000 {
+		return append(buf,
+			byte(0xF0|(r>>18)),
+			byte(0x80|((r>>12)&0x3F)),
+			byte(0x80|((r>>6)&0x3F)),
+			byte(0x80|(r&0x3F)),
+		)
+	}
+	return append(buf,
+		byte(0xE0|(r>>12)),
+		byte(0x80|((r>>6)&0x3F)),
+		byte(0x80|(r&0x3F)),
+	)
 }
 
 // isUnicodeControlRune checks if a rune is a dangerous Unicode control character.

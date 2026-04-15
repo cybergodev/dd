@@ -45,15 +45,15 @@ func mergeFieldSlices(existingFields, newFields []Field) []Field {
 	existingLen := len(existingFields)
 	newLen := len(newFields)
 
-	// SECURITY: Enforce maximum field count to prevent CPU exhaustion
-	// If either slice exceeds the limit, truncate the new fields
-	// This provides a safety limit while still allowing logging to proceed
-	if existingLen > maxFieldCount || newLen > maxFieldCount {
-		// Truncate to max and proceed with map-based approach
-		if newLen > maxFieldCount {
-			newFields = newFields[:maxFieldCount]
-			newLen = maxFieldCount
-		}
+	// SECURITY: Enforce maximum field count to prevent CPU exhaustion.
+	// Cap both slices so the merged result never exceeds maxFieldCount.
+	if existingLen > maxFieldCount {
+		existingFields = existingFields[:maxFieldCount]
+		existingLen = maxFieldCount
+	}
+	if newLen > maxFieldCount {
+		newFields = newFields[:maxFieldCount]
+		newLen = maxFieldCount
 	}
 
 	// For small field counts, use linear search to avoid map allocation
@@ -157,6 +157,9 @@ func (e *LoggerEntry) mergeFields(fields []Field) []Field {
 // using an increased caller depth to correctly report the caller location.
 // This is the internal implementation that handles the extra stack frames from LoggerEntry.
 func (e *LoggerEntry) logWithDepth(level LogLevel, msg string, fields []Field) {
+	if e == nil || e.logger == nil {
+		return
+	}
 	if !e.logger.shouldLog(level) {
 		return
 	}

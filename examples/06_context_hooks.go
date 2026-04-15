@@ -101,12 +101,12 @@ func extractTraceFields(ctx context.Context) []dd.Field {
 	return fields
 }
 
-// Section 3: Registered context extractors
+// Section 3: Context extractor pattern
 func section3CustomExtractors() {
-	fmt.Println("3. Registered Context Extractors")
-	fmt.Println("-----------------------------------")
+	fmt.Println("3. Context Extractors")
+	fmt.Println("-----------------------")
 
-	// Custom extractor that reads application-specific context values
+	// Define custom context extractors for application-specific values
 	tenantExtractor := func(ctx context.Context) []dd.Field {
 		var fields []dd.Field
 		if v := ctx.Value("tenant_id"); v != nil {
@@ -117,39 +117,42 @@ func section3CustomExtractors() {
 		return fields
 	}
 
-	// Register extractor via Config — fields are auto-injected into every log
-	cfg := dd.DefaultConfig()
-	cfg.Format = dd.FormatJSON
-	cfg.ContextExtractors = []dd.ContextExtractor{tenantExtractor}
-
-	logger, _ := dd.New(cfg)
-	defer logger.Close()
-
-	// Context with tenant info
-	ctx := context.WithValue(context.Background(), "tenant_id", "tenant-abc")
-
-	// tenant_id is automatically included — no manual extraction needed
-	logger.InfoWith("Auto-extracted tenant context",
-		dd.String("action", "data_access"),
-	)
-
-	// Add another extractor at runtime
-	logger.AddContextExtractor(func(ctx context.Context) []dd.Field {
+	userExtractor := func(ctx context.Context) []dd.Field {
 		if v := ctx.Value("user_id"); v != nil {
 			if i, ok := v.(int); ok {
 				return []dd.Field{dd.Int("user_id", i)}
 			}
 		}
 		return nil
-	})
+	}
 
+	// Pass extractors via Config for automatic context field extraction
+	cfg := dd.DefaultConfig()
+	cfg.ContextExtractors = []dd.ContextExtractor{tenantExtractor, userExtractor}
+	logger, _ := dd.New(cfg)
+	defer logger.Close()
+
+	// Create context with application-specific values
+	ctx := context.WithValue(context.Background(), "tenant_id", "tenant-abc")
 	ctx = context.WithValue(ctx, "user_id", 12345)
-	logger.InfoWith("Both extractors active",
+
+	// Context fields are extracted automatically when logging
+	logger.InfoWith("Request with extracted context",
+		dd.String("action", "data_access"),
+	)
+
+	// Combine with built-in trace helpers for full request context
+	ctx = dd.WithTraceID(ctx, "trace-xyz")
+	ctx = dd.WithSpanID(ctx, "span-789")
+
+	logger.InfoWith("Full request context",
+		dd.String("trace_id", dd.GetTraceID(ctx)),
+		dd.String("span_id", dd.GetSpanID(ctx)),
 		dd.String("action", "update"),
 	)
 
-	fmt.Println("  Note: Built-in extractors for trace_id/span_id/request_id are")
-	fmt.Println("  enabled by default when you set context values via dd.WithTraceID etc.")
+	fmt.Println("  Tip: Use Config.ContextExtractors to register custom extractors,")
+	fmt.Println("  then combine with WithTraceID/WithSpanID for full request context.")
 	fmt.Println()
 }
 

@@ -475,8 +475,8 @@ func TestHookRegistry_PanicRecovery_WithErrorHandler(t *testing.T) {
 // CONTEXT EXTRACTOR REGISTRY TESTS (merged from context_extractor_test.go)
 // ============================================================================
 
-func TestNewContextExtractorRegistry(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_New(t *testing.T) {
+	registry := newContextExtractorRegistry()
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
@@ -485,8 +485,8 @@ func TestNewContextExtractorRegistry(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_Add(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_Add(t *testing.T) {
+	registry := newContextExtractorRegistry()
 
 	// Test adding extractor
 	extractor := func(ctx context.Context) []Field {
@@ -505,9 +505,9 @@ func TestContextExtractorRegistry_Add(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_Extract(t *testing.T) {
+func TestExtractorRegistry_Extract(t *testing.T) {
 	t.Run("empty registry", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		ctx := context.Background()
 		fields := registry.Extract(ctx)
 		if fields != nil {
@@ -516,7 +516,7 @@ func TestContextExtractorRegistry_Extract(t *testing.T) {
 	})
 
 	t.Run("single extractor", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			return []Field{String("key1", "value1")}
 		})
@@ -533,7 +533,7 @@ func TestContextExtractorRegistry_Extract(t *testing.T) {
 	})
 
 	t.Run("multiple extractors", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			return []Field{String("key1", "value1")}
 		})
@@ -550,7 +550,7 @@ func TestContextExtractorRegistry_Extract(t *testing.T) {
 	})
 
 	t.Run("extractor returns nil", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			return nil
 		})
@@ -567,7 +567,7 @@ func TestContextExtractorRegistry_Extract(t *testing.T) {
 	})
 
 	t.Run("nil context with nil-safe extractor", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			if ctx == nil {
 				return nil
@@ -582,8 +582,8 @@ func TestContextExtractorRegistry_Extract(t *testing.T) {
 	})
 }
 
-func TestContextExtractorRegistry_Clone(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_Clone(t *testing.T) {
+	registry := newContextExtractorRegistry()
 	registry.Add(func(ctx context.Context) []Field {
 		return []Field{String("key1", "value1")}
 	})
@@ -607,14 +607,14 @@ func TestContextExtractorRegistry_Clone(t *testing.T) {
 	}
 
 	// Test nil registry
-	var nilRegistry *ContextExtractorRegistry
+	var nilRegistry *contextExtractorRegistry
 	if nilRegistry.clone() != nil {
 		t.Error("expected nil for nil registry clone")
 	}
 }
 
-func TestContextExtractorRegistry_Clear(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_Clear(t *testing.T) {
+	registry := newContextExtractorRegistry()
 	registry.Add(func(ctx context.Context) []Field {
 		return []Field{String("key1", "value1")}
 	})
@@ -709,8 +709,8 @@ func TestStringValue(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_ConcurrentAccess(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_ConcurrentAccess(t *testing.T) {
+	registry := newContextExtractorRegistry()
 
 	var wg sync.WaitGroup
 	numGoroutines := 100
@@ -751,8 +751,8 @@ func TestContextExtractorRegistry_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_PanicRecovery(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_PanicRecovery(t *testing.T) {
+	registry := newContextExtractorRegistry()
 
 	// Add an extractor that panics
 	registry.Add(func(ctx context.Context) []Field {
@@ -779,8 +779,8 @@ func TestContextExtractorRegistry_PanicRecovery(t *testing.T) {
 	}
 }
 
-func TestContextExtractorRegistry_MultiplePanics(t *testing.T) {
-	registry := NewContextExtractorRegistry()
+func TestExtractorRegistry_MultiplePanics(t *testing.T) {
+	registry := newContextExtractorRegistry()
 
 	// Add multiple extractors that panic
 	registry.Add(func(ctx context.Context) []Field {

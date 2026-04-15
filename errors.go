@@ -6,8 +6,10 @@ import (
 	"io"
 )
 
-// Error codes for structured error handling (internal).
-// These codes map to sentinel errors for use with errors.Is() and errors.As().
+// Error codes for structured error handling.
+// These codes are used internally by LoggerError to map to public sentinel errors
+// so that errors.Is(err, dd.ErrInvalidLevel) works correctly.
+// Do not use these codes directly in application code; use the Err* sentinel errors.
 const (
 	errCodeNilConfig          = "NIL_CONFIG"
 	errCodeNilWriter          = "NIL_WRITER"

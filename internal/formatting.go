@@ -27,28 +27,27 @@ var (
 )
 
 // getDDPackagePrefix returns the package path prefix for the dd package.
-// It uses runtime.Caller to dynamically detect the prefix at initialization.
+// It uses runtime.Caller(0) to get the fully qualified function name,
+// then extracts the module path by finding the "/internal." boundary.
+// This is more robust than file-path-based detection which could match
+// unrelated directories named "dd".
 func getDDPackagePrefix() string {
 	ddPackagePrefixOnce.Do(func() {
-		// Get the function name of this file to extract the package prefix
+		// runtime.Caller(0) returns the function name of the caller.
 		// Example: github.com/cybergodev/dd/internal.getDDPackagePrefix
 		// We want: github.com/cybergodev/dd
-		if _, file, _, ok := runtime.Caller(0); ok {
-			// file is like: /path/to/github.com/cybergodev/dd/internal/formatting.go
-			// Find the package path in the file path
-			// Look for the pattern: module/path/package/file.go
-
-			// Extract the package prefix by finding the dd package in the path
-			// Common patterns:
-			// - github.com/user/dd/...
-			// - golang.org/x/...
-			parts := strings.Split(file, "/")
-			for i, part := range parts {
-				if part == "dd" && i > 0 {
-					// Found "dd" package, construct prefix from parts before it
-					ddPackagePrefix = strings.Join(parts[:i+1], "/")
-					return
-				}
+		if pc, _, _, ok := runtime.Caller(0); ok {
+			fn := runtime.FuncForPC(pc).Name()
+			// Find the "/internal." boundary to extract the module root.
+			// The function name contains the full import path before the ".func" part.
+			if idx := strings.LastIndex(fn, "/internal."); idx > 0 {
+				ddPackagePrefix = fn[:idx]
+				return
+			}
+			// Fallback: try to strip ".func" suffix for the dd package itself
+			if idx := strings.LastIndex(fn, "/dd."); idx > 0 {
+				ddPackagePrefix = fn[:idx+3]
+				return
 			}
 		}
 		// Fallback to known prefix if detection fails

@@ -26,6 +26,16 @@ var visitedMapPool = sync.Pool{
 	},
 }
 
+// chunkFilterBufPool pools strings.Builder for chunked filtering to reduce allocations
+// when processing large inputs that exceed the direct processing threshold.
+var chunkFilterBufPool = sync.Pool{
+	New: func() any {
+		var sb strings.Builder
+		sb.Grow(4096) // reasonable initial size for chunked filtering
+		return &sb
+	},
+}
+
 // Pre-compiled additional patterns for security levels.
 // Compiled at init time to eliminate runtime panics in public API functions.
 // These are extra patterns added on top of the base sensitive data filter.
@@ -773,7 +783,6 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 	hasDigits := false
 	hasAtSign := false
 	hasProtocol := false
-	hasCredentialKeyword := false
 	hasAPIKeyPrefix := false
 
 	// Quick scan for key characteristics
@@ -824,24 +833,21 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 
 	// Check for API key prefixes (case-sensitive for efficiency)
 	// These are the most common API key prefixes
-	if !hasAPIKeyPrefix {
-		// Check for common prefixes without allocation
-		if strings.HasPrefix(input, "sk-") ||
-			strings.HasPrefix(input, "ghp_") ||
-			strings.HasPrefix(input, "gho_") ||
-			strings.HasPrefix(input, "ghu_") ||
-			strings.HasPrefix(input, "ghs_") ||
-			strings.HasPrefix(input, "ghr_") ||
-			strings.HasPrefix(input, "glpat-") ||
-			strings.HasPrefix(input, "xox") ||
-			strings.Contains(input, "AKIA") ||
-			strings.Contains(input, "ASIA") ||
-			strings.Contains(input, "AIza") ||
-			strings.Contains(input, "ya29.") ||
-			strings.Contains(input, "1//") {
-			hasAPIKeyPrefix = true
+	if strings.HasPrefix(input, "sk-") ||
+		strings.HasPrefix(input, "ghp_") ||
+		strings.HasPrefix(input, "gho_") ||
+		strings.HasPrefix(input, "ghu_") ||
+		strings.HasPrefix(input, "ghs_") ||
+		strings.HasPrefix(input, "ghr_") ||
+		strings.HasPrefix(input, "glpat-") ||
+		strings.HasPrefix(input, "xox") ||
+		strings.Contains(input, "AKIA") ||
+		strings.Contains(input, "ASIA") ||
+		strings.Contains(input, "AIza") ||
+		strings.Contains(input, "ya29.") ||
+		strings.Contains(input, "1//") {
+		hasAPIKeyPrefix = true
 		}
-	}
 
 	// Fast return: API key prefix found, no need for further checks.
 	if hasAPIKeyPrefix {
@@ -850,12 +856,7 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 
 	// Check for credential keywords using case-insensitive byte comparison
 	// This avoids strings.ToLower allocation
-	if !hasCredentialKeyword && inputLen >= 4 {
-		hasCredentialKeyword = containsCredentialKeyword(input)
-	}
-
-	// Fast return: credential keyword found.
-	if hasCredentialKeyword {
+	if inputLen >= 4 && containsCredentialKeyword(input) {
 		return true
 	}
 
@@ -863,7 +864,6 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 	// Look for sequences of base64 characters (A-Z, a-z, 0-9, +, /, =)
 	hasBase64Pattern := false
 	if inputLen >= 20 {
-		// Only check if we haven't found other indicators
 		// Look for a sequence of at least 16 consecutive base64 chars
 		base64Run := 0
 		for i := 0; i < inputLen; i++ {
@@ -883,7 +883,7 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 
 	// If input has none of the characteristics, it's very unlikely to contain sensitive data
 	// Most patterns require at least one of these characteristics
-	return hasDigits || hasAtSign || hasProtocol || hasCredentialKeyword || hasAPIKeyPrefix || hasBase64Pattern
+	return hasDigits || hasAtSign || hasProtocol || hasAPIKeyPrefix || hasBase64Pattern
 }
 
 // containsCredentialKeyword checks if input contains any credential keyword.
@@ -1031,8 +1031,16 @@ func (f *SensitiveDataFilter) filterInChunksWithContext(ctx context.Context, inp
 	// For very large inputs, use chunked processing with overlap for boundary detection
 	overlap := chunkOverlapSize
 
-	var result strings.Builder
+	result := chunkFilterBufPool.Get().(*strings.Builder)
+	result.Reset()
 	result.Grow(inputLen)
+
+	defer func() {
+		result.Reset()
+		if result.Cap() <= 65536 {
+			chunkFilterBufPool.Put(result)
+		}
+	}()
 
 	// Calculate effective step (chunk size minus overlap)
 	step := filterChunkSize - overlap

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -149,17 +148,17 @@ func GetRequestID(ctx context.Context) string {
 //	}
 type ContextExtractor func(ctx context.Context) []Field
 
-// ContextExtractorRegistry manages a collection of context extractors.
+// contextExtractorRegistry manages a collection of context extractors.
 // It is thread-safe and supports dynamic addition of extractors.
 // Uses atomic.Pointer for lock-free reads.
-type ContextExtractorRegistry struct {
+type contextExtractorRegistry struct {
 	extractorsPtr atomic.Pointer[[]ContextExtractor]
 	mu            sync.Mutex // protects modification operations
 }
 
-// NewContextExtractorRegistry creates a new empty extractor registry.
-func NewContextExtractorRegistry() *ContextExtractorRegistry {
-	r := &ContextExtractorRegistry{}
+// newContextExtractorRegistry creates a new empty extractor registry.
+func newContextExtractorRegistry() *contextExtractorRegistry {
+	r := &contextExtractorRegistry{}
 	emptySlice := make([]ContextExtractor, 0)
 	r.extractorsPtr.Store(&emptySlice)
 	return r
@@ -168,7 +167,7 @@ func NewContextExtractorRegistry() *ContextExtractorRegistry {
 // Add adds a context extractor to the registry.
 // If the extractor is nil, it is ignored.
 // This method is thread-safe.
-func (r *ContextExtractorRegistry) Add(extractor ContextExtractor) {
+func (r *contextExtractorRegistry) Add(extractor ContextExtractor) {
 	if extractor == nil {
 		return
 	}
@@ -195,7 +194,7 @@ func (r *ContextExtractorRegistry) Add(extractor ContextExtractor) {
 // Panic Recovery: If an extractor panics, the panic is recovered, logged to stderr,
 // and the extractor is skipped. This ensures that a misbehaving extractor cannot
 // crash the application.
-func (r *ContextExtractorRegistry) Extract(ctx context.Context) []Field {
+func (r *contextExtractorRegistry) Extract(ctx context.Context) []Field {
 	if r == nil {
 		return nil
 	}
@@ -230,7 +229,7 @@ func (r *ContextExtractorRegistry) Extract(ctx context.Context) []Field {
 
 // executeExtractorWithRecovery executes an extractor with panic recovery.
 // If the extractor panics, the panic is recovered, logged to stderr, and nil is returned.
-func (r *ContextExtractorRegistry) executeExtractorWithRecovery(ctx context.Context, extractor ContextExtractor) (fields []Field) {
+func (r *contextExtractorRegistry) executeExtractorWithRecovery(ctx context.Context, extractor ContextExtractor) (fields []Field) {
 	defer func() {
 		if rec := recover(); rec != nil {
 			// Log panic to stderr
@@ -244,18 +243,18 @@ func (r *ContextExtractorRegistry) executeExtractorWithRecovery(ctx context.Cont
 
 // clone creates a copy of the registry with the same extractors.
 // The extractors themselves are shared (functions are not copied).
-func (r *ContextExtractorRegistry) clone() *ContextExtractorRegistry {
+func (r *contextExtractorRegistry) clone() *contextExtractorRegistry {
 	if r == nil {
 		return nil
 	}
 
 	extractorsPtr := r.extractorsPtr.Load()
 	if extractorsPtr == nil {
-		return NewContextExtractorRegistry()
+		return newContextExtractorRegistry()
 	}
 	extractors := *extractorsPtr
 
-	clone := &ContextExtractorRegistry{}
+	clone := &contextExtractorRegistry{}
 	clonedSlice := make([]ContextExtractor, len(extractors))
 	copy(clonedSlice, extractors)
 	clone.extractorsPtr.Store(&clonedSlice)
@@ -264,7 +263,7 @@ func (r *ContextExtractorRegistry) clone() *ContextExtractorRegistry {
 }
 
 // count returns the number of registered extractors.
-func (r *ContextExtractorRegistry) count() int {
+func (r *contextExtractorRegistry) count() int {
 	if r == nil {
 		return 0
 	}
@@ -276,7 +275,7 @@ func (r *ContextExtractorRegistry) count() int {
 }
 
 // clear removes all registered extractors.
-func (r *ContextExtractorRegistry) clear() {
+func (r *contextExtractorRegistry) clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -286,16 +285,16 @@ func (r *ContextExtractorRegistry) clear() {
 
 // Singleton default registry
 var (
-	defaultRegistry     *ContextExtractorRegistry
+	defaultRegistry     *contextExtractorRegistry
 	defaultRegistryOnce sync.Once
 )
 
 // defaultContextExtractorRegistry returns a singleton registry with the default extractors.
 // The default extractors extract trace_id, span_id, and request_id from context values.
 // This function is thread-safe and uses sync.Once for initialization.
-func defaultContextExtractorRegistry() *ContextExtractorRegistry {
+func defaultContextExtractorRegistry() *contextExtractorRegistry {
 	defaultRegistryOnce.Do(func() {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(defaultTraceIDExtractor)
 		registry.Add(defaultSpanIDExtractor)
 		registry.Add(defaultRequestIDExtractor)
@@ -339,26 +338,15 @@ var (
 )
 
 // stringValue converts any value to its string representation.
-// Uses type switch for common types to avoid fmt.Sprintf allocation.
+// Delegates to internal.MapKeyToString to avoid duplicating the type-switch logic.
 func stringValue(v any) string {
 	if v == nil {
 		return ""
 	}
+	// MapKeyToString takes a reflect.Value; for simple cases, use a type switch
 	switch val := v.(type) {
 	case string:
 		return val
-	case int:
-		return strconv.FormatInt(int64(val), 10)
-	case int64:
-		return strconv.FormatInt(val, 10)
-	case int32:
-		return strconv.FormatInt(int64(val), 10)
-	case uint:
-		return strconv.FormatUint(uint64(val), 10)
-	case uint64:
-		return strconv.FormatUint(val, 10)
-	case float64:
-		return strconv.FormatFloat(val, 'g', -1, 64)
 	case bool:
 		if val {
 			return "true"

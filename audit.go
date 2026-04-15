@@ -1,6 +1,7 @@
 package dd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -160,6 +161,23 @@ func DefaultAuditConfig() AuditConfig {
 		JSONFormat:       true,
 		MinimumSeverity:  AuditSeverityInfo,
 	}
+}
+
+// auditEncoderPool pools json.Encoder for audit event marshaling to reduce allocations.
+var auditEncoderPool = sync.Pool{
+	New: func() any {
+		buf := &bytes.Buffer{}
+		buf.Grow(512) // typical audit event size
+		enc := json.NewEncoder(buf)
+		enc.SetEscapeHTML(true)
+		return &auditEncoder{buf: buf, enc: enc}
+	},
+}
+
+// auditEncoder holds a buffer and encoder pair for reuse.
+type auditEncoder struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
 }
 
 // AuditLogger logs security audit events asynchronously.
@@ -330,12 +348,36 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 
 	var output string
 	if al.config.JSONFormat {
-		data, err := json.Marshal(event)
-		if err != nil {
+		// Use pooled encoder for better performance than json.Marshal
+		pe := auditEncoderPool.Get().(*auditEncoder)
+		pe.buf.Reset()
+
+		if err := pe.enc.Encode(event); err != nil {
+			// SECURITY: Zero buffer before returning to pool
+			b := pe.buf.Bytes()
+			for i := range b {
+				b[i] = 0
+			}
+			pe.buf.Reset()
+			auditEncoderPool.Put(pe)
 			fmt.Fprintf(os.Stderr, "dd: failed to marshal audit event: %v\n", err)
 			return
 		}
+
+		// json.Encoder adds a trailing newline, remove it
+		data := pe.buf.Bytes()
+		if len(data) > 0 && data[len(data)-1] == '\n' {
+			data = data[:len(data)-1]
+		}
 		output = string(data)
+
+		// SECURITY: Zero buffer before returning to pool
+		b := pe.buf.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		pe.buf.Reset()
+		auditEncoderPool.Put(pe)
 	} else {
 		if al.config.IncludeTimestamp {
 			output = fmt.Sprintf("[%s] %s: %s",

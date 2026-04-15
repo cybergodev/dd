@@ -1,6 +1,7 @@
 package dd
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"hash"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -97,6 +99,23 @@ func DefaultIntegrityConfigSafe() (IntegrityConfig, error) {
 	}, nil
 }
 
+// signDataPool pools bytes.Buffer for sign/verify operations to reduce allocations.
+// Used for building the data to be hashed. Security-critical: zeroed before return.
+var signDataPool = sync.Pool{
+	New: func() any {
+		buf := &bytes.Buffer{}
+		buf.Grow(256) // typical signed data size
+		return buf
+	},
+}
+
+// signResultPool pools signResult structs to reduce allocations in the hot signing path.
+var signResultPool = sync.Pool{
+	New: func() any {
+		return &signResult{}
+	},
+}
+
 // IntegritySigner signs log entries for integrity verification.
 // It creates a new HMAC hasher for each Sign/Verify operation to ensure
 // correct key management without pool-related complications.
@@ -155,41 +174,53 @@ type signResult struct {
 	signature []byte
 }
 
-// signData computes the HMAC signature for the given data builder content.
+// signData computes the HMAC signature for the given data buffer content.
 // It appends timestamp and sequence if configured, then computes the signature.
-func (s *IntegritySigner) signData(data *strings.Builder) signResult {
-	var timestamp int64
-	var sequence uint64
+// Uses pooled buffer to avoid allocations.
+func (s *IntegritySigner) signData(data *bytes.Buffer) *signResult {
+	result := signResultPool.Get().(*signResult)
+	result.timestamp = 0
+	result.sequence = 0
+	result.signature = result.signature[:0]
 
 	if s.config.IncludeTimestamp {
-		timestamp = time.Now().UnixNano()
+		result.timestamp = time.Now().UnixNano()
 		data.WriteString("|")
-		data.WriteString(strconv.FormatInt(timestamp, 10))
+		data.WriteString(strconv.FormatInt(result.timestamp, 10))
 	}
 
 	if s.config.IncludeSequence {
-		sequence = s.sequence.Add(1)
+		result.sequence = s.sequence.Add(1)
 		data.WriteString("|")
-		data.WriteString(strconv.FormatUint(sequence, 10))
+		data.WriteString(strconv.FormatUint(result.sequence, 10))
 	}
 
-	// Create a fresh hasher and compute HMAC
+	// Create a fresh hasher and compute HMAC directly from buffer bytes
 	hasher := s.newHasher()
-	hasher.Write([]byte(data.String()))
-	signature := hasher.Sum(nil)
+	hasher.Write(data.Bytes())
+	result.signature = hasher.Sum(result.signature)
 
-	return signResult{
-		timestamp: timestamp,
-		sequence:  sequence,
-		signature: signature,
-	}
+	return result
 }
 
 // buildSignatureString constructs the signature output string from the sign result.
-func (s *IntegritySigner) buildSignatureString(result signResult) string {
+// Uses pooled buffer to reduce allocations.
+func (s *IntegritySigner) buildSignatureString(result *signResult) string {
 	encodedSig := base64.RawURLEncoding.EncodeToString(result.signature)
 
-	var sigBuilder strings.Builder
+	sigBuilder := signDataPool.Get().(*bytes.Buffer)
+	sigBuilder.Reset()
+
+	defer func() {
+		// SECURITY: Zero buffer before returning to pool
+		b := sigBuilder.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		sigBuilder.Reset()
+		signDataPool.Put(sigBuilder)
+	}()
+
 	sigBuilder.WriteString(s.config.SignaturePrefix)
 
 	if s.config.IncludeTimestamp {
@@ -202,6 +233,10 @@ func (s *IntegritySigner) buildSignatureString(result signResult) string {
 	sigBuilder.WriteString(":")
 	sigBuilder.WriteString(encodedSig)
 	sigBuilder.WriteString("]")
+
+	// Release the signResult back to pool
+	result.signature = result.signature[:0]
+	signResultPool.Put(result)
 
 	return sigBuilder.String()
 }
@@ -218,10 +253,20 @@ func (s *IntegritySigner) Sign(message string) string {
 		return ""
 	}
 
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
-	result := s.signData(&data)
+	result := s.signData(data)
+
+	// Return data buffer to pool after signing
+	b := data.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
+
 	return s.buildSignatureString(result)
 }
 
@@ -236,17 +281,27 @@ func (s *IntegritySigner) SignFields(message string, fields []Field) string {
 		return ""
 	}
 
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
 	for _, f := range fields {
 		data.WriteString("|")
 		data.WriteString(f.Key)
 		data.WriteString("=")
-		fmt.Fprintf(&data, "%v", f.Value)
+		fmt.Fprintf(data, "%v", f.Value)
 	}
 
-	result := s.signData(&data)
+	result := s.signData(data)
+
+	// Return data buffer to pool after signing
+	b := data.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
+
 	return s.buildSignatureString(result)
 }
 
@@ -340,7 +395,8 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 	}
 
 	// Rebuild the signed data with the same format as Sign()
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
 	if s.config.IncludeTimestamp && timestampStr != "" {
@@ -353,10 +409,18 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		data.WriteString(sequenceStr)
 	}
 
-	// Create a fresh hasher and recompute signature
+	// Create a fresh hasher and recompute signature directly from buffer bytes
 	hasher := s.newHasher()
-	hasher.Write([]byte(data.String()))
+	hasher.Write(data.Bytes())
 	expectedSig := hasher.Sum(nil)
+
+	// Return buffer to pool
+	bufBytes := data.Bytes()
+	for i := range bufBytes {
+		bufBytes[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
 
 	// Compare signatures (constant-time comparison)
 	if !hmac.Equal(signature, expectedSig) {

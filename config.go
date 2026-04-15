@@ -152,6 +152,11 @@ func JSONConfig() Config {
 //     (io.Writer instances and function pointers are shared)
 //   - ContextExtractors slice is copied but extractor instances are shared
 //
+// MAINTENANCE: When adding new pointer/slice/map fields to Config, you MUST
+// add corresponding deep-copy logic in this method. Forgetting to do so will
+// cause subtle shared-mutation bugs. Search for "Clone" in this file to find
+// the switch-like copy blocks.
+//
 // The shallow copy behavior for io.Writer is intentional since writers are
 // typically shared resources that should not be duplicated.
 //

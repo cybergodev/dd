@@ -89,11 +89,14 @@ func section3CustomFiltering() {
 
 	// Start with empty filter and add custom patterns
 	filter := dd.NewEmptySensitiveDataFilter()
-	filter.AddPatterns(
+	if err := filter.AddPatterns(
 		`(?i)(internal_token[:\s=]+)[^\s]+`,
 		`(?i)(session_id[:\s=]+)[^\s]+`,
 		`(?i)(company_secret[:\s=]+)[^\s]+`,
-	)
+	); err != nil {
+		fmt.Printf("  Invalid pattern: %v\n", err)
+		return
+	}
 
 	cfg := dd.DefaultConfig()
 	cfg.Security = &dd.SecurityConfig{

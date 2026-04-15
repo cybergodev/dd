@@ -32,6 +32,12 @@ type LoggerRecorder struct {
 
 // Pre-compiled regex patterns for text log entry parsing.
 // Compiled once at package init to avoid recompilation on every parse call.
+//
+// LIMITATION: These patterns assume the default time format (ISO 8601) and
+// default level strings (DEBUG/INFO/WARN/ERROR/FATAL). If you customize
+// TimeFormat or JSONFieldNames in the logger config, the text-mode parsing
+// may silently fail to extract level/timestamp. For custom formats, use
+// JSON format (FormatJSON) which parses reliably via encoding/json.
 var (
 	// levelRegex extracts log level from format "[TIMESTAMP  LEVEL]"
 	levelRegex = regexp.MustCompile(`\[\d{4}-\d{2}-\d{2}T[^\]]*?\s+(\w+)\]`)

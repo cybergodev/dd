@@ -1528,7 +1528,7 @@ func TestContextExtractor_RegistryIntegration(t *testing.T) {
 	})
 
 	t.Run("registry can extract from context", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			traceID := GetTraceID(ctx)
 			if traceID != "" {
@@ -1549,7 +1549,7 @@ func TestContextExtractor_RegistryIntegration(t *testing.T) {
 	})
 
 	t.Run("multiple extractors work together", func(t *testing.T) {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		registry.Add(func(ctx context.Context) []Field {
 			return []Field{String("first", "1")}
 		})

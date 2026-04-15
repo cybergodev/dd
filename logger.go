@@ -90,9 +90,9 @@ type Logger struct {
 	writersMu      sync.Mutex // protects AddWriter/RemoveWriter operations
 	securityConfig atomic.Value
 
-	// contextExtractors stores the ContextExtractorRegistry for extracting
+	// contextExtractors stores the contextExtractorRegistry for extracting
 	// fields from context. If nil, default extractors are used.
-	contextExtractors atomic.Value // stores *ContextExtractorRegistry
+	contextExtractors atomic.Value // stores *contextExtractorRegistry
 	// contextExtractorsMu protects the Clone-Modify-Store sequence in AddContextExtractor
 	contextExtractorsMu sync.Mutex
 
@@ -199,7 +199,7 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 
 	// Initialize context extractors
 	if len(config.contextExtractors) > 0 {
-		registry := NewContextExtractorRegistry()
+		registry := newContextExtractorRegistry()
 		for _, extractor := range config.contextExtractors {
 			registry.Add(extractor)
 		}
@@ -252,8 +252,9 @@ func (l *Logger) getWriteErrorHandler() WriteErrorHandler {
 func (l *Logger) shouldLog(level LogLevel) bool {
 	// Check dynamic level resolver first
 	if resolver := l.getLevelResolver(); resolver != nil {
-		// Use context.Background() as default to prevent nil pointer panics
-		effectiveLevel := resolver(context.Background())
+		// Use context.TODO() as public log methods don't accept context.
+		// The resolver should handle nil-appropriate context gracefully.
+		effectiveLevel := resolver(context.TODO())
 		if level < effectiveLevel || level > LevelFatal {
 			return false
 		}
@@ -384,11 +385,11 @@ func (l *Logger) AddContextExtractor(extractor ContextExtractor) error {
 	defer l.contextExtractorsMu.Unlock()
 
 	// Load existing registry or create new one
-	var registry *ContextExtractorRegistry
+	var registry *contextExtractorRegistry
 	if v := l.contextExtractors.Load(); v != nil {
-		registry = v.(*ContextExtractorRegistry).clone()
+		registry = v.(*contextExtractorRegistry).clone()
 	} else {
-		registry = NewContextExtractorRegistry()
+		registry = newContextExtractorRegistry()
 	}
 
 	registry.Add(extractor)
@@ -406,11 +407,11 @@ func (l *Logger) SetContextExtractors(extractors ...ContextExtractor) error {
 
 	if len(extractors) == 0 {
 		// atomic.Value cannot store nil, store an empty registry instead
-		l.contextExtractors.Store(NewContextExtractorRegistry())
+		l.contextExtractors.Store(newContextExtractorRegistry())
 		return nil
 	}
 
-	registry := NewContextExtractorRegistry()
+	registry := newContextExtractorRegistry()
 	for _, extractor := range extractors {
 		registry.Add(extractor)
 	}
@@ -422,7 +423,7 @@ func (l *Logger) SetContextExtractors(extractors ...ContextExtractor) error {
 // Returns nil if no custom extractors are registered.
 func (l *Logger) GetContextExtractors() []ContextExtractor {
 	if v := l.contextExtractors.Load(); v != nil {
-		registry := v.(*ContextExtractorRegistry)
+		registry := v.(*contextExtractorRegistry)
 		extractorsPtr := registry.extractorsPtr.Load()
 		if extractorsPtr == nil {
 			return nil
@@ -527,9 +528,11 @@ func (l *Logger) shouldSample() bool {
 		return true
 	}
 
-	// Check if tick interval has passed and reset if needed
-	// This is the only part that needs mutex protection
-	// The time.Since calculation is done inside the lock to ensure strict thread safety
+		var count int64
+
+	// Check if tick interval has passed and reset if needed, then increment atomically.
+	// Both operations are inside the lock to prevent a race where one goroutine resets
+	// the counter while another has already read a stale value.
 	if state.config.Tick > 0 {
 		state.startMu.Lock()
 		elapsed := time.Since(state.start)
@@ -537,11 +540,12 @@ func (l *Logger) shouldSample() bool {
 			state.counter.Store(0)
 			state.start = time.Now()
 		}
+		count = state.counter.Add(1)
 		state.startMu.Unlock()
+	} else {
+		// No tick reset needed — pure atomic increment
+		count = state.counter.Add(1)
 	}
-
-	// Atomic increment - no mutex needed
-	count := state.counter.Add(1)
 
 	// Always log the first Initial messages
 	if count <= int64(state.config.Initial) {
@@ -1191,6 +1195,27 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 		}
 	}()
 
+	// Extract context fields from configured extractors.
+	// When extractors are registered, they are called with context.Background()
+	// since log methods do not accept a context parameter. Fields are merged
+	// with the entry fields so they appear in the final output.
+	var contextFields []Field
+	if v := l.contextExtractors.Load(); v != nil {
+		if registry := v.(*contextExtractorRegistry); registry != nil {
+			contextFields = registry.Extract(context.Background())
+		}
+	}
+
+	// Merge context fields with entry fields (entry fields take precedence)
+	allFields := entry.fields
+	if len(contextFields) > 0 {
+		if len(allFields) == 0 {
+			allFields = contextFields
+		} else {
+			allFields = mergeFieldSlices(contextFields, allFields)
+		}
+	}
+
 	// Fast path: check if hooks exist before allocating HookContext
 	hasHooks := l.hooks.Load() != nil
 
@@ -1201,7 +1226,7 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 			Event:          HookBeforeLog,
 			Level:          level,
 			Message:        entry.msg,
-			Fields:         entry.fields,
+			Fields:         allFields,
 			OriginalFields: entry.originalFields,
 			Timestamp:      time.Now(),
 		}
@@ -1211,7 +1236,7 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 	}
 
 	callerDepth := l.callerDepth + extraDepth
-	message := l.formatter.FormatWithMessage(level, callerDepth, entry.msg, entry.fields)
+	message := l.formatter.FormatWithMessage(level, callerDepth, entry.msg, allFields)
 	l.writeMessage(l.applySizeLimit(message))
 
 	// Trigger AfterLog hook (only if hooks exist)
@@ -1547,20 +1572,12 @@ func InitDefault(cfg ...Config) error {
 	return nil
 }
 
-// WaitForBackgroundCloses waits for all background goroutines spawned by
-// SetDefault and InitDefault to close old loggers. This is useful in test
-// teardown and graceful shutdown to ensure no goroutines are leaked.
+// waitForBackgroundCloses waits for all background goroutines spawned by
+// SetDefault and InitDefault to close old loggers. This is used internally
+// for graceful shutdown to ensure no goroutines are leaked.
 //
 // Returns true if all goroutines completed, false if the timeout was reached.
-//
-// Example:
-//
-//	dd.SetDefault(newLogger)
-//	// ... later in cleanup ...
-//	if !dd.WaitForBackgroundCloses(2 * time.Second) {
-//	    log.Println("Warning: background logger closes still pending")
-//	}
-func WaitForBackgroundCloses(timeout time.Duration) bool {
+func waitForBackgroundCloses(timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
 		backgroundCloseWg.Wait()

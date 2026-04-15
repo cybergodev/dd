@@ -74,10 +74,10 @@ func TestLeakSetDefaultTracksGoroutines(t *testing.T) {
 		SetDefault(logger)
 	}
 
-	// WaitForBackgroundCloses should succeed within a reasonable time
-	completed := WaitForBackgroundCloses(2 * time.Second)
+	// waitForBackgroundCloses should succeed within a reasonable time
+	completed := waitForBackgroundCloses(2 * time.Second)
 	if !completed {
-		t.Error("WaitForBackgroundCloses timed out — goroutines may be leaking")
+		t.Error("waitForBackgroundCloses timed out — goroutines may be leaking")
 	}
 
 	// Clean up
@@ -85,7 +85,7 @@ func TestLeakSetDefaultTracksGoroutines(t *testing.T) {
 	cfg.Output = ioDiscard()
 	logger, _ := New(cfg)
 	SetDefault(logger)
-	WaitForBackgroundCloses(2 * time.Second)
+	waitForBackgroundCloses(2 * time.Second)
 	logger.Close()
 }
 

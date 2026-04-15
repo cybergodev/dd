@@ -96,7 +96,7 @@ const (
 	dirPermissions = 0700
 )
 
-// FilePermissions (0600) for log files is defined in the internal package.
+// FilePermissions (0600) for log files is defined in internal/json.go.
 
 const (
 	// defaultFilterTimeout is the maximum time for sensitive data filtering.
