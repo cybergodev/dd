@@ -87,7 +87,7 @@ func TestLogFormatBoundaries(t *testing.T) {
 func TestAddSameWriterTwice(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	logger, _ := New(cfg)
 
 	err := logger.AddWriter(&buf)
@@ -109,7 +109,7 @@ func TestRemoveNonExistentWriter(t *testing.T) {
 
 func TestEmptyOutputsSlice(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Outputs = []io.Writer{}
+	cfg.Targets = []OutputTarget{}
 	logger, _ := New(cfg)
 	// Should not panic
 	logger.Info("test")
@@ -132,7 +132,7 @@ func TestMultiWriterZeroWriters(t *testing.T) {
 
 func TestBufferedWriterZeroSize(t *testing.T) {
 	var buf bytes.Buffer
-	_, err := NewBufferedWriter(&buf, 0)
+	_, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 0})
 	if err != nil {
 		t.Errorf("NewBufferedWriter with zero size should work (clamped), got: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestBufferedWriterZeroSize(t *testing.T) {
 
 func TestBufferedWriterNegativeSize(t *testing.T) {
 	var buf bytes.Buffer
-	_, err := NewBufferedWriter(&buf, -1)
+	_, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: -1})
 	if err == nil {
 		t.Error("NewBufferedWriter with negative size should return error")
 	}
@@ -153,7 +153,7 @@ func TestBufferedWriterNegativeSize(t *testing.T) {
 func TestSetWriteErrorHandler(t *testing.T) {
 	var handlerCalled atomic.Int32
 	cfg := DefaultConfig()
-	cfg.Output = &errorWriter{err: errors.New("write error")}
+	cfg.Targets = []OutputTarget{CustomOutput(&errorWriter{err: errors.New("write error")})}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -223,7 +223,7 @@ func TestSetHooksOnClosedLogger(t *testing.T) {
 func TestShutdown(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -461,9 +461,9 @@ func TestIntegrityConfigMarshalJSON(t *testing.T) {
 	config := IntegrityConfig{
 		SecretKey:        []byte("sensitive-key-that-should-not-appear"),
 		HashAlgorithm:    HashAlgorithmSHA256,
-		IncludeTimestamp:  true,
-		IncludeSequence:   true,
-		SignaturePrefix:   "[SIG:",
+		IncludeTimestamp: true,
+		IncludeSequence:  true,
+		SignaturePrefix:  "[SIG:",
 	}
 
 	data, err := json.Marshal(&config)
@@ -540,9 +540,9 @@ func TestIntegrityConfigCloneCompleteness(t *testing.T) {
 	original := IntegrityConfig{
 		SecretKey:        []byte(strings.Repeat("x", 32)),
 		HashAlgorithm:    HashAlgorithmSHA256,
-		IncludeTimestamp:  true,
-		IncludeSequence:   true,
-		SignaturePrefix:   "[SIG:",
+		IncludeTimestamp: true,
+		IncludeSequence:  true,
+		SignaturePrefix:  "[SIG:",
 	}
 
 	cloned := original.Clone()
@@ -695,7 +695,7 @@ func TestNewFileWriterWithConfig(t *testing.T) {
 func TestNewBufferedWriterWithConfig(t *testing.T) {
 	var buf bytes.Buffer
 
-	bw, err := NewBufferedWriter(&buf, 1024)
+	bw, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 1024})
 	if err != nil {
 		t.Fatalf("NewBufferedWriter error = %v", err)
 	}
@@ -717,7 +717,7 @@ func TestNewBufferedWriterWithConfig(t *testing.T) {
 }
 
 func TestNewBufferedWriterWithConfigNil(t *testing.T) {
-	_, err := NewBufferedWriter(nil)
+	_, err := NewBufferedWriter(nil, DefaultBufferedWriterConfig())
 	if err == nil {
 		t.Error("NewBufferedWriter(nil, _) should return error")
 	}
@@ -742,7 +742,7 @@ func TestJSONWithSpecialCharacters(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cfg := DefaultConfig()
-			cfg.Output = &buf
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 			cfg.Level = LevelInfo
 			cfg.Format = FormatJSON
 			logger, _ := New(cfg)
@@ -770,7 +770,7 @@ func TestJSONWithSpecialCharacters(t *testing.T) {
 func TestSamplingZeroInitial(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Sampling = &SamplingConfig{
 		Enabled:    true,
@@ -799,7 +799,7 @@ func TestSamplingZeroInitial(t *testing.T) {
 func TestConcurrentLoggingWithContext(t *testing.T) {
 	safeWriter := &threadSafeWriter{w: &bytes.Buffer{}}
 	cfg := DefaultConfig()
-	cfg.Output = safeWriter
+	cfg.Targets = []OutputTarget{CustomOutput(safeWriter)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -828,7 +828,7 @@ func TestConcurrentLoggingWithContext(t *testing.T) {
 func TestFieldMergeLargePath(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -859,7 +859,7 @@ func TestFieldMergeLargePath(t *testing.T) {
 func TestFieldMergeOverride(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Format = FormatJSON
 	logger, _ := New(cfg)
@@ -951,7 +951,7 @@ func TestWriterErrorWithHandler(t *testing.T) {
 	var capturedWriter io.Writer
 
 	cfg := DefaultConfig()
-	cfg.Output = &errorWriter{err: errors.New("custom write error")}
+	cfg.Targets = []OutputTarget{CustomOutput(&errorWriter{err: errors.New("custom write error")})}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -983,7 +983,7 @@ func TestPackageLevelLogWith(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -1047,7 +1047,7 @@ func TestConcurrentDefaultAccess(t *testing.T) {
 func TestContextExtractorIntegration(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Format = FormatJSON
 	logger, _ := New(cfg)
@@ -1086,7 +1086,7 @@ func TestNewFileWriterInvalidPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewFileWriter(tt.path)
+			_, err := NewFileWriter(tt.path, DefaultFileWriterConfig())
 			if err == nil {
 				t.Errorf("NewFileWriter(%q) should return error", tt.path)
 			}
@@ -1155,7 +1155,7 @@ func TestNewErrorFields(t *testing.T) {
 
 func TestFileWriterWriteAndClose(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.log")
-	fw, err := NewFileWriter(tmpFile)
+	fw, err := NewFileWriter(tmpFile, DefaultFileWriterConfig())
 	if err != nil {
 		t.Fatalf("NewFileWriter error = %v", err)
 	}

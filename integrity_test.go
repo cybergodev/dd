@@ -224,8 +224,12 @@ func TestIntegritySigner_NilSafety(t *testing.T) {
 }
 
 func TestNewIntegritySigner_NilConfig(t *testing.T) {
-	// Calling with no args uses defaults (previously tested nil config)
-	signer, err := NewIntegritySigner()
+	// Calling with generated default config
+	cfg, err := DefaultIntegrityConfigSafe()
+	if err != nil {
+		t.Fatalf("DefaultIntegrityConfigSafe() error = %v", err)
+	}
+	signer, err := NewIntegritySigner(cfg)
 	if err != nil {
 		t.Fatalf("NewIntegritySigner() error = %v", err)
 	}
@@ -302,7 +306,6 @@ func TestDefaultIntegrityConfigSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultIntegrityConfigSafe should not return error, got: %v", err)
 	}
-
 
 	if len(config.SecretKey) != 32 {
 		t.Errorf("Default SecretKey length should be 32, got %d", len(config.SecretKey))

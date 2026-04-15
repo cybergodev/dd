@@ -22,7 +22,7 @@ import (
 // Topics covered:
 // 1. Error handling and panic recovery
 // 2. Request tracing patterns
-// 3. Graceful shutdown
+// 3. Graceful shutdown (Shutdown with context)
 // 4. Concurrent logging
 // 5. Performance optimization
 // 6. Caller detection
@@ -46,7 +46,7 @@ func section1ErrorHandling() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{Path: "logs/errors.log"}
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/errors.log")}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -88,7 +88,7 @@ func section2RequestTracing() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{Path: "logs/requests.log"}
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/requests.log")}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -143,7 +143,7 @@ func section3GracefulShutdown() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{Path: "logs/shutdown.log"}
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/shutdown.log")}
 
 	logger, _ := dd.New(cfg)
 
@@ -191,7 +191,13 @@ func section3GracefulShutdown() {
 	time.Sleep(100 * time.Millisecond)
 
 	logger.Info("Shutting down gracefully")
-	logger.Close()
+
+	// Use Shutdown for graceful cleanup with timeout (preferred over Close)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := logger.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("  Shutdown error: %v\n", err)
+	}
 
 	fmt.Println("✓ Graceful shutdown completed")
 }
@@ -202,7 +208,7 @@ func section4ConcurrentLogging() {
 	fmt.Println("----------------------")
 
 	cfg := dd.DefaultConfig()
-	cfg.Output = io.Discard // Avoid I/O overhead for demo
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(io.Discard)} // Avoid I/O overhead for demo
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -243,7 +249,7 @@ func section5Performance() {
 
 	// Tip 1: Disable security filtering for max performance
 	fastCfg := dd.DefaultConfig()
-	fastCfg.Output = io.Discard
+	fastCfg.Targets = []dd.OutputTarget{dd.CustomOutput(io.Discard)}
 	fastCfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
 
 	fastLogger, _ := dd.New(fastCfg)
@@ -260,8 +266,8 @@ func section5Performance() {
 	duration := time.Since(start)
 	fmt.Printf("  Type-safe fields: %v for 10k messages\n", duration)
 
-	// Tip 3: Check level before expensive operations
-	if fastLogger.GetLevel() <= dd.LevelDebug {
+	// Tip 3: Use IsLevelEnabled to skip expensive operations
+	if fastLogger.IsDebugEnabled() {
 		expensiveData := computeExpensiveDebugInfo()
 		fastLogger.Debug(expensiveData)
 	}

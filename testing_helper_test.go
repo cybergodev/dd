@@ -25,7 +25,7 @@ func NewTestLoggerBuilder() *TestLoggerBuilder {
 
 // WithOutput sets the output writer for the test logger.
 func (b *TestLoggerBuilder) WithOutput(buf *bytes.Buffer) *TestLoggerBuilder {
-	b.cfg.Output = buf
+	b.cfg.Targets = []OutputTarget{CustomOutput(buf)}
 	return b
 }
 
@@ -73,11 +73,10 @@ func (b *TestLoggerBuilder) WithFatalHandler(handler func()) *TestLoggerBuilder 
 
 // WithFile sets file output configuration.
 func (b *TestLoggerBuilder) WithFile(path string, maxSizeMB int, maxBackups int) *TestLoggerBuilder {
-	b.cfg.File = &FileConfig{
-		Path:       path,
-		MaxSizeMB:  maxSizeMB,
-		MaxBackups: maxBackups,
-	}
+	target := FileOutput(path)
+	target.MaxSizeMB = maxSizeMB
+	target.MaxBackups = maxBackups
+	b.cfg.Targets = []OutputTarget{target}
 	return b
 }
 
@@ -110,7 +109,6 @@ func (b *TestLoggerBuilder) BuildNoError() (*Logger, error) {
 func (b *TestLoggerBuilder) Config() *Config {
 	return &b.cfg
 }
-
 
 // ============================================================================
 // ASSERTION HELPERS
@@ -198,7 +196,7 @@ func ResetAndGet(buf *bytes.Buffer) string {
 // This is a convenience function for simple test cases.
 func NewTestConfigWithBuffer(buf *bytes.Buffer) Config {
 	cfg := DefaultConfig()
-	cfg.Output = buf
+	cfg.Targets = []OutputTarget{CustomOutput(buf)}
 	cfg.Level = LevelDebug
 	return cfg
 }
@@ -206,7 +204,7 @@ func NewTestConfigWithBuffer(buf *bytes.Buffer) Config {
 // NewTestJSONConfigWithBuffer returns a JSON format config with output set to the buffer.
 func NewTestJSONConfigWithBuffer(buf *bytes.Buffer) Config {
 	cfg := DefaultConfig()
-	cfg.Output = buf
+	cfg.Targets = []OutputTarget{CustomOutput(buf)}
 	cfg.Level = LevelDebug
 	cfg.Format = FormatJSON
 	cfg.JSON = DefaultJSONOptions()

@@ -205,7 +205,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("WithFields creates entry with fields", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -224,7 +224,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("WithField creates entry with single field", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -240,7 +240,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("nested WithFields merges fields", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -263,7 +263,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("WithFields override", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -286,7 +286,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("entry immutability", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -317,7 +317,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("entry WithField method", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -337,7 +337,7 @@ func TestWithFields(t *testing.T) {
 	t.Run("entry LogWith merges fields", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		logger, _ := New(cfg)
 
@@ -359,7 +359,7 @@ func TestSampling(t *testing.T) {
 	t.Run("disabled sampling logs everything", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		logger, _ := New(cfg)
 
 		for i := 0; i < 100; i++ {
@@ -375,7 +375,7 @@ func TestSampling(t *testing.T) {
 	t.Run("sampling with Initial only", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Sampling = &SamplingConfig{Enabled: true, Initial: 10, Thereafter: 0}
 		logger, _ := New(cfg)
 
@@ -393,7 +393,7 @@ func TestSampling(t *testing.T) {
 		var buf bytes.Buffer
 		// Initial=5, Thereafter=5 means: first 5 always, then 1 out of every 5
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Sampling = &SamplingConfig{Enabled: true, Initial: 5, Thereafter: 5}
 		logger, _ := New(cfg)
 
@@ -411,7 +411,7 @@ func TestSampling(t *testing.T) {
 	t.Run("SetSampling at runtime", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		logger, _ := New(cfg)
 
 		// No sampling initially
@@ -465,7 +465,7 @@ func TestSampling(t *testing.T) {
 	t.Run("SetSampling nil disables sampling", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Sampling = &SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100}
 		logger, _ := New(cfg)
 
@@ -490,7 +490,7 @@ func TestHookContextOriginalFields(t *testing.T) {
 		var capturedFiltered []Field
 
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Security = DefaultSecurityConfig()
 		cfg.Hooks = NewHookRegistry()
 		cfg.Hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {
@@ -605,7 +605,7 @@ func TestLevelResolver(t *testing.T) {
 	t.Run("SetLevelResolver stores resolver", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelDebug
 		logger, _ := New(cfg)
 
@@ -622,7 +622,7 @@ func TestLevelResolver(t *testing.T) {
 	t.Run("resolver affects logging without context", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelDebug
 		logger, _ := New(cfg)
 
@@ -654,7 +654,7 @@ func TestLevelResolver(t *testing.T) {
 	t.Run("nil resolver uses static level", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -679,7 +679,7 @@ func TestLevelResolver(t *testing.T) {
 	t.Run("dynamic level changes at runtime", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelDebug
 		logger, _ := New(cfg)
 
@@ -835,7 +835,7 @@ func TestFieldValidation(t *testing.T) {
 
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		cfg.FieldValidation = &FieldValidationConfig{
 			Mode:                     FieldValidationWarn,
@@ -875,7 +875,7 @@ func TestFieldValidation(t *testing.T) {
 	t.Run("SetFieldValidation at runtime", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		logger, _ := New(cfg)
 
 		// No validation initially
@@ -1469,7 +1469,7 @@ func TestLogger_TriggerHooksViaLogging(t *testing.T) {
 		var hookCalled bool
 
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Hooks = NewHookRegistry()
 		cfg.Hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {
 			hookCalled = true
@@ -1487,7 +1487,7 @@ func TestLogger_TriggerHooksViaLogging(t *testing.T) {
 	t.Run("hook error stops logging", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Hooks = NewHookRegistry()
 		cfg.Hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {
 			return errors.New("hook error")
@@ -1655,7 +1655,7 @@ func TestEntry_PrintMethods(t *testing.T) {
 	t.Run("Entry Print", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -1670,7 +1670,7 @@ func TestEntry_PrintMethods(t *testing.T) {
 	t.Run("Entry Println", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -1685,7 +1685,7 @@ func TestEntry_PrintMethods(t *testing.T) {
 	t.Run("Entry Printf", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -1700,7 +1700,7 @@ func TestEntry_PrintMethods(t *testing.T) {
 	t.Run("Entry carries fields to print methods", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)

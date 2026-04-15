@@ -19,7 +19,7 @@ import (
 func TestFatalWithCustomHandler(t *testing.T) {
 	called := make(chan bool, 1)
 	cfg := DefaultConfig()
-	cfg.Output = io.Discard
+	cfg.Targets = []OutputTarget{CustomOutput(io.Discard)}
 	cfg.FatalHandler = func() { called <- true }
 	logger, _ := New(cfg)
 
@@ -36,7 +36,7 @@ func TestFatalWithCustomHandler(t *testing.T) {
 func TestFatalfWithCustomHandler(t *testing.T) {
 	called := make(chan string, 1)
 	cfg := DefaultConfig()
-	cfg.Output = io.Discard
+	cfg.Targets = []OutputTarget{CustomOutput(io.Discard)}
 	cfg.FatalHandler = func() { called <- "called" }
 	logger, _ := New(cfg)
 
@@ -54,8 +54,8 @@ func TestFatalfWithCustomHandler(t *testing.T) {
 
 func TestLoggerEntryFatal(t *testing.T) {
 	tests := []struct {
-		name   string
-		call   func(*LoggerEntry)
+		name string
+		call func(*LoggerEntry)
 	}{
 		{"Fatal", func(e *LoggerEntry) { e.Fatal("entry fatal message") }},
 		{"Fatalf", func(e *LoggerEntry) { e.Fatalf("entry fatalf %s", "message") }},
@@ -66,7 +66,7 @@ func TestLoggerEntryFatal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			called := make(chan bool, 1)
 			cfg := DefaultConfig()
-			cfg.Output = io.Discard
+			cfg.Targets = []OutputTarget{CustomOutput(io.Discard)}
 			cfg.FatalHandler = func() { called <- true }
 			logger, _ := New(cfg)
 

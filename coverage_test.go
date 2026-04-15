@@ -88,7 +88,7 @@ func TestLoggerPrintMethods(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cfg := DefaultConfig()
-			cfg.Output = &buf
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 			cfg.Level = LevelDebug
 
 			logger, err := New(cfg)
@@ -240,7 +240,7 @@ func TestSecurityFilterEnableDisable(t *testing.T) {
 func TestComplexTypeFormatting(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -302,7 +302,7 @@ func TestComplexTypeFormatting(t *testing.T) {
 func TestStructuredLoggingComplexTypes(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -534,7 +534,7 @@ func TestJSONOptionsCustomization(t *testing.T) {
 	config := DefaultConfig()
 	config.Level = LevelInfo
 	config.Format = FormatJSON
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.JSON = &JSONOptions{
 		PrettyPrint: true,
 		Indent:      "  ",
@@ -579,7 +579,7 @@ func TestJSONOptionsCustomization(t *testing.T) {
 func TestDynamicCallerDetection(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.DynamicCaller = true
 	cfg.FullPath = false
@@ -596,7 +596,7 @@ func TestDynamicCallerDetection(t *testing.T) {
 func TestFullPathCaller(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.DynamicCaller = true
 	cfg.FullPath = true
@@ -614,24 +614,7 @@ func TestFullPathCaller(t *testing.T) {
 // CONCURRENT WRITER ADD/REMOVE TESTS
 // ============================================================================
 
-func TestConcurrentWriterAddRemove(t *testing.T) {
-	logger, _ := New()
-	const goroutines = 50
-	var wg sync.WaitGroup
-
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			// Use a mutex-protected writer to avoid race condition in test
-			buf := &threadSafeBuffer{Buffer: &bytes.Buffer{}}
-			logger.AddWriter(buf)
-			logger.Info("test")
-			logger.RemoveWriter(buf)
-		}(i)
-	}
-	wg.Wait()
-}
+// TestConcurrentWriterAddRemove is covered by TestConcurrentAddRemoveWriter in dd_test.go
 
 // threadSafeBuffer wraps bytes.Buffer with mutex for safe concurrent access
 type threadSafeBuffer struct {
@@ -701,7 +684,7 @@ func TestSecureConfig(t *testing.T) {
 func TestEmptyStructuredFields(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -715,7 +698,7 @@ func TestEmptyStructuredFields(t *testing.T) {
 func TestVeryLongFieldName(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -730,7 +713,7 @@ func TestVeryLongFieldName(t *testing.T) {
 func TestSpecialCharactersInMessage(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -757,7 +740,7 @@ func TestFatalWithLoggingIntegration(t *testing.T) {
 	exited := false
 
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.FatalHandler = func() { exited = true }
 	logger, _ := New(cfg)
@@ -810,7 +793,7 @@ func TestPackageLevelPrintFunctions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cfg := DefaultConfig()
-			cfg.Output = &buf
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 			cfg.Level = LevelDebug
 
 			logger, err := New(cfg)
@@ -837,7 +820,7 @@ func TestPackageLevelPrintFunctions(t *testing.T) {
 func TestPackageLevelPrintWithSecurityFilter(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	cfg.Security = &SecurityConfig{
 		SensitiveFilter: newBasicSensitiveDataFilter(),

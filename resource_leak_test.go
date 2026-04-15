@@ -66,7 +66,7 @@ func TestLeakSetDefaultTracksGoroutines(t *testing.T) {
 	// Reset by creating fresh loggers
 	for i := 0; i < 5; i++ {
 		cfg := DefaultConfig()
-		cfg.Output = ioDiscard()
+		cfg.Targets = []OutputTarget{CustomOutput(ioDiscard())}
 		logger, err := New(cfg)
 		if err != nil {
 			t.Fatalf("Failed to create logger: %v", err)
@@ -82,7 +82,7 @@ func TestLeakSetDefaultTracksGoroutines(t *testing.T) {
 
 	// Clean up
 	cfg := DefaultConfig()
-	cfg.Output = ioDiscard()
+	cfg.Targets = []OutputTarget{CustomOutput(ioDiscard())}
 	logger, _ := New(cfg)
 	SetDefault(logger)
 	waitForBackgroundCloses(2 * time.Second)
@@ -168,7 +168,7 @@ func TestLeakAuditLoggerByTypeReleasedOnClose(t *testing.T) {
 // properly stops the background auto-flush goroutine.
 func TestLeakBufferedWriterGoroutineCleanup(t *testing.T) {
 	var buf safeBuffer
-	bw, err := NewBufferedWriter(&buf, 4096)
+	bw, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 4096})
 	if err != nil {
 		t.Fatalf("Failed to create buffered writer: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestLeakFileWriterCleanup(t *testing.T) {
 func TestLeakConcurrentCloseAndLog(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		cfg := DefaultConfig()
-		cfg.Output = ioDiscard()
+		cfg.Targets = []OutputTarget{CustomOutput(ioDiscard())}
 		cfg.Security = &SecurityConfig{
 			SensitiveFilter: NewSensitiveDataFilter(),
 		}

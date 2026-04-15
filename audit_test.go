@@ -367,8 +367,8 @@ func TestAuditConfig_CloneNil(t *testing.T) {
 }
 
 func TestNewAuditLogger_NilConfig(t *testing.T) {
-	// Calling with no args uses defaults (previously tested nil config)
-	al, err := NewAuditLogger()
+	// Calling with default config
+	al, err := NewAuditLogger(DefaultAuditConfig())
 	if err != nil {
 		t.Fatalf("NewAuditLogger() error = %v", err)
 	}

@@ -338,7 +338,8 @@ var (
 )
 
 // stringValue converts any value to its string representation.
-// Delegates to internal.MapKeyToString to avoid duplicating the type-switch logic.
+// Handles common types with a type switch for efficiency;
+// falls back to fmt.Sprintf for other types.
 func stringValue(v any) string {
 	if v == nil {
 		return ""

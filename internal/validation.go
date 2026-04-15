@@ -8,11 +8,6 @@ import (
 	"time"
 )
 
-// ErrOverlongEncoding is returned when a path contains UTF-8 overlong encoded bytes.
-// Overlong encodings can be used to bypass security checks by encoding characters
-// like '.' or '/' in non-canonical ways.
-var ErrOverlongEncoding = fmt.Errorf("UTF-8 overlong encoding detected")
-
 // ErrReservedName is returned when a path uses a Windows reserved device name.
 var ErrReservedName = fmt.Errorf("reserved device name")
 
@@ -103,11 +98,9 @@ func detectOverlongUTF8(data []byte) bool {
 
 // ValidateAndSecurePath validates a file path and returns a cleaned absolute path.
 // It performs security checks to prevent path traversal attacks and other vulnerabilities.
-// Parameters:
-//   - path: the file path to validate
-//   - maxPathLength: maximum allowed path length
-//   - emptyFilePathErr, nullByteErr, pathTooLongErr, pathTraversalErr, invalidPathErr: errors to return
-func ValidateAndSecurePath(path string, maxPathLength int, emptyFilePathErr, nullByteErr, pathTooLongErr, pathTraversalErr, invalidPathErr error) (string, error) {
+// All error parameters are caller-provided sentinel errors so that errors.Is() matching
+// works correctly in the calling package.
+func ValidateAndSecurePath(path string, maxPathLength int, emptyFilePathErr, nullByteErr, pathTooLongErr, pathTraversalErr, invalidPathErr, overlongErr error) (string, error) {
 	if path == "" {
 		return "", emptyFilePathErr
 	}
@@ -120,7 +113,7 @@ func ValidateAndSecurePath(path string, maxPathLength int, emptyFilePathErr, nul
 	// These can be used to encode path separators and traversal sequences
 	// in non-canonical ways to bypass security checks
 	if detectOverlongUTF8([]byte(path)) {
-		return "", ErrOverlongEncoding
+		return "", overlongErr
 	}
 
 	// Check for Windows Alternate Data Streams (ADS)
@@ -433,8 +426,10 @@ func ValidateFieldKeyStrict(key string) error {
 		}
 
 		// Only allow alphanumeric, underscore, hyphen, dot
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+		isLower := r >= 'a' && r <= 'z'
+		isUpper := r >= 'A' && r <= 'Z'
+		isDigit := r >= '0' && r <= '9'
+		if !isLower && !isUpper && !isDigit && r != '_' && r != '-' && r != '.' {
 			return fmt.Errorf("field key contains invalid character: %q", r)
 		}
 	}

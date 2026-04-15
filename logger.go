@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/cybergodev/dd/internal"
 )
@@ -26,19 +27,32 @@ var (
 // Compile-time interface verification
 var _ LogProvider = (*Logger)(nil)
 
-// Re-export log level types and constants
+// LogLevel represents the verbosity level for log messages.
+// Higher values indicate higher severity. Use LevelDebug through LevelFatal constants.
 type LogLevel = internal.LogLevel
 
 const (
+	// LevelDebug logs detailed information for debugging during development.
 	LevelDebug = internal.LevelDebug
-	LevelInfo  = internal.LevelInfo
-	LevelWarn  = internal.LevelWarn
+	// LevelInfo logs general operational information about application behavior.
+	LevelInfo = internal.LevelInfo
+	// LevelWarn logs warning conditions that may indicate potential problems.
+	LevelWarn = internal.LevelWarn
+	// LevelError logs error conditions that should be investigated.
 	LevelError = internal.LevelError
+	// LevelFatal logs severe errors followed by program termination via os.Exit(1).
+	// WARNING: defer statements will NOT execute after a fatal log.
 	LevelFatal = internal.LevelFatal
 )
 
+// FatalHandler is called after a fatal-level log message is written.
+// Use this to perform custom cleanup before program termination.
+// If nil, the default handler calls os.Exit(1).
 type FatalHandler func()
 
+// WriteErrorHandler is called when a write operation to an io.Writer fails.
+// The handler receives the writer that failed and the error that occurred.
+// If no handler is set, write errors are silently ignored.
 type WriteErrorHandler func(writer io.Writer, err error)
 
 // LevelResolver is a function that determines the effective log level at runtime.
@@ -65,6 +79,11 @@ type Flusher interface {
 	Flush() error
 }
 
+// Logger is the core logging type that provides thread-safe, structured logging
+// with sensitive data filtering, context extraction, hooks, and sampling support.
+// Create instances using New() with a Config struct.
+//
+// All methods are safe for concurrent use across goroutines.
 type Logger struct {
 	level  atomic.Int32
 	closed atomic.Bool
@@ -248,22 +267,44 @@ func (l *Logger) getWriteErrorHandler() WriteErrorHandler {
 	return nil
 }
 
-// shouldLog checks if a message should be logged based on level and logger state
+// loadHooks returns the current hook registry or nil if no hooks are set.
+func (l *Logger) loadHooks() *HookRegistry {
+	if v := l.hooks.Load(); v != nil {
+		return v.(*HookRegistry)
+	}
+	return nil
+}
+
+// loadContextExtractors returns the current context extractor registry or nil.
+func (l *Logger) loadContextExtractors() *contextExtractorRegistry {
+	if v := l.contextExtractors.Load(); v != nil {
+		return v.(*contextExtractorRegistry)
+	}
+	return nil
+}
+
+// loadSamplingState returns the current sampling state or nil.
+func (l *Logger) loadSamplingState() *samplingState {
+	if v := l.sampling.Load(); v != nil {
+		return v.(*samplingState)
+	}
+	return nil
+}
+
+// shouldLog checks if a message should be logged based on level and logger state.
+// When a LevelResolver is set, it determines the effective level dynamically.
+// Otherwise, the static level is used.
 func (l *Logger) shouldLog(level LogLevel) bool {
-	// Check dynamic level resolver first
+	var effectiveLevel LogLevel
 	if resolver := l.getLevelResolver(); resolver != nil {
 		// Use context.TODO() as public log methods don't accept context.
 		// The resolver should handle nil-appropriate context gracefully.
-		effectiveLevel := resolver(context.TODO())
-		if level < effectiveLevel || level > LevelFatal {
-			return false
-		}
+		effectiveLevel = resolver(context.TODO())
 	} else {
-		// Use static level
-		currentLevel := LogLevel(l.level.Load())
-		if level < currentLevel || level > LevelFatal {
-			return false
-		}
+		effectiveLevel = LogLevel(l.level.Load())
+	}
+	if level < effectiveLevel || level > LevelFatal {
+		return false
 	}
 	if l.closed.Load() {
 		return false
@@ -386,8 +427,8 @@ func (l *Logger) AddContextExtractor(extractor ContextExtractor) error {
 
 	// Load existing registry or create new one
 	var registry *contextExtractorRegistry
-	if v := l.contextExtractors.Load(); v != nil {
-		registry = v.(*contextExtractorRegistry).clone()
+	if existing := l.loadContextExtractors(); existing != nil {
+		registry = existing.clone()
 	} else {
 		registry = newContextExtractorRegistry()
 	}
@@ -422,17 +463,17 @@ func (l *Logger) SetContextExtractors(extractors ...ContextExtractor) error {
 // GetContextExtractors returns a copy of the current context extractors (thread-safe).
 // Returns nil if no custom extractors are registered.
 func (l *Logger) GetContextExtractors() []ContextExtractor {
-	if v := l.contextExtractors.Load(); v != nil {
-		registry := v.(*contextExtractorRegistry)
-		extractorsPtr := registry.extractorsPtr.Load()
-		if extractorsPtr == nil {
-			return nil
-		}
-		extractors := make([]ContextExtractor, len(*extractorsPtr))
-		copy(extractors, *extractorsPtr)
-		return extractors
+	registry := l.loadContextExtractors()
+	if registry == nil {
+		return nil
 	}
-	return nil
+	extractorsPtr := registry.extractorsPtr.Load()
+	if extractorsPtr == nil {
+		return nil
+	}
+	extractors := make([]ContextExtractor, len(*extractorsPtr))
+	copy(extractors, *extractorsPtr)
+	return extractors
 }
 
 // ============================================================================
@@ -455,8 +496,8 @@ func (l *Logger) AddHook(event HookEvent, hook Hook) error {
 
 	// Load existing registry or create new one
 	var registry *HookRegistry
-	if v := l.hooks.Load(); v != nil {
-		registry = v.(*HookRegistry).clone()
+	if existing := l.loadHooks(); existing != nil {
+		registry = existing.clone()
 	} else {
 		registry = NewHookRegistry()
 	}
@@ -490,8 +531,8 @@ func (l *Logger) SetHooks(registry *HookRegistry) error {
 // GetHooks returns a copy of the current hook registry (thread-safe).
 // Returns nil if no hooks are registered.
 func (l *Logger) GetHooks() *HookRegistry {
-	if v := l.hooks.Load(); v != nil {
-		return v.(*HookRegistry).clone()
+	if registry := l.loadHooks(); registry != nil {
+		return registry.clone()
 	}
 	return nil
 }
@@ -499,8 +540,7 @@ func (l *Logger) GetHooks() *HookRegistry {
 // triggerHooks triggers hooks for the given event and context.
 // Returns an error if any hook returns an error.
 func (l *Logger) triggerHooks(ctx context.Context, hookCtx *HookContext) error {
-	if v := l.hooks.Load(); v != nil {
-		registry := v.(*HookRegistry)
+	if registry := l.loadHooks(); registry != nil {
 		return registry.Trigger(ctx, hookCtx.Event, hookCtx)
 	}
 	return nil
@@ -518,17 +558,16 @@ func (l *Logger) triggerHooks(ctx context.Context, hookCtx *HookContext) error {
 //
 // Thread-safe using atomic operations for counter and mutex only for tick reset.
 func (l *Logger) shouldSample() bool {
-	v := l.sampling.Load()
-	if v == nil {
+	state := l.loadSamplingState()
+	if state == nil {
 		return true // No sampling configured
 	}
 
-	state := v.(*samplingState)
 	if state.config == nil || !state.config.Enabled {
 		return true
 	}
 
-		var count int64
+	var count int64
 
 	// Check if tick interval has passed and reset if needed, then increment atomically.
 	// Both operations are inside the lock to prevent a race where one goroutine resets
@@ -611,11 +650,10 @@ func (l *Logger) SetSampling(config *SamplingConfig) {
 // GetSampling returns the current sampling configuration (thread-safe).
 // Returns nil if sampling is not enabled.
 func (l *Logger) GetSampling() *SamplingConfig {
-	v := l.sampling.Load()
-	if v == nil {
+	state := l.loadSamplingState()
+	if state == nil {
 		return nil
 	}
-	state := v.(*samplingState)
 	if state.config == nil || !state.config.Enabled {
 		return nil
 	}
@@ -898,26 +936,56 @@ func (l *Logger) Flush() error {
 	return firstErr
 }
 
-// writeMessage writes a message to all configured writers
+// writeMessage writes a message to all configured writers.
+// Uses unsafe pointer conversion to avoid string-to-bytes copy when possible.
 func (l *Logger) writeMessage(message string) {
 	if l.closed.Load() || len(message) == 0 {
 		return
 	}
 
+	msgLen := len(message)
+
+	// Fast path for single writer: use unsafe to avoid string->[]byte copy.
+	// Write message and newline as two separate calls to avoid any allocation.
+	// The string's backing array is read-only but safe to read via io.Writer.
+	writersPtr := l.writersPtr.Load()
+	if writersPtr == nil || len(*writersPtr) == 0 {
+		return
+	}
+
+	writers := *writersPtr
+	writerCount := len(writers)
+
+	// Use zero-copy path for messages that fit within reasonable size.
+	// This avoids the pool Get/Put overhead and the string copy entirely.
+	if writerCount == 1 {
+		w := writers[0]
+		// Convert string to []byte without copy using unsafe
+		msgBytes := unsafe.Slice(unsafe.StringData(message), msgLen)
+		if _, err := l.safeWrite(w, msgBytes); err != nil {
+			l.handleWriteError(w, err)
+		}
+		// Write newline separately to avoid allocating a combined buffer
+		if _, err := w.Write(newlineBytes); err != nil {
+			l.handleWriteError(w, err)
+		}
+		return
+	}
+
+	// Multi-writer path: use pooled buffer to avoid repeated unsafe conversions
+	// (each writer would need its own copy since []byte from unsafe is read-only)
 	bufPtr := messagePool.Get().(*[]byte)
 	buf := *bufPtr
 	defer func() {
 		if cap(buf) <= maxBufferSize {
 			*bufPtr = buf[:0]
 		} else {
-			// Reset to default capacity to avoid holding large buffers in the pool
-			// This prevents memory leaks while still returning the pointer to the pool
 			*bufPtr = make([]byte, 0, defaultBufferSize)
 		}
 		messagePool.Put(bufPtr)
 	}()
 
-	needed := len(message) + 1
+	needed := msgLen + 1
 	if cap(buf) < needed {
 		buf = make([]byte, 0, max(needed, defaultBufferSize))
 	} else {
@@ -927,30 +995,15 @@ func (l *Logger) writeMessage(message string) {
 	buf = append(buf, message...)
 	buf = append(buf, '\n')
 
-	// Load writers slice atomically - no mutex needed for reading
-	writersPtr := l.writersPtr.Load()
-	if writersPtr == nil || len(*writersPtr) == 0 {
-		return
-	}
-
-	writers := *writersPtr
-	writerCount := len(writers)
-
-	if writerCount == 1 {
-		w := writers[0]
-		if _, err := l.safeWrite(w, buf); err != nil {
-			l.handleWriteError(w, err)
-		}
-		return
-	}
-
-	// Iterate directly over the immutable slice - no copy needed
 	for _, writer := range writers {
 		if _, err := l.safeWrite(writer, buf); err != nil {
 			l.handleWriteError(writer, err)
 		}
 	}
 }
+
+// newlineBytes is a pre-allocated slice for writing trailing newlines.
+var newlineBytes = []byte{'\n'}
 
 // handleWriteError handles write errors by calling both legacy handler and hooks.
 func (l *Logger) handleWriteError(writer io.Writer, err error) {
@@ -1082,12 +1135,18 @@ func (l *Logger) Shutdown(ctx context.Context) error {
 		}
 		_ = l.triggerHooks(ctx, hookCtx)
 
+		// Close writers BEFORE canceling internal context.
+		// This preserves ctx's deadline semantics so closeWritersLocked
+		// can respond to the caller's timeout rather than immediately
+		// seeing a canceled context from l.cancel().
+		l.writersMu.Lock()
+		closeErr := l.closeWritersLocked(ctx)
+		l.writersMu.Unlock()
+
+		// Now cancel internal context for background goroutines.
 		l.cancel()
 
-		l.writersMu.Lock()
-		defer l.writersMu.Unlock()
-
-		done <- l.closeWritersLocked(ctx)
+		done <- closeErr
 	}()
 
 	// Wait for completion or timeout
@@ -1200,24 +1259,25 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 	// since log methods do not accept a context parameter. Fields are merged
 	// with the entry fields so they appear in the final output.
 	var contextFields []Field
-	if v := l.contextExtractors.Load(); v != nil {
-		if registry := v.(*contextExtractorRegistry); registry != nil {
-			contextFields = registry.Extract(context.Background())
-		}
+	if registry := l.loadContextExtractors(); registry != nil {
+		contextFields = registry.Extract(context.Background())
 	}
 
 	// Merge context fields with entry fields (entry fields take precedence)
 	allFields := entry.fields
 	if len(contextFields) > 0 {
 		if len(allFields) == 0 {
-			allFields = contextFields
+			// Context fields have not been filtered yet — apply security filtering
+			allFields = l.processFields(contextFields)
 		} else {
-			allFields = mergeFieldSlices(contextFields, allFields)
+			// entry.fields are already filtered; contextFields need filtering
+			filteredContextFields := l.processFields(contextFields)
+			allFields = mergeFieldSlices(filteredContextFields, allFields)
 		}
 	}
 
 	// Fast path: check if hooks exist before allocating HookContext
-	hasHooks := l.hooks.Load() != nil
+	hasHooks := l.loadHooks() != nil
 
 	var hookCtx *HookContext
 	if hasHooks {
@@ -1287,7 +1347,7 @@ func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {
 
 	// Only copy original fields if hooks are registered (they may need them)
 	var originalFields []Field
-	if l.hooks.Load() != nil && len(fields) > 0 {
+	if l.loadHooks() != nil && len(fields) > 0 {
 		originalFields = make([]Field, len(fields))
 		copy(originalFields, fields)
 	}
@@ -1302,27 +1362,48 @@ func (l *Logger) LogWith(level LogLevel, msg string, fields ...Field) {
 	})
 }
 
+// Debug logs a message at DEBUG level.
 func (l *Logger) Debug(args ...any) { l.Log(LevelDebug, args...) }
-func (l *Logger) Info(args ...any)  { l.Log(LevelInfo, args...) }
-func (l *Logger) Warn(args ...any)  { l.Log(LevelWarn, args...) }
+
+// Info logs a message at INFO level.
+func (l *Logger) Info(args ...any) { l.Log(LevelInfo, args...) }
+
+// Warn logs a message at WARN level.
+func (l *Logger) Warn(args ...any) { l.Log(LevelWarn, args...) }
+
+// Error logs a message at ERROR level.
 func (l *Logger) Error(args ...any) { l.Log(LevelError, args...) }
 
 // Fatal logs a message at FATAL level and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute. For graceful shutdown, use Error() with custom logic.
 func (l *Logger) Fatal(args ...any) { l.Log(LevelFatal, args...) }
 
+// Debugf logs a formatted message at DEBUG level.
 func (l *Logger) Debugf(format string, args ...any) { l.Logf(LevelDebug, format, args...) }
-func (l *Logger) Infof(format string, args ...any)  { l.Logf(LevelInfo, format, args...) }
-func (l *Logger) Warnf(format string, args ...any)  { l.Logf(LevelWarn, format, args...) }
+
+// Infof logs a formatted message at INFO level.
+func (l *Logger) Infof(format string, args ...any) { l.Logf(LevelInfo, format, args...) }
+
+// Warnf logs a formatted message at WARN level.
+func (l *Logger) Warnf(format string, args ...any) { l.Logf(LevelWarn, format, args...) }
+
+// Errorf logs a formatted message at ERROR level.
 func (l *Logger) Errorf(format string, args ...any) { l.Logf(LevelError, format, args...) }
 
 // Fatalf logs a formatted message at FATAL level and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute. For graceful shutdown, use Errorf() with custom logic.
 func (l *Logger) Fatalf(format string, args ...any) { l.Logf(LevelFatal, format, args...) }
 
+// DebugWith logs a structured message with fields at DEBUG level.
 func (l *Logger) DebugWith(msg string, fields ...Field) { l.LogWith(LevelDebug, msg, fields...) }
-func (l *Logger) InfoWith(msg string, fields ...Field)  { l.LogWith(LevelInfo, msg, fields...) }
-func (l *Logger) WarnWith(msg string, fields ...Field)  { l.LogWith(LevelWarn, msg, fields...) }
+
+// InfoWith logs a structured message with fields at INFO level.
+func (l *Logger) InfoWith(msg string, fields ...Field) { l.LogWith(LevelInfo, msg, fields...) }
+
+// WarnWith logs a structured message with fields at WARN level.
+func (l *Logger) WarnWith(msg string, fields ...Field) { l.LogWith(LevelWarn, msg, fields...) }
+
+// ErrorWith logs a structured message with fields at ERROR level.
 func (l *Logger) ErrorWith(msg string, fields ...Field) { l.LogWith(LevelError, msg, fields...) }
 
 // FatalWith logs a structured message at FATAL level and terminates the program via os.Exit(1).
@@ -1409,7 +1490,6 @@ var (
 	defaultLogger       atomic.Pointer[Logger]
 	defaultOnce         sync.Once
 	defaultInitErr      atomic.Value // stores error from initialization (errNoInit means no error)
-	defaultUsedFallback atomic.Bool  // true if fallback logger was created
 
 	// backgroundCloseWg tracks goroutines spawned by SetDefault/InitDefault
 	// to close old loggers. This prevents goroutine leaks during rapid replacement.
@@ -1480,7 +1560,6 @@ func Default() *Logger {
 			if err != nil {
 				// Store the error for later retrieval
 				defaultInitErr.Store(err)
-				defaultUsedFallback.Store(true)
 
 				// Print warning to stderr about fallback logger creation
 				fmt.Fprintf(os.Stderr, "[dd] WARNING: Default logger initialization failed: %v\n", err)
@@ -1567,7 +1646,6 @@ func InitDefault(cfg ...Config) error {
 
 	// Clear any previous initialization error
 	defaultInitErr.Store(errNoInit)
-	defaultUsedFallback.Store(false)
 
 	return nil
 }
@@ -1596,18 +1674,32 @@ func waitForBackgroundCloses(timeout time.Duration) bool {
 // Package-level Logging Functions (use default logger)
 // ============================================================================
 
+// Debug logs a message at DEBUG level using the default logger.
 func Debug(args ...any) { Default().Log(LevelDebug, args...) }
-func Info(args ...any)  { Default().Log(LevelInfo, args...) }
-func Warn(args ...any)  { Default().Log(LevelWarn, args...) }
+
+// Info logs a message at INFO level using the default logger.
+func Info(args ...any) { Default().Log(LevelInfo, args...) }
+
+// Warn logs a message at WARN level using the default logger.
+func Warn(args ...any) { Default().Log(LevelWarn, args...) }
+
+// Error logs a message at ERROR level using the default logger.
 func Error(args ...any) { Default().Log(LevelError, args...) }
 
 // Fatal logs a message at FATAL level using the default logger and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute. For graceful shutdown, use Error() with custom logic.
 func Fatal(args ...any) { Default().Log(LevelFatal, args...) }
 
+// Debugf logs a formatted message at DEBUG level using the default logger.
 func Debugf(format string, args ...any) { Default().Logf(LevelDebug, format, args...) }
-func Infof(format string, args ...any)  { Default().Logf(LevelInfo, format, args...) }
-func Warnf(format string, args ...any)  { Default().Logf(LevelWarn, format, args...) }
+
+// Infof logs a formatted message at INFO level using the default logger.
+func Infof(format string, args ...any) { Default().Logf(LevelInfo, format, args...) }
+
+// Warnf logs a formatted message at WARN level using the default logger.
+func Warnf(format string, args ...any) { Default().Logf(LevelWarn, format, args...) }
+
+// Errorf logs a formatted message at ERROR level using the default logger.
 func Errorf(format string, args ...any) { Default().Logf(LevelError, format, args...) }
 
 // Fatalf logs a formatted message at FATAL level using the default logger and terminates the program via os.Exit(1).

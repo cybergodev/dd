@@ -11,16 +11,16 @@ import (
 	"github.com/cybergodev/dd"
 )
 
-// Convenience Constructors - Quick Logger Setup
+// Quick Logger Setup - Config and Targets Patterns
 //
 // Topics covered:
-// 1. ToFile/ToJSONFile - File output
-// 2. ToConsole - Console only
-// 3. ToAll/ToAllJSON - Dual output
-// 4. ToWriter/ToWriters - Custom writers
+// 1. FileOutput - File output with rotation
+// 2. ConsoleOutput - Console only
+// 3. Multiple Targets - Dual output (console + file)
+// 4. CustomOutput - Custom writers
 // 5. Proper error handling patterns
 func main() {
-	fmt.Println("=== DD Convenience Constructors ===")
+	fmt.Println("=== DD Quick Logger Setup ===")
 
 	section1FileOutput()
 	section2ConsoleOutput()
@@ -28,7 +28,7 @@ func main() {
 	section4CustomWriters()
 	section5ConstructorErrors()
 
-	fmt.Println("\n✅ Convenience examples completed!")
+	fmt.Println("\n✅ Quick setup examples completed!")
 	fmt.Println("\nCheck logs/ directory for output files")
 }
 
@@ -37,18 +37,24 @@ func section1FileOutput() {
 	fmt.Println("1. File Output")
 	fmt.Println("---------------")
 
-	// Default file: logs/app.log
-	logger, _ := dd.ToFile()
+	// Default file: logs/app.log (text format)
+	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/app.log")}
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 	logger.Info("Text format to logs/app.log")
 
 	// Custom path
-	logger2, _ := dd.ToFile("logs/custom.log")
+	cfg2 := dd.DefaultConfig()
+	cfg2.Targets = []dd.OutputTarget{dd.FileOutput("logs/custom.log")}
+	logger2, _ := dd.New(cfg2)
 	defer logger2.Close()
 	logger2.Info("Text format to logs/custom.log")
 
-	// JSON format
-	logger3, _ := dd.ToJSONFile("logs/json.log")
+	// JSON format to file
+	cfg3 := dd.JSONConfig()
+	cfg3.Targets = []dd.OutputTarget{dd.FileOutput("logs/json.log")}
+	logger3, _ := dd.New(cfg3)
 	defer logger3.Close()
 	logger3.InfoWith("JSON format",
 		dd.String("format", "json"),
@@ -64,7 +70,9 @@ func section2ConsoleOutput() {
 	fmt.Println("------------------")
 
 	// Console only (stdout)
-	logger, _ := dd.ToConsole()
+	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 
 	logger.Info("Console only - no file")
@@ -80,13 +88,23 @@ func section3DualOutput() {
 	fmt.Println("3. Dual Output (Console + File)")
 	fmt.Println("--------------------------------")
 
-	// Text format to both
-	logger, _ := dd.ToAll("logs/dual.log")
+	// Text format to both console and file
+	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{
+		dd.ConsoleOutput(),
+		dd.FileOutput("logs/dual.log"),
+	}
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 	logger.Info("Appears in BOTH console and file")
 
-	// JSON format to both
-	logger2, _ := dd.ToAllJSON("logs/dual-json.log")
+	// JSON format to both console and file
+	cfg2 := dd.JSONConfig()
+	cfg2.Targets = []dd.OutputTarget{
+		dd.ConsoleOutput(),
+		dd.FileOutput("logs/dual-json.log"),
+	}
+	logger2, _ := dd.New(cfg2)
 	defer logger2.Close()
 	logger2.InfoWith("JSON to both outputs",
 		dd.String("format", "json"),
@@ -102,17 +120,26 @@ func section4CustomWriters() {
 
 	// Single custom writer
 	var buf bytes.Buffer
-	logger, _ := dd.ToWriter(&buf)
+	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(&buf)}
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 
 	logger.Info("Written to buffer")
 	fmt.Printf("  Buffer content: %s", buf.String()[:50])
 
-	// Multiple writers
-	file, _ := os.Create("logs/multi-writer.log")
+	// Multiple writers via custom MultiWriter
+	file, err := os.Create("logs/multi-writer.log")
+	if err != nil {
+		fmt.Printf("  Failed to create file: %v\n", err)
+		return
+	}
 	defer file.Close()
 
-	logger2, _ := dd.ToWriters(os.Stdout, file)
+	multiWriter := dd.NewMultiWriter(os.Stdout, file)
+	cfg2 := dd.DefaultConfig()
+	cfg2.Targets = []dd.OutputTarget{dd.CustomOutput(multiWriter)}
+	logger2, _ := dd.New(cfg2)
 	defer logger2.Close()
 
 	logger2.Info("Goes to stdout AND file")
@@ -133,28 +160,38 @@ func section5ConstructorErrors() {
 	defer logger.Close()
 	logger.Debug("Created with explicit error handling")
 
-	// Pattern 2: Using ToFile with error handling
-	logger2, err := dd.ToFile("logs/safe.log")
+	// Pattern 2: File output with fallback to console
+	cfg2 := dd.DefaultConfig()
+	cfg2.Targets = []dd.OutputTarget{dd.FileOutput("logs/safe.log")}
+	logger2, err := dd.New(cfg2)
 	if err != nil {
 		log.Printf("warning: could not create file logger: %v", err)
 		// Fall back to console
-		logger2, _ = dd.ToConsole()
+		fallbackCfg := dd.DefaultConfig()
+		fallbackCfg.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
+		logger2, _ = dd.New(fallbackCfg)
 	}
 	defer logger2.Close()
 	logger2.Info("Created with fallback handling")
 
-	// Pattern 3: Using ToConsole (rarely fails)
-	logger3, err := dd.ToConsole()
+	// Pattern 3: Console output (rarely fails)
+	cfg3 := dd.DefaultConfig()
+	cfg3.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
+	logger3, err := dd.New(cfg3)
 	if err != nil {
-		// Console creation rarely fails, but handle it anyway
 		fmt.Fprintf(os.Stderr, "failed to create console logger: %v\n", err)
 		return
 	}
 	defer logger3.Close()
 	logger3.Info("Created with console fallback")
 
-	// Pattern 4: Using ToAll for dual output
-	logger4, err := dd.ToAll("logs/safe-dual.log")
+	// Pattern 4: Dual output with error handling
+	cfg4 := dd.DefaultConfig()
+	cfg4.Targets = []dd.OutputTarget{
+		dd.ConsoleOutput(),
+		dd.FileOutput("logs/safe-dual.log"),
+	}
+	logger4, err := dd.New(cfg4)
 	if err != nil {
 		log.Printf("warning: could not create dual logger: %v", err)
 		return

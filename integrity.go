@@ -72,8 +72,7 @@ func (c IntegrityConfig) Validate() error {
 }
 
 // DefaultIntegrityConfigSafe returns an IntegrityConfig with sensible defaults.
-// Unlike DefaultIntegrityConfig, this function returns an error instead of panicking
-// if the secure random key generation fails.
+// Returns an error if the secure random key generation fails (does not panic).
 // This is the recommended function for production environments.
 //
 // Example:
@@ -126,35 +125,32 @@ type IntegritySigner struct {
 }
 
 // NewIntegritySigner creates a new IntegritySigner with the given configuration.
-// If no configuration is provided, a secure default configuration is generated.
-// Returns an error if the default configuration cannot be generated (extremely rare,
-// indicates system entropy exhaustion).
-func NewIntegritySigner(cfg ...IntegrityConfig) (*IntegritySigner, error) {
-	var config IntegrityConfig
-	if len(cfg) > 0 {
-		config = cfg[0]
-	} else {
-		var err error
-		config, err = DefaultIntegrityConfigSafe()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create default integrity config: %w", err)
-		}
-	}
-
-	if err := config.Validate(); err != nil {
+// Use DefaultIntegrityConfigSafe() to generate a cryptographically secure key.
+//
+// Returns errors:
+//   - When SecretKey is less than 32 bytes
+//   - When HashAlgorithm is not supported
+//
+// Example:
+//
+//	cfg, err := dd.DefaultIntegrityConfigSafe()
+//	if err != nil { /* handle */ }
+//	signer, err := dd.NewIntegritySigner(cfg)
+func NewIntegritySigner(cfg IntegrityConfig) (*IntegritySigner, error) {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	if config.SignaturePrefix == "" {
-		config.SignaturePrefix = "[SIG:"
+	if cfg.SignaturePrefix == "" {
+		cfg.SignaturePrefix = "[SIG:"
 	}
 
 	// Copy the secret key to ensure we own the memory
-	secretKey := make([]byte, len(config.SecretKey))
-	copy(secretKey, config.SecretKey)
+	secretKey := make([]byte, len(cfg.SecretKey))
+	copy(secretKey, cfg.SecretKey)
 
 	return &IntegritySigner{
-		config:    &config,
+		config:    &cfg,
 		secretKey: secretKey,
 	}, nil
 }

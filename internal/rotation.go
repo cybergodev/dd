@@ -15,7 +15,10 @@ import (
 // This protects against decompression bombs (zip bombs) that could exhaust memory.
 const MaxDecompressSize = 100 * 1024 * 1024 // 100MB
 
-func OpenFile(path string) (*os.File, int64, error) {
+// OpenFile opens a log file for appending with security checks.
+// symlinkErr and hardlinkErr are caller-provided sentinel errors so that
+// errors.Is() matching works correctly in the calling package.
+func OpenFile(path string, symlinkErr, hardlinkErr error) (*os.File, int64, error) {
 	// Open file first to get a file handle, then validate the handle (not the path)
 	// to prevent TOCTOU (time-of-check-time-of-use) vulnerabilities.
 	// We use O_APPEND to ensure atomic appends on POSIX systems.
@@ -27,15 +30,15 @@ func OpenFile(path string) (*os.File, int64, error) {
 	// Immediately validate the file handle (not the path) to prevent TOCTOU
 	fileInfo, err := file.Stat()
 	if err != nil {
-		file.Close()
+		_ = file.Close() // best-effort close on error path
 		return nil, 0, fmt.Errorf("stat file: %w", err)
 	}
 
 	// Check if the opened file is a symlink using its file handle
 	// This prevents TOCTOU attacks where the path could be changed between check and use
 	if fileInfo.Mode()&os.ModeSymlink != 0 {
-		file.Close()
-		return nil, 0, fmt.Errorf("symlinks not allowed")
+		_ = file.Close() // best-effort close on error path
+		return nil, 0, symlinkErr
 	}
 
 	// Check if the file has multiple hard links
@@ -43,12 +46,12 @@ func OpenFile(path string) (*os.File, int64, error) {
 	// or to bypass log rotation by having the same file accessible from multiple paths
 	isHardlinked, err := isHardlink(file)
 	if err != nil {
-		file.Close()
+		_ = file.Close() // best-effort close on error path
 		return nil, 0, fmt.Errorf("check hardlink: %w", err)
 	}
 	if isHardlinked {
-		file.Close()
-		return nil, 0, fmt.Errorf("hardlinks not allowed")
+		_ = file.Close() // best-effort close on error path
+		return nil, 0, hardlinkErr
 	}
 
 	return file, fileInfo.Size(), nil
@@ -189,17 +192,17 @@ func CompressFile(filePath string) error {
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }() // best-effort cleanup on defer
 
 	tmpPath := filePath + ".gz.tmp"
 	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, FilePermissions)
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }() // best-effort cleanup on defer
 
 	gw := gzip.NewWriter(dst)
-	defer gw.Close()
+	defer func() { _ = gw.Close() }() // best-effort cleanup on defer
 
 	if _, err := io.Copy(gw, src); err != nil {
 		return fmt.Errorf("copy data: %w", err)
@@ -218,14 +221,14 @@ func CompressFile(filePath string) error {
 	}
 
 	if err := verifyGzipFile(tmpPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath) // best-effort cleanup on error
 		return fmt.Errorf("verify: %w", err)
 	}
 
 	finalPath := filePath + ".gz"
 	removeWithRetry(finalPath, RetryAttempts, RetryDelay)
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath) // best-effort cleanup on error
 		return fmt.Errorf("rename: %w", err)
 	}
 
@@ -250,13 +253,13 @@ func verifyGzipFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // best-effort cleanup on defer
 
 	gr, err := gzip.NewReader(f)
 	if err != nil {
 		return fmt.Errorf("gzip reader: %w", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }() // best-effort cleanup on defer
 
 	// Limit bytes read to prevent decompression bombs
 	limited := io.LimitReader(gr, MaxDecompressSize)

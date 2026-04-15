@@ -1,4 +1,4 @@
-// Package dd provides field validation functionality for structured logging.
+// Field validation for structured logging keys.
 package dd
 
 import (
@@ -136,6 +136,11 @@ func StrictCamelCaseConfig() *FieldValidationConfig {
 // ValidateFieldKey validates a field key against the configured naming convention.
 // Returns an error describing the validation failure, or nil if valid.
 // Security validation is always performed when Mode is not FieldValidationNone.
+//
+// Returns errors:
+//   - Empty key error: when the key is an empty string
+//   - Security validation errors: Log4Shell detection, homograph attack, overlong UTF-8
+//   - Convention mismatch: when the key doesn't match the configured naming convention
 func (c *FieldValidationConfig) ValidateFieldKey(key string) error {
 	if c == nil || c.Mode == FieldValidationNone {
 		return nil

@@ -16,7 +16,7 @@
 //   - Log rotation: Built-in file rotation with compression support
 //   - Lifecycle hooks: Extensible hook system for custom behavior
 //   - Log sampling: Reduce log volume in high-throughput scenarios
-//   - Zero allocations: Optimized for minimal GC pressure
+//   - Minimal allocations: Optimized for low GC pressure with buffer pooling
 //
 // # Quick Start
 //
@@ -58,12 +58,7 @@
 // With file output:
 //
 //	cfg := dd.DefaultConfig()
-//	cfg.File = &dd.FileConfig{
-//	    Path:       "app.log",
-//	    MaxSizeMB:  100,
-//	    MaxBackups: 10,
-//	    Compress:   true,
-//	}
+//	cfg.Targets = []dd.OutputTarget{dd.FileOutput("app.log")}
 //	logger, _ := dd.New(cfg)
 //
 // Using presets:
@@ -130,13 +125,12 @@
 // # File Output with Rotation
 //
 //	cfg := dd.DefaultConfig()
-//	cfg.File = &dd.FileConfig{
-//	    Path:       "logs/app.log",
-//	    MaxSizeMB:  100,
-//	    MaxBackups: 5,
-//	    MaxAge:     7 * 24 * time.Hour,
-//	    Compress:   true,
-//	}
+//	fileTarget := dd.FileOutput("logs/app.log")
+//	fileTarget.MaxSizeMB = 100
+//	fileTarget.MaxBackups = 5
+//	fileTarget.MaxAge = 7 * 24 * time.Hour
+//	fileTarget.Compress = true
+//	cfg.Targets = []dd.OutputTarget{fileTarget}
 //	cfg.Format = dd.FormatJSON
 //	logger, _ := dd.New(cfg)
 //

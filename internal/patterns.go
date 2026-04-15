@@ -468,8 +468,6 @@ func initKeywordSlices() {
 	})
 }
 
-
-
 // binarySearchString performs binary search on a sorted string slice.
 // Returns true if the target is found.
 func binarySearchString(sorted []string, target string) bool {

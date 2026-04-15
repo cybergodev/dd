@@ -122,8 +122,8 @@ func defaultHookErrorHandler(event HookEvent, _ *HookContext, err error) {
 //	    log.Printf("Hook error: %v", err)
 //	}
 type hookErrorRecorder struct {
-	mu    sync.Mutex
-	errs  []hookErrorInfo
+	mu   sync.Mutex
+	errs []hookErrorInfo
 }
 
 // hookErrorInfo contains information about a hook error.

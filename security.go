@@ -219,6 +219,12 @@ func NewEmptySensitiveDataFilter() *SensitiveDataFilter {
 
 // NewCustomSensitiveDataFilter creates a sensitive data filter with custom regex patterns.
 // Patterns are validated for ReDoS safety before being added.
+//
+// Returns errors:
+//   - ErrEmptyPattern: when a pattern is empty
+//   - ErrPatternTooLong: when a pattern exceeds 1000 characters
+//   - ErrInvalidPattern: when a pattern fails to compile
+//   - ErrReDoSPattern: when a pattern contains dangerous nested quantifiers
 func NewCustomSensitiveDataFilter(patterns ...string) (*SensitiveDataFilter, error) {
 	filter := NewEmptySensitiveDataFilter()
 
@@ -288,6 +294,9 @@ func (f *SensitiveDataFilter) AddPatterns(patterns ...string) error {
 
 // ClearPatterns removes all patterns from the filter.
 func (f *SensitiveDataFilter) ClearPatterns() {
+	if f == nil {
+		return
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	emptyPatterns := make([]*regexp.Regexp, 0)
@@ -847,7 +856,7 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 		strings.Contains(input, "ya29.") ||
 		strings.Contains(input, "1//") {
 		hasAPIKeyPrefix = true
-		}
+	}
 
 	// Fast return: API key prefix found, no need for further checks.
 	if hasAPIKeyPrefix {
@@ -1301,8 +1310,14 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 
 // SecurityConfig configures security features for the logger.
 type SecurityConfig struct {
-	MaxMessageSize  int
-	MaxWriters      int
+	// MaxMessageSize is the maximum allowed log message size in bytes.
+	// Messages exceeding this limit are truncated. Zero means no limit.
+	MaxMessageSize int
+	// MaxWriters is the maximum number of output writers allowed.
+	// Attempts to add writers beyond this limit return ErrMaxWritersExceeded.
+	MaxWriters int
+	// SensitiveFilter is the filter used to redact sensitive data from log output.
+	// A nil filter disables sensitive data filtering.
 	SensitiveFilter *SensitiveDataFilter
 }
 

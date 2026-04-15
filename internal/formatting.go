@@ -106,8 +106,8 @@ var pcsPool = sync.Pool{
 
 // depthCacheEntry stores cached adjusted caller depth
 type depthCacheEntry struct {
-	pc     uintptr // program counter used as key
-	depth  int     // adjusted depth value
+	pc    uintptr // program counter used as key
+	depth int     // adjusted depth value
 }
 
 // depthCache caches adjusted caller depth to avoid repeated stack walking.
@@ -447,11 +447,22 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 	}
 	buf.WriteString(message)
 
-	// Add fields
+	// Add fields directly to buffer to avoid intermediate string allocation
 	if len(fields) > 0 {
-		if fieldsStr := FormatFields(fields); fieldsStr != "" {
-			buf.WriteByte(' ')
-			buf.WriteString(fieldsStr)
+		wroteField := false
+		for _, field := range fields {
+			if field.Key == "" {
+				continue
+			}
+			if !wroteField {
+				buf.WriteByte(' ')
+				wroteField = true
+			} else {
+				buf.WriteByte(' ')
+			}
+			buf.WriteString(field.Key)
+			buf.WriteByte('=')
+			formatFieldValueBytes(buf, field.Value)
 		}
 	}
 
@@ -461,7 +472,16 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message string, fields []Field) string {
 	fieldNames := f.getJSONFieldNames()
 
-	// Use pooled entry map for better performance
+	// Fast path: direct buffer writing for compact JSON with simple field types.
+	// Avoids map allocation entirely for the common case of primitive field values.
+	if !f.jsonOpts.PrettyPrint && allFieldsAreSimple(fields) {
+		if result, ok := f.formatJSONDirect(level, callerDepth, message, fields, fieldNames); ok {
+			return result
+		}
+	}
+
+	// Slow path: use map-based approach for complex types or pretty print.
+	// Use pooled entry map for better performance.
 	entryPtr := jsonEntryMapPool.Get().(*map[string]any)
 	entry := *entryPtr
 
@@ -525,6 +545,120 @@ func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message s
 	jsonEntryMapPool.Put(entryPtr)
 
 	return result
+}
+
+// allFieldsAreSimple checks if all field values can be written by the fast JSON path.
+// Complex types (structs, maps, slices of interfaces) require the map-based approach.
+func allFieldsAreSimple(fields []Field) bool {
+	for _, field := range fields {
+		if !isSimpleJSONValue(field.Value) {
+			return false
+		}
+	}
+	return true
+}
+
+// isSimpleJSONValue returns true if the value can be written directly to JSON
+// without going through the map-based encoding/json path.
+func isSimpleJSONValue(v any) bool {
+	switch v.(type) {
+	case string, int, int64, int32, int16, int8,
+		uint, uint64, uint32, uint16, uint8,
+		float64, float32, bool, nil,
+		time.Time, time.Duration:
+		return true
+	case []string, []int, []int64, []float64, []bool:
+		return true
+	default:
+		return false
+	}
+}
+
+// formatJSONDirect writes JSON directly to a buffer without creating maps.
+// Returns (result, true) on success, or ("", false) if fallback is needed.
+// SECURITY: Zeroes buffer contents before returning to pool.
+func (f *MessageFormatter) formatJSONDirect(level LogLevel, callerDepth int, message string, fields []Field, fieldNames *JSONFieldNames) (string, bool) {
+	buf := jsonBuilderPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	// SECURITY: Clear buffer contents before returning to pool
+	defer func() {
+		zeroBuffer(buf)
+		jsonBuilderPool.Put(buf)
+	}()
+
+	buf.WriteByte('{')
+
+	first := true
+
+	// Write timestamp
+	if f.includeTime {
+		writeJSONString(buf, fieldNames.Timestamp)
+		buf.WriteByte(':')
+		writeJSONString(buf, f.timeCache.getFormattedTime())
+		first = false
+	}
+
+	// Write level
+	if f.includeLevel {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		writeJSONString(buf, fieldNames.Level)
+		buf.WriteByte(':')
+		writeJSONString(buf, level.String())
+	}
+
+	// Write caller
+	if f.dynamicCaller {
+		if callerInfo := GetCaller(callerDepth, f.fullPath); callerInfo != "" {
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			writeJSONString(buf, fieldNames.Caller)
+			buf.WriteByte(':')
+			writeJSONString(buf, callerInfo)
+		}
+	}
+
+	// Write message
+	if !first {
+		buf.WriteByte(',')
+	}
+	first = false
+	writeJSONString(buf, fieldNames.Message)
+	buf.WriteByte(':')
+	writeJSONString(buf, message)
+
+	// Write fields
+	if len(fields) > 0 {
+		if !first {
+			buf.WriteByte(',')
+		}
+		writeJSONString(buf, fieldNames.Fields)
+		buf.WriteString(":{")
+		fieldFirst := true
+		for _, field := range fields {
+			if field.Key == "" {
+				continue
+			}
+			if !fieldFirst {
+				buf.WriteByte(',')
+			}
+			fieldFirst = false
+			writeJSONString(buf, field.Key)
+			buf.WriteByte(':')
+			if !writeJSONValueFast(buf, field.Value) {
+				return "", false // Need fallback for complex type
+			}
+		}
+		buf.WriteByte('}')
+	}
+
+	buf.WriteByte('}')
+	return buf.String(), true
 }
 
 // getJSONFieldNames returns the cached JSON field names configuration.

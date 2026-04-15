@@ -197,16 +197,17 @@ type AuditLogger struct {
 }
 
 // NewAuditLogger creates a new AuditLogger with the given configuration.
-// If no configuration is provided, DefaultAuditConfig() is used.
-// Returns an error if the configuration is invalid.
-func NewAuditLogger(cfg ...AuditConfig) (*AuditLogger, error) {
-	var config AuditConfig
-	if len(cfg) > 0 {
-		config = cfg[0]
-	} else {
-		config = DefaultAuditConfig()
-	}
-	return newAuditLoggerWithConfig(config)
+// Use DefaultAuditConfig() to obtain a Config with sensible defaults.
+//
+// Returns an error if the configuration is invalid (e.g., negative BufferSize).
+//
+// Example:
+//
+//	cfg := dd.DefaultAuditConfig()
+//	cfg.BufferSize = 2000
+//	auditLogger, err := dd.NewAuditLogger(cfg)
+func NewAuditLogger(cfg AuditConfig) (*AuditLogger, error) {
+	return newAuditLoggerWithConfig(cfg)
 }
 
 func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
@@ -401,7 +402,8 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 		output = output + " " + signature
 	}
 
-	fmt.Fprintln(al.config.Output, output)
+	// Best-effort audit output; write failure is not actionable for the caller.
+	_, _ = fmt.Fprintln(al.config.Output, output)
 }
 
 // incrementTypeCount increments the count for an event type.
@@ -417,15 +419,18 @@ func (al *AuditLogger) incrementTypeCount(eventType AuditEventType) {
 		}
 	}
 
-	// Slow path: use LoadOrStore to atomically get or create the counter
+	// Slow path: use LoadOrStore to atomically get or create the counter.
+	// New counter starts at 0; the first Add(1) happens when the caller
+	// wins the LoadOrStore race. If the caller loses, it increments the
+	// existing counter directly.
 	counter := &atomic.Int64{}
-	counter.Store(1)
 	if actual, loaded := al.byType.LoadOrStore(eventType, counter); loaded {
-		// Another goroutine created the counter first, use it
 		if existingCounter, ok := actual.(*atomic.Int64); ok {
-			// Add 1 to account for the initial count we tried to set
 			existingCounter.Add(1)
 		}
+	} else {
+		// We won the race — this is the first event of this type
+		counter.Add(1)
 	}
 }
 

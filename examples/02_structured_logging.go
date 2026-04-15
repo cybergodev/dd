@@ -13,7 +13,7 @@ import (
 // Structured Logging - Type-Safe Fields and Chaining
 //
 // Topics covered:
-// 1. All field types (String, Int, Bool, Float64, Time, Duration, Err)
+// 1. All field types (String, Int, Bool, Float64, Time, Duration, Err, ErrWithKey)
 // 2. WithFields() chaining for reusable context
 // 3. LoggerEntry for contextual logging
 // 4. Best practices for production
@@ -107,7 +107,7 @@ func section3BestPractices() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{Path: "logs/structured.log"}
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/structured.log")}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()

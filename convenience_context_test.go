@@ -3,8 +3,6 @@ package dd
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -65,7 +63,7 @@ func TestContextGetters_Empty(t *testing.T) {
 func TestContextKeys_WithLogger(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Format = FormatJSON
 	logger, err := New(cfg)
@@ -94,154 +92,6 @@ func TestContextKeys_WithLogger(t *testing.T) {
 }
 
 // ============================================================================
-// CONVENIENCE CONSTRUCTOR TESTS
-// ============================================================================
-
-func TestToConsole(t *testing.T) {
-	logger, err := ToConsole()
-	if err != nil {
-		t.Fatalf("ToConsole() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToConsole() returned nil logger")
-	}
-	logger.Close()
-}
-
-func TestToWriter(t *testing.T) {
-	var buf bytes.Buffer
-	logger, err := ToWriter(&buf)
-	if err != nil {
-		t.Fatalf("ToWriter() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToWriter() returned nil logger")
-	}
-
-	logger.Info("test message")
-	if buf.Len() == 0 {
-		t.Error("ToWriter() should write to buffer")
-	}
-	logger.Close()
-}
-
-func TestToWriters(t *testing.T) {
-	var buf1, buf2 bytes.Buffer
-	logger, err := ToWriters(&buf1, &buf2)
-	if err != nil {
-		t.Fatalf("ToWriters() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToWriters() returned nil logger")
-	}
-
-	logger.Info("test message")
-	if buf1.Len() == 0 || buf2.Len() == 0 {
-		t.Error("ToWriters() should write to all buffers")
-	}
-	logger.Close()
-}
-
-func TestToFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "test.log")
-
-	logger, err := ToFile(logPath)
-	if err != nil {
-		t.Fatalf("ToFile() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToFile() returned nil logger")
-	}
-
-	logger.Info("test message")
-	logger.Close()
-
-	// Verify file was created
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		t.Error("LogFile should be created")
-	}
-}
-
-func TestToFile_DefaultPath(t *testing.T) {
-	// Test with no filename argument (uses default path)
-	logger, err := ToFile()
-	if err != nil {
-		t.Fatalf("ToFile() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToFile() returned nil logger")
-	}
-	logger.Close()
-
-	// Clean up default log directory
-	os.RemoveAll("logs")
-}
-
-func TestToJSONFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "test.json.log")
-
-	logger, err := ToJSONFile(logPath)
-	if err != nil {
-		t.Fatalf("ToJSONFile() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToJSONFile() returned nil logger")
-	}
-
-	logger.Info("test message")
-	logger.Close()
-
-	// Verify file was created
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		t.Error("LogFile should be created")
-	}
-}
-
-func TestToAll(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "test.log")
-
-	logger, err := ToAll(logPath)
-	if err != nil {
-		t.Fatalf("ToAll() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToAll() returned nil logger")
-	}
-
-	logger.Info("test message")
-	logger.Close()
-
-	// Verify file was created
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		t.Error("LogFile should be created")
-	}
-}
-
-func TestToAllJSON(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "test.json.log")
-
-	logger, err := ToAllJSON(logPath)
-	if err != nil {
-		t.Fatalf("ToAllJSON() error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("ToAllJSON() returned nil logger")
-	}
-
-	logger.Info("test message")
-	logger.Close()
-
-	// Verify file was created
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		t.Error("LogFile should be created")
-	}
-}
-
-// ============================================================================
 // CONTEXT EXTRACTOR WITH LOGGER TESTS
 // ============================================================================
 
@@ -257,7 +107,7 @@ func TestLoggerWithContextExtractors(t *testing.T) {
 	}
 
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Format = FormatJSON
 
@@ -364,7 +214,7 @@ func TestExtractorRegistry_EmptyRegistry(t *testing.T) {
 func TestLoggerEntry_LogMethods(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()
@@ -399,7 +249,7 @@ func TestLoggerEntry_LogMethods(t *testing.T) {
 func TestLoggerEntry_LogfMethods(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()
@@ -431,7 +281,7 @@ func TestLoggerEntry_LogfMethods(t *testing.T) {
 func TestLoggerEntry_LogWithMethods(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()
@@ -466,7 +316,7 @@ func TestLoggerEntry_LogWithMethods(t *testing.T) {
 func TestLoggerEntry_LogLevel(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()
@@ -483,7 +333,7 @@ func TestLoggerEntry_LogLevel(t *testing.T) {
 func TestLoggerEntry_LogfLevel(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()
@@ -500,7 +350,7 @@ func TestLoggerEntry_LogfLevel(t *testing.T) {
 func TestLoggerEntry_LogWithLevel(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	defer logger.Close()

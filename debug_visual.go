@@ -62,7 +62,7 @@ func Text(data ...any) {
 // Textf outputs formatted data as pretty-printed format to stdout for debugging.
 func Textf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintln(os.Stdout, formatted)
+	_, _ = fmt.Fprintln(os.Stdout, formatted)
 }
 
 // Exit outputs data as pretty-printed JSON to stdout and exits with code 0.
@@ -74,6 +74,6 @@ func Exit(data ...any) {
 // Exitf outputs formatted data to stdout with caller info and exits with code 0.
 func Exitf(format string, args ...any) {
 	formatted := fmt.Sprintf(format, args...)
-	fmt.Fprintf(os.Stdout, "%s %s\n", internal.GetCaller(debugVisualizationDepth, false), formatted)
+	_, _ = fmt.Fprintf(os.Stdout, "%s %s\n", internal.GetCaller(debugVisualizationDepth, false), formatted)
 	os.Exit(0)
 }

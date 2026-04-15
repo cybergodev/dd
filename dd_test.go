@@ -21,30 +21,7 @@ import (
 // LOGGER CREATION AND CONFIGURATION TESTS
 // ============================================================================
 
-func TestLoggerCreation(t *testing.T) {
-	var buf bytes.Buffer
-
-	cfg := DefaultConfig()
-	cfg.Level = LevelInfo
-	cfg.Format = FormatText
-	cfg.TimeFormat = DefaultTimeFormat
-	cfg.Output = &buf
-	cfg.IncludeTime = true
-
-	logger, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-
-	if logger == nil {
-		t.Fatal("Build() returned nil logger")
-	}
-
-	logger.Info("test message")
-	if buf.Len() == 0 {
-		t.Error("Logger should have written to buffer")
-	}
-}
+// TestLoggerCreation is covered by TestNewConfig("build logger") in builder_test.go
 
 func TestLoggerSetSecurityConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -77,7 +54,7 @@ func TestLoggerSetSecurityConfig(t *testing.T) {
 func TestBasicLogging(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -103,11 +80,10 @@ func TestBasicLogging(t *testing.T) {
 	}
 }
 
-
 func TestAllFormattedMethods(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 
@@ -135,7 +111,7 @@ func TestAllFormattedMethods(t *testing.T) {
 func TestStructuredLogging(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -153,7 +129,7 @@ func TestStructuredLogging(t *testing.T) {
 func TestAllStructuredLoggingMethods(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 
@@ -179,78 +155,52 @@ func TestAllStructuredLoggingMethods(t *testing.T) {
 }
 
 func TestFatalLogging(t *testing.T) {
-	t.Run("Fatal", func(t *testing.T) {
-		var buf bytes.Buffer
-		exited := false
+	tests := []struct {
+		name     string
+		logFunc  func(*Logger)
+		expected string
+	}{
+		{
+			name:     "Fatal",
+			logFunc:  func(l *Logger) { l.Fatal("fatal message") },
+			expected: "fatal message",
+		},
+		{
+			name:     "Fatalf",
+			logFunc:  func(l *Logger) { l.Fatalf("fatal %s", "message") },
+			expected: "fatal message",
+		},
+		{
+			name:     "FatalWith",
+			logFunc:  func(l *Logger) { l.FatalWith("fatal", String("key", "value")) },
+			expected: "fatal",
+		},
+	}
 
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-		cfg.FatalHandler = func() { exited = true }
-		logger, _ := New(cfg)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			exited := false
 
-		logger.Fatal("fatal message")
+			cfg := DefaultConfig()
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+			cfg.Level = LevelInfo
+			cfg.FatalHandler = func() { exited = true }
+			logger, _ := New(cfg)
 
-		if !exited {
-			t.Error("Fatal handler should be called")
-		}
-		if !strings.Contains(buf.String(), "fatal message") {
-			t.Error("Fatal message should be logged")
-		}
-	})
+			tt.logFunc(logger)
 
-	t.Run("Fatalf", func(t *testing.T) {
-		var buf bytes.Buffer
-		exited := false
-
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-		cfg.FatalHandler = func() { exited = true }
-		logger, _ := New(cfg)
-
-		logger.Fatalf("fatal %s", "message")
-
-		if !exited {
-			t.Error("Fatalf handler should be called")
-		}
-		if !strings.Contains(buf.String(), "fatal message") {
-			t.Error("Fatalf message should be logged")
-		}
-	})
-
-	t.Run("FatalWith", func(t *testing.T) {
-		var buf bytes.Buffer
-		exited := false
-
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-		cfg.FatalHandler = func() { exited = true }
-		logger, _ := New(cfg)
-
-		logger.FatalWith("fatal", String("key", "value"))
-
-		if !exited {
-			t.Error("FatalWith handler should be called")
-		}
-	})
-}
-
-func TestJSONLogging(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Output = &buf
-	cfg.Level = LevelInfo
-	cfg.Format = FormatJSON
-	logger, _ := New(cfg)
-
-	logger.Info("test message")
-
-	if !strings.Contains(buf.String(), `"message":"test message"`) {
-		t.Error("JSON logging should format as JSON")
+			if !exited {
+				t.Error("Fatal handler should be called")
+			}
+			if !strings.Contains(buf.String(), tt.expected) {
+				t.Errorf("Expected %q in output", tt.expected)
+			}
+		})
 	}
 }
+
+// TestJSONLogging is covered by TestJSONLoggingPipeline below
 
 // ============================================================================
 // LOG LEVEL MANAGEMENT TESTS
@@ -259,7 +209,7 @@ func TestJSONLogging(t *testing.T) {
 func TestLoggerLevelManagement(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -297,7 +247,7 @@ func TestGlobalFunctions(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -406,7 +356,7 @@ func TestGlobalFunctions(t *testing.T) {
 func TestWriterManagement(t *testing.T) {
 	var buf1, buf2 bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf1
+	cfg.Targets = []OutputTarget{CustomOutput(&buf1)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -435,73 +385,71 @@ func TestWriterManagement(t *testing.T) {
 	}
 }
 
-func TestFileWriter(t *testing.T) {
-	tmpFile := filepath.Join(t.TempDir(), "test.log")
-	fw, err := NewFileWriter(tmpFile, FileWriterConfig{
-		MaxSizeMB:  1,
-		MaxBackups: 3,
-		MaxAge:     24 * time.Hour,
-		Compress:   false,
+func TestWriterTypes(t *testing.T) {
+	t.Run("FileWriter", func(t *testing.T) {
+		tmpFile := filepath.Join(t.TempDir(), "test.log")
+		fw, err := NewFileWriter(tmpFile, FileWriterConfig{
+			MaxSizeMB:  1,
+			MaxBackups: 3,
+			MaxAge:     24 * time.Hour,
+			Compress:   false,
+		})
+		if err != nil {
+			t.Fatalf("NewFileWriter() error = %v", err)
+		}
+		defer fw.Close()
+
+		data := []byte("test log message\n")
+		n, err := fw.Write(data)
+		if err != nil {
+			t.Errorf("Write() error = %v", err)
+		}
+		if n != len(data) {
+			t.Errorf("Write() wrote %d bytes, want %d", n, len(data))
+		}
 	})
 
-	if err != nil {
-		t.Fatalf("NewFileWriter() error = %v", err)
-	}
-	defer fw.Close()
+	t.Run("BufferedWriter", func(t *testing.T) {
+		var buf bytes.Buffer
+		bw, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 4096})
+		if err != nil {
+			t.Fatalf("NewBufferedWriter() error = %v", err)
+		}
+		defer bw.Close()
 
-	data := []byte("test log message\n")
-	n, err := fw.Write(data)
-	if err != nil {
-		t.Errorf("Write() error = %v", err)
-	}
-	if n != len(data) {
-		t.Errorf("Write() wrote %d bytes, want %d", n, len(data))
-	}
-}
+		data := []byte("test message\n")
+		n, err := bw.Write(data)
+		if err != nil {
+			t.Errorf("Write() error = %v", err)
+		}
+		if n != len(data) {
+			t.Errorf("Write() wrote %d bytes, want %d", n, len(data))
+		}
 
-func TestBufferedWriter(t *testing.T) {
-	var buf bytes.Buffer
-	bw, err := NewBufferedWriter(&buf, 4096)
-	if err != nil {
-		t.Fatalf("NewBufferedWriter() error = %v", err)
-	}
-	defer bw.Close()
+		bw.Flush()
+		if buf.Len() == 0 {
+			t.Error("BufferedWriter should have written data after flush")
+		}
+	})
 
-	data := []byte("test message\n")
-	n, err := bw.Write(data)
-	if err != nil {
-		t.Errorf("Write() error = %v", err)
-	}
-	if n != len(data) {
-		t.Errorf("Write() wrote %d bytes, want %d", n, len(data))
-	}
+	t.Run("BufferedWriterAutoFlush", func(t *testing.T) {
+		var buf bytes.Buffer
+		bw, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 4096})
+		if err != nil {
+			t.Fatalf("NewBufferedWriter() error = %v", err)
+		}
+		defer bw.Close()
 
-	bw.Flush()
-	if buf.Len() == 0 {
-		t.Error("BufferedWriter should have written data after flush")
-	}
-}
+		largeData := make([]byte, 2048)
+		for i := 0; i < 10; i++ {
+			bw.Write(largeData)
+		}
+		time.Sleep(100 * time.Millisecond)
 
-func TestBufferedWriterAutoFlush(t *testing.T) {
-	var buf bytes.Buffer
-	bw, err := NewBufferedWriter(&buf, 4096)
-	if err != nil {
-		t.Fatalf("NewBufferedWriter() error = %v", err)
-	}
-	defer bw.Close()
-
-	// Write data that should trigger auto-flush
-	largeData := make([]byte, 2048)
-	for i := 0; i < 10; i++ {
-		bw.Write(largeData)
-	}
-
-	// Give time for auto-flush to run
-	time.Sleep(100 * time.Millisecond)
-
-	if buf.Len() == 0 {
-		t.Error("Auto-flush should have written some data")
-	}
+		if buf.Len() == 0 {
+			t.Error("Auto-flush should have written some data")
+		}
+	})
 }
 
 func TestMultiWriter(t *testing.T) {
@@ -557,7 +505,7 @@ func TestMultiWriterManagement(t *testing.T) {
 
 func TestMultiWriterClose(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.log")
-	fw, _ := NewFileWriter(tmpFile)
+	fw, _ := NewFileWriter(tmpFile, DefaultFileWriterConfig())
 
 	var buf bytes.Buffer
 	mw := NewMultiWriter(&buf, fw)
@@ -584,7 +532,7 @@ func TestConcurrentLogging(t *testing.T) {
 	cfg.Level = LevelInfo
 	cfg.IncludeTime = false
 	cfg.IncludeLevel = false
-	cfg.Output = safeWriter
+	cfg.Targets = []OutputTarget{CustomOutput(safeWriter)}
 	cfg.Security = &SecurityConfig{SensitiveFilter: nil}
 	logger, _ := New(cfg)
 
@@ -608,7 +556,6 @@ func TestConcurrentLogging(t *testing.T) {
 		t.Error("Concurrent logging should produce output")
 	}
 }
-
 
 // threadSafeWriter wraps a writer with mutex for thread-safe writes in tests
 type threadSafeWriter struct {
@@ -639,7 +586,7 @@ func TestSanitization(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
 	cfg.Level = LevelInfo
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Security = DefaultSecurityConfig()
 	logger, _ := New(cfg)
 
@@ -656,7 +603,7 @@ func TestMessageSizeLimit(t *testing.T) {
 	secConfig := DefaultSecurityConfig()
 	secConfig.MaxMessageSize = 100
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Security = secConfig
 	logger, _ := New(cfg)
@@ -674,119 +621,104 @@ func TestMessageSizeLimit(t *testing.T) {
 // EDGE CASES AND ERROR HANDLING TESTS
 // ============================================================================
 
-func TestNilWriter(t *testing.T) {
-	cfg := DefaultConfig()
-	logger, _ := New(cfg)
+func TestLoggerEdgeCases(t *testing.T) {
+	t.Run("NilWriter", func(t *testing.T) {
+		cfg := DefaultConfig()
+		logger, _ := New(cfg)
 
-	err := logger.AddWriter(nil)
-	if err == nil {
-		t.Error("AddWriter(nil) should return error")
-	}
+		if err := logger.AddWriter(nil); err == nil {
+			t.Error("AddWriter(nil) should return error")
+		}
+		if err := logger.RemoveWriter(nil); err == nil {
+			t.Error("RemoveWriter(nil) should return error")
+		}
+	})
 
-	err = logger.RemoveWriter(nil)
-	if err == nil {
-		t.Error("RemoveWriter(nil) should return error")
-	}
-}
+	t.Run("MaxWritersExceeded", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		logger, _ := New(cfg)
 
-func TestMaxWritersExceeded(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Output = &buf
-	logger, _ := New(cfg)
+		writers := make([]io.Writer, 0, 100)
+		for i := 0; i < 99; i++ {
+			var b bytes.Buffer
+			writers = append(writers, &b)
+		}
+		logger.writersPtr.Store(&writers)
 
-	// Clear default writer and add 99 more using the atomic pointer
-	writers := make([]io.Writer, 0, 100)
-	for i := 0; i < 99; i++ {
-		var b bytes.Buffer
-		writers = append(writers, &b)
-	}
-	logger.writersPtr.Store(&writers)
+		var buf100 bytes.Buffer
+		if err := logger.AddWriter(&buf100); err != nil {
+			t.Errorf("Adding 100th writer should succeed, got %v", err)
+		}
 
-	// The 100th writer should work
-	var buf100 bytes.Buffer
-	err := logger.AddWriter(&buf100)
-	if err != nil {
-		t.Errorf("Adding 100th writer should succeed, got %v", err)
-	}
+		var buf101 bytes.Buffer
+		if err := logger.AddWriter(&buf101); err == nil {
+			t.Error("Adding 101st writer should fail")
+		}
+	})
 
-	// The 101st writer should fail
-	var buf101 bytes.Buffer
-	err = logger.AddWriter(&buf101)
-	if err == nil {
-		t.Error("Adding 101st writer should fail")
-	}
-}
+	t.Run("ClosedLogger", func(t *testing.T) {
+		cfg := DefaultConfig()
+		logger, _ := New(cfg)
+		logger.Close()
 
-func TestClosedLogger(t *testing.T) {
-	cfg := DefaultConfig()
-	logger, _ := New(cfg)
-	logger.Close()
+		var buf bytes.Buffer
+		if err := logger.AddWriter(&buf); err == nil {
+			t.Error("AddWriter on closed logger should fail")
+		}
+		logger.Info("test") // Should not panic
+	})
 
-	var buf bytes.Buffer
-	err := logger.AddWriter(&buf)
-	if err == nil {
-		t.Error("AddWriter on closed logger should fail")
-	}
+	t.Run("EmptyAndNilInputs", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		cfg.Level = LevelInfo
+		logger, _ := New(cfg)
 
-	// Logging should be silently ignored after close
-	logger.Info("test") // Should not panic
-}
+		logger.Info()
+		logger.Info("")
+		if buf.Len() == 0 {
+			t.Error("Empty Info calls should still produce some output")
+		}
 
-func TestEmptyAndNilInputs(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Output = &buf
-	cfg.Level = LevelInfo
-	logger, _ := New(cfg)
+		buf.Reset()
+		logger.InfoWith("test")
+		if buf.Len() == 0 {
+			t.Error("InfoWith with no fields should produce output")
+		}
+	})
 
-	// Empty message should not panic and should produce output
-	logger.Info()
-	logger.Info("")
-	if buf.Len() == 0 {
-		t.Error("Empty Info calls should still produce some output")
-	}
+	t.Run("LargeMessage", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		cfg.Level = LevelInfo
+		logger, _ := New(cfg)
 
-	buf.Reset()
-	logger.InfoWith("test")
-	if buf.Len() == 0 {
-		t.Error("InfoWith with no fields should produce output")
-	}
-}
+		logger.Info(strings.Repeat("test", 10000))
+		if !strings.Contains(buf.String(), "test") {
+			t.Error("Large message content should appear in output")
+		}
+	})
 
-func TestLargeMessage(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Output = &buf
-	cfg.Level = LevelInfo
-	logger, _ := New(cfg)
+	t.Run("ManyFields", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		cfg.Level = LevelInfo
+		logger, _ := New(cfg)
 
-	largeMsg := strings.Repeat("test", 10000)
-	logger.Info(largeMsg)
-
-	output := buf.String()
-	if !strings.Contains(output, "test") {
-		t.Error("Large message content should appear in output")
-	}
-}
-
-func TestManyFields(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Output = &buf
-	cfg.Level = LevelInfo
-	logger, _ := New(cfg)
-
-	fields := make([]Field, 100)
-	for i := 0; i < 100; i++ {
-		fields[i] = Int(fmt.Sprintf("field%d", i), i)
-	}
-
-	logger.InfoWith("many fields", fields...)
-
-	if buf.Len() == 0 {
-		t.Error("Message with many fields should be logged")
-	}
+		fields := make([]Field, 100)
+		for i := range 100 {
+			fields[i] = Int(fmt.Sprintf("field%d", i), i)
+		}
+		logger.InfoWith("many fields", fields...)
+		if buf.Len() == 0 {
+			t.Error("Message with many fields should be logged")
+		}
+	})
 }
 
 // ============================================================================
@@ -796,9 +728,9 @@ func TestManyFields(t *testing.T) {
 func TestLoggerClose(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "test.log")
 
-	fw, _ := NewFileWriter(tmpFile)
+	fw, _ := NewFileWriter(tmpFile, DefaultFileWriterConfig())
 	cfg := DefaultConfig()
-	cfg.Output = fw
+	cfg.Targets = []OutputTarget{CustomOutput(fw)}
 	logger, _ := New(cfg)
 
 	err := logger.Close()
@@ -814,7 +746,7 @@ func TestLoggerClose(t *testing.T) {
 
 	// Should not close stdout/stderr
 	stdoutCfg := DefaultConfig()
-	stdoutCfg.Output = os.Stdout
+	stdoutCfg.Targets = []OutputTarget{CustomOutput(os.Stdout)}
 	stdoutLogger, _ := New(stdoutCfg)
 	stdoutLogger.Close() // Should not panic or exit
 }
@@ -866,7 +798,7 @@ func TestFieldConstructors(t *testing.T) {
 func TestFieldConstructorsWithLogging(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Format = FormatJSON
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
@@ -957,7 +889,7 @@ func TestJSONFieldNamesDefaults(t *testing.T) {
 func TestFullLoggingPipeline(t *testing.T) {
 	tmpFile := t.TempDir() + "/test.log"
 
-	fw, _ := NewFileWriter(tmpFile)
+	fw, _ := NewFileWriter(tmpFile, DefaultFileWriterConfig())
 	defer fw.Close()
 
 	cfg := DefaultConfig()
@@ -965,7 +897,7 @@ func TestFullLoggingPipeline(t *testing.T) {
 	cfg.IncludeTime = true
 	cfg.IncludeLevel = true
 	cfg.DynamicCaller = false
-	cfg.Output = fw
+	cfg.Targets = []OutputTarget{CustomOutput(fw)}
 	cfg.Security = DefaultSecurityConfig()
 	logger, _ := New(cfg)
 
@@ -999,7 +931,7 @@ func TestFullLoggingPipeline(t *testing.T) {
 func TestJSONLoggingPipeline(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Format = FormatJSON
 	logger, _ := New(cfg)
@@ -1134,101 +1066,45 @@ func TestErrorReturns(t *testing.T) {
 	_ = err // Use err to avoid lint error
 
 	// Test NewFileWriter with invalid path
-	_, err = NewFileWriter("\x00invalid")
+	_, err = NewFileWriter("\x00invalid", DefaultFileWriterConfig())
 	if err == nil {
 		t.Error("NewFileWriter() with invalid path should fail")
 	}
 
 	// Test NewBufferedWriter with nil writer
-	_, err = NewBufferedWriter(nil, 1024)
+	_, err = NewBufferedWriter(nil, BufferedWriterConfig{BufferSize: 1024})
 	if err == nil {
 		t.Error("NewBufferedWriter(nil) should fail")
 	}
 }
-
 
 // ============================================================================
 // SECURITY FILTER TESTS (Consolidated from security_test.go)
 // ============================================================================
 
 func TestSensitiveDataFilter(t *testing.T) {
-	filter := NewSensitiveDataFilter()
-
 	tests := []struct {
 		name     string
+		filter   *SensitiveDataFilter
 		input    string
 		contains string
 	}{
-		{
-			name:     "password field",
-			input:    "password=secret123",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "api key",
-			input:    "api_key=sk-1234567890",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "credit card",
-			input:    "card number: 4532015112830366",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "email address",
-			input:    "email: user@example.com",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "normal text",
-			input:    "hello world",
-			contains: "hello world",
-		},
+		// Full filter
+		{"full/password", NewSensitiveDataFilter(), "password=secret123", "[REDACTED]"},
+		{"full/api_key", NewSensitiveDataFilter(), "api_key=sk-1234567890", "[REDACTED]"},
+		{"full/credit_card", NewSensitiveDataFilter(), "card number: 4532015112830366", "[REDACTED]"},
+		{"full/email", NewSensitiveDataFilter(), "email: user@example.com", "[REDACTED]"},
+		{"full/normal_text", NewSensitiveDataFilter(), "hello world", "hello world"},
+		// Basic filter
+		{"basic/password", newBasicSensitiveDataFilter(), "password=secret123", "[REDACTED]"},
+		{"basic/token", newBasicSensitiveDataFilter(), "token=abc123xyz", "[REDACTED]"},
+		{"basic/api_key", newBasicSensitiveDataFilter(), "api_key=sk-1234567890", "[REDACTED]"},
+		{"basic/normal_text", newBasicSensitiveDataFilter(), "username=john_doe", "username=john_doe"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := filter.Filter(tt.input)
-			if !strings.Contains(result, tt.contains) {
-				t.Errorf("Expected %q in result, got: %s", tt.contains, result)
-			}
-		})
-	}
-}
-
-func TestBasicSensitiveDataFilter(t *testing.T) {
-	filter := newBasicSensitiveDataFilter()
-
-	tests := []struct {
-		name     string
-		input    string
-		contains string
-	}{
-		{
-			name:     "password",
-			input:    "password=secret123",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "token",
-			input:    "token=abc123xyz",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "api key",
-			input:    "api_key=sk-1234567890",
-			contains: "[REDACTED]",
-		},
-		{
-			name:     "normal text",
-			input:    "username=john_doe",
-			contains: "username=john_doe",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := filter.Filter(tt.input)
+			result := tt.filter.Filter(tt.input)
 			if !strings.Contains(result, tt.contains) {
 				t.Errorf("Expected %q in result, got: %s", tt.contains, result)
 			}
@@ -1334,30 +1210,14 @@ func TestDefaultLoggerCompareAndSwap(t *testing.T) {
 // ============================================================================
 
 func TestConfigBuild(t *testing.T) {
-	t.Run("BasicBuild", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-
-		logger, err := New(cfg)
-		if err != nil {
-			t.Fatalf("Build() error = %v", err)
-		}
-		if logger == nil {
-			t.Fatal("Build() returned nil logger")
-		}
-
-		logger.Info("test message")
-		if buf.Len() == 0 {
-			t.Error("Logger should have written to buffer")
-		}
-	})
+	// BasicBuild, WithFileOutput, WithJSONFormat, WithSecurityConfig, WithFatalHandler
+	// are covered by: TestNewConfig, TestConfigIntegration (builder_test.go),
+	// TestJSONLoggingPipeline, TestMessageSizeLimit, TestFatalLogging respectively.
 
 	t.Run("WithMultipleOutputs", func(t *testing.T) {
 		var buf1, buf2 bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Outputs = []io.Writer{&buf1, &buf2}
+		cfg.Targets = []OutputTarget{CustomOutput(&buf1), CustomOutput(&buf2)}
 		cfg.Level = LevelInfo
 
 		logger, _ := New(cfg)
@@ -1365,81 +1225,6 @@ func TestConfigBuild(t *testing.T) {
 
 		if buf1.Len() == 0 || buf2.Len() == 0 {
 			t.Error("Message should be written to all outputs")
-		}
-	})
-
-	t.Run("WithFileOutput", func(t *testing.T) {
-		tmpFile := filepath.Join(t.TempDir(), "test.log")
-		cfg := DefaultConfig()
-		cfg.File = &FileConfig{
-			Path:       tmpFile,
-			MaxSizeMB:  1,
-			MaxBackups: 3,
-		}
-		cfg.Level = LevelInfo
-
-		logger, err := New(cfg)
-		if err != nil {
-			t.Fatalf("Build() error = %v", err)
-		}
-		defer logger.Close()
-
-		logger.Info("test message")
-
-		data, err := os.ReadFile(tmpFile)
-		if err != nil {
-			t.Fatalf("Failed to read file: %v", err)
-		}
-		if len(data) == 0 {
-			t.Error("File should contain log data")
-		}
-	})
-
-	t.Run("WithJSONFormat", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := JSONConfig()
-		cfg.Output = &buf
-
-		logger, _ := New(cfg)
-		logger.Info("test message")
-
-		if !strings.Contains(buf.String(), `"message"`) {
-			t.Error("Output should be JSON format")
-		}
-	})
-
-	t.Run("WithSecurityConfig", func(t *testing.T) {
-		var buf bytes.Buffer
-		secConfig := DefaultSecurityConfig()
-		secConfig.MaxMessageSize = 100
-
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-		cfg.Security = secConfig
-
-		logger, _ := New(cfg)
-		logger.Info(strings.Repeat("a", 200))
-
-		if len(buf.String()) > 150 {
-			t.Error("Message should be truncated")
-		}
-	})
-
-	t.Run("WithFatalHandler", func(t *testing.T) {
-		var buf bytes.Buffer
-		exited := false
-
-		cfg := DefaultConfig()
-		cfg.Output = &buf
-		cfg.Level = LevelInfo
-		cfg.FatalHandler = func() { exited = true }
-
-		logger, _ := New(cfg)
-		logger.Fatal("fatal message")
-
-		if !exited {
-			t.Error("FatalHandler should be called")
 		}
 	})
 }
@@ -1587,7 +1372,7 @@ func TestPackageLevelGenericLogFunctions(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -1668,7 +1453,7 @@ func TestPackageLevelWithFields(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelDebug
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -1727,7 +1512,7 @@ func TestPackageLevelFlush(t *testing.T) {
 
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -1746,7 +1531,7 @@ func TestPackageLevelWriterManagement(t *testing.T) {
 
 	var buf1, buf2 bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf1
+	cfg.Targets = []OutputTarget{CustomOutput(&buf1)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 	SetDefault(logger)
@@ -2133,7 +1918,7 @@ func TestAllErrorCodesMatchSentinels(t *testing.T) {
 func TestEmptyMessageWithFields(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -2149,7 +1934,7 @@ func TestEmptyMessageWithFields(t *testing.T) {
 func TestVeryLargeFieldCount(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -2245,7 +2030,7 @@ func (w *errorWriter) Write(p []byte) (n int, err error) {
 func TestWriterWriteErrors(t *testing.T) {
 	t.Run("error writer", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.Output = &errorWriter{err: errors.New("write error")}
+		cfg.Targets = []OutputTarget{CustomOutput(&errorWriter{err: errors.New("write error")})}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -2256,7 +2041,7 @@ func TestWriterWriteErrors(t *testing.T) {
 
 	t.Run("partial write", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.Output = &partialWriter{}
+		cfg.Targets = []OutputTarget{CustomOutput(&partialWriter{})}
 		cfg.Level = LevelInfo
 		logger, _ := New(cfg)
 
@@ -2281,7 +2066,7 @@ func TestSamplingIntegration(t *testing.T) {
 	t.Run("sampling disabled allows all", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		cfg.Sampling = nil // No sampling
 		logger, _ := New(cfg)
@@ -2301,7 +2086,7 @@ func TestSamplingIntegration(t *testing.T) {
 	t.Run("sampling enabled", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Level = LevelInfo
 		cfg.Sampling = &SamplingConfig{
 			Enabled:    true,
@@ -2334,7 +2119,7 @@ func TestSamplingIntegration(t *testing.T) {
 func TestNilFieldValues(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -2355,7 +2140,7 @@ func TestNilFieldValues(t *testing.T) {
 func TestEmptyFieldKey(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	logger, _ := New(cfg)
 
@@ -2390,7 +2175,7 @@ func TestTimeFormatConfiguration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
 			cfg := DefaultConfig()
-			cfg.Output = &buf
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 			cfg.Level = LevelInfo
 			cfg.IncludeTime = tt.includeTime
 			if tt.timeFormat != "" {
@@ -2412,7 +2197,6 @@ func TestTimeFormatConfiguration(t *testing.T) {
 // LOGGER CLOSE EDGE CASES
 // ============================================================================
 
-
 // ============================================================================
 // HOOK ERROR TESTS
 // ============================================================================
@@ -2420,7 +2204,7 @@ func TestTimeFormatConfiguration(t *testing.T) {
 func TestHookError(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := DefaultConfig()
-	cfg.Output = &buf
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 	cfg.Level = LevelInfo
 	cfg.Hooks = NewHookRegistry()
 	cfg.Hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {

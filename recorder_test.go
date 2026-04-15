@@ -267,4 +267,3 @@ func TestParseLevelString(t *testing.T) {
 		}
 	}
 }
-

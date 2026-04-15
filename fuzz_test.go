@@ -77,6 +77,7 @@ func FuzzValidateAndSecurePath(f *testing.F) {
 			ErrPathTooLong,
 			ErrPathTraversal,
 			ErrInvalidPath,
+			ErrOverlongEncoding,
 		)
 
 		if err != nil {

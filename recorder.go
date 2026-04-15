@@ -56,7 +56,7 @@ var (
 //
 //	recorder := dd.NewLoggerRecorder()
 //	cfg := dd.DefaultConfig()
-//	cfg.Output = recorder.Writer()
+//	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(recorder.Writer())}
 //	logger, _ := dd.New(cfg)
 //	logger.Info("test message")
 //	entries := recorder.Entries()
@@ -92,8 +92,15 @@ func (w *recorderWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// write parses and stores a log entry
+// write parses and stores a log entry.
+// Whitespace-only writes (e.g., standalone newlines from the single-writer fast path)
+// are silently ignored to avoid creating empty entries.
 func (r *LoggerRecorder) write(p []byte) {
+	// Skip whitespace-only writes produced by the single-writer newline optimization
+	if len(bytes.TrimSpace(p)) == 0 {
+		return
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -269,7 +276,7 @@ func (r *LoggerRecorder) NewLogger(cfg ...Config) (*Logger, error) {
 	} else {
 		c = DefaultConfig()
 	}
-	c.Output = r.Writer()
+	c.Targets = []OutputTarget{CustomOutput(r.Writer())}
 	return c.build()
 }
 
@@ -375,5 +382,3 @@ func (r *LoggerRecorder) GetFieldValue(key string) any {
 	}
 	return nil
 }
-
-// NOTE: parseLevelString is defined above (line ~213).

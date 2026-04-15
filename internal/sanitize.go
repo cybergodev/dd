@@ -207,10 +207,6 @@ func SanitizeUnicodeControlChars(s string) string {
 	bufPtr := sanitizeBufferPool.Get().(*[]byte)
 	buf := (*bufPtr)[:0]
 
-	if cap(*bufPtr) < len(s) {
-		// Buffer too small, let it grow naturally via append
-	}
-
 	for _, r := range s {
 		if !isUnicodeControlRune(r) {
 			buf = appendRune(buf, r)

@@ -337,7 +337,7 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 // needsJSONEscaped reports whether s contains bytes that need JSON escaping.
 // Characters requiring escape: 0x00-0x1F (control chars), '"', '\\', '<', '>', '&'.
 var needsJSONEscape = [256]bool{
-	'"':  true, '\\': true,
+	'"': true, '\\': true,
 	'<': true, '>': true, '&': true,
 	'\n': true, '\r': true, '\t': true,
 }

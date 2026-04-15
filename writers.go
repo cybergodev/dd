@@ -19,13 +19,13 @@ import (
 // This avoids reading the global os.Stdout/os.Stderr/os.Stdin variables in
 // background goroutines, which would race with tests that modify those globals.
 var standardStreams = struct {
+	stdin  *os.File
 	stdout *os.File
 	stderr *os.File
-	stdin  *os.File
 }{
+	stdin:  os.Stdin,
 	stdout: os.Stdout,
 	stderr: os.Stderr,
-	stdin:  os.Stdin,
 }
 
 // closeWriter safely closes a writer if it implements io.Closer.
@@ -37,7 +37,7 @@ func closeWriter(w io.Writer) error {
 		return nil
 	}
 	// Never close standard streams (use cached pointers to avoid reading globals)
-	if w == standardStreams.stdout || w == standardStreams.stderr || w == standardStreams.stdin {
+	if w == standardStreams.stdin || w == standardStreams.stdout || w == standardStreams.stderr {
 		return nil
 	}
 	if closer, ok := w.(io.Closer); ok {
@@ -65,6 +65,8 @@ type FileWriter struct {
 	wg     sync.WaitGroup
 }
 
+// FileWriterConfig configures file writer behavior including rotation settings.
+// Use DefaultFileWriterConfig() to obtain a Config with sensible defaults.
 type FileWriterConfig struct {
 	MaxSizeMB  int
 	MaxAge     time.Duration
@@ -127,23 +129,30 @@ func (c BufferedWriterConfig) Validate() error {
 
 // NewFileWriter creates a thread-safe file writer with rotation support.
 // The file is validated for security (path traversal, null bytes, symlinks).
-// If cfg fields are zero, DefaultFileWriterConfig values are applied.
+// Use DefaultFileWriterConfig() to obtain a Config with sensible defaults.
+//
+// Returns errors:
+//   - ErrEmptyFilePath: when path is empty
+//   - ErrNullByte: when path contains null bytes
+//   - ErrPathTooLong: when path exceeds 4096 bytes
+//   - ErrPathTraversal: when path contains directory traversal sequences
+//   - ErrInvalidPath: when path is otherwise invalid
+//   - ErrSymlinkNotAllowed: when path points to a symlink
+//   - ErrOverlongEncoding: when path contains overlong UTF-8 encoding
+//   - ErrMaxSizeExceeded: when MaxSizeMB exceeds 10240
+//   - ErrMaxBackupsExceeded: when MaxBackups exceeds 1000
 //
 // Example:
 //
 //	cfg := dd.DefaultFileWriterConfig()
 //	cfg.MaxSizeMB = 50
 //	fw, err := dd.NewFileWriter("logs/app.log", cfg)
-func NewFileWriter(path string, cfg ...FileWriterConfig) (*FileWriter, error) {
-	var config FileWriterConfig
-	if len(cfg) > 0 {
-		config = cfg[0]
-	}
-	return newFileWriterWithConfig(path, config)
+func NewFileWriter(path string, cfg FileWriterConfig) (*FileWriter, error) {
+	return newFileWriterWithConfig(path, cfg)
 }
 
 func newFileWriterWithConfig(path string, config FileWriterConfig) (*FileWriter, error) {
-	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath)
+	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath, ErrOverlongEncoding)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +183,7 @@ func newFileWriterWithConfig(path string, config FileWriterConfig) (*FileWriter,
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	file, size, err := internal.OpenFile(securePath)
+	file, size, err := internal.OpenFile(securePath, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to open file %s: %w", securePath, err)
@@ -293,7 +302,7 @@ func (fw *FileWriter) rotate() error {
 
 	if err := os.Rename(fw.path, backupPath); err != nil {
 		// Rename failed, try to reopen the original file
-		file, size, reopenErr := internal.OpenFile(fw.path)
+		file, size, reopenErr := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 		if reopenErr != nil {
 			return fmt.Errorf("rename to backup failed and cannot reopen file: rename=%w, reopen=%w", err, reopenErr)
 		}
@@ -304,7 +313,7 @@ func (fw *FileWriter) rotate() error {
 
 	// Rename succeeded, now open new file
 	// If this fails, we need to handle it carefully to avoid data loss
-	file, size, err := internal.OpenFile(fw.path)
+	file, size, err := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 	if err != nil {
 		// Try to recover by renaming backup back to original
 		if renameBackErr := os.Rename(backupPath, fw.path); renameBackErr != nil {
@@ -314,7 +323,7 @@ func (fw *FileWriter) rotate() error {
 			return fmt.Errorf("open new file failed and recovery failed: open=%w, recovery=%w", err, renameBackErr)
 		}
 		// Recovery succeeded, try to reopen the original file
-		file, size, reopenErr := internal.OpenFile(fw.path)
+		file, size, reopenErr := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 		if reopenErr != nil {
 			return fmt.Errorf("open new file failed, recovery succeeded but reopen failed: open=%w, reopen=%w", err, reopenErr)
 		}
@@ -381,15 +390,21 @@ type BufferedWriter struct {
 	closed    atomic.Bool
 }
 
-// NewBufferedWriter creates a new BufferedWriter with the specified buffer size.
-// The writer automatically flushes when the buffer is half full or every 100ms.
+// NewBufferedWriter creates a new BufferedWriter with the specified configuration.
+// The writer automatically flushes when the buffer is half full or at the configured interval.
 // Remember to call Close() to ensure all buffered data is written to the underlying writer.
-// If bufferSize is not specified or is 0, 1KB is used.
-func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error) {
-	cfg := DefaultBufferedWriterConfig()
-	if len(bufferSizes) > 0 {
-		cfg.BufferSize = bufferSizes[0]
-	}
+// Use DefaultBufferedWriterConfig() to obtain a Config with sensible defaults.
+//
+// Returns errors:
+//   - ErrNilWriter: when the underlying writer is nil
+//   - ErrBufferSizeTooLarge: when BufferSize exceeds 10MB
+//
+// Example:
+//
+//	cfg := dd.DefaultBufferedWriterConfig()
+//	cfg.BufferSize = 4096
+//	bw, err := dd.NewBufferedWriter(fileWriter, cfg)
+func NewBufferedWriter(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
 	return newBufferedWriterWithConfig(w, cfg)
 }
 

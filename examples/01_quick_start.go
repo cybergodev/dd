@@ -108,6 +108,7 @@ func section4GlobalLogger() {
 	cfg := dd.DefaultConfig()
 	cfg.Level = dd.LevelDebug
 	customLogger, _ := dd.New(cfg)
+	defer customLogger.Close()
 
 	// SetDefault affects ALL package-level functions
 	dd.SetDefault(customLogger)
