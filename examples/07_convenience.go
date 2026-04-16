@@ -62,6 +62,7 @@ func section1FileOutput() {
 	)
 
 	fmt.Println("✓ Files: logs/app.log, logs/custom.log, logs/json.log")
+	fmt.Println()
 }
 
 // Section 2: Console output

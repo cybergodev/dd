@@ -36,7 +36,7 @@ func section1FieldTypes() {
 	defer logger.Close()
 
 	// Type-safe fields (recommended for performance)
-	logger.InfoWith("All field types",
+	logger.InfoWith("All field types:",
 		// Strings and numbers
 		dd.String("user", "alice"),
 		dd.Int("count", 42),
@@ -74,8 +74,8 @@ func section2WithFields() {
 	)
 
 	// All logs from userLogger include service and version
-	userLogger.Info("User authenticated")
-	userLogger.InfoWith("Profile loaded",
+	userLogger.Info("User authenticated:")
+	userLogger.InfoWith("Profile loaded:",
 		dd.String("user_id", "123"),
 		dd.Int("roles", 3),
 	)
@@ -84,15 +84,15 @@ func section2WithFields() {
 	requestLogger := userLogger.WithFields(
 		dd.String("request_id", "req-abc-123"),
 	)
-	requestLogger.Info("Processing request")
-	requestLogger.InfoWith("Request completed",
+	requestLogger.Info("Processing request:")
+	requestLogger.InfoWith("Request completed:",
 		dd.Int("status", 200),
 		dd.Duration("latency", 45*time.Millisecond),
 	)
 
 	// Single field shorthand
 	txLogger := logger.WithField("transaction_id", "tx-789")
-	txLogger.Info("Transaction started")
+	txLogger.Info("Transaction started:")
 
 	// Original logger is unchanged
 	logger.Info("This has no preset fields")

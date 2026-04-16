@@ -52,9 +52,8 @@ func section1ErrorHandling() {
 	defer logger.Close()
 
 	// Structured error logging
-	err := errors.New("database connection failed")
 	logger.ErrorWith("Operation failed",
-		dd.Err(err),
+		dd.Err(errors.New("database connection failed")),
 		dd.String("operation", "db_query"),
 		dd.String("host", "db.example.com"),
 		dd.Int("retry_count", 3),
@@ -79,6 +78,7 @@ func section1ErrorHandling() {
 	}()
 
 	fmt.Println("✓ Errors logged, panic recovered")
+	fmt.Println()
 }
 
 // Section 2: Request tracing pattern
@@ -134,6 +134,7 @@ func section2RequestTracing() {
 	processRequest(ctx, "/api/orders")
 
 	fmt.Println("✓ Request flow logged with trace IDs")
+	fmt.Println()
 }
 
 // Section 3: Graceful shutdown
@@ -200,6 +201,7 @@ func section3GracefulShutdown() {
 	}
 
 	fmt.Println("✓ Graceful shutdown completed")
+	fmt.Println()
 }
 
 // Section 4: Concurrent logging
@@ -240,6 +242,7 @@ func section4ConcurrentLogging() {
 	fmt.Printf("  %d workers × %d messages = %d total\n", numWorkers, msgsPerWorker, total)
 	fmt.Printf("  Duration: %v\n", duration)
 	fmt.Printf("  Throughput: %.0f ops/sec\n\n", opsPerSec)
+	fmt.Println()
 }
 
 // Section 5: Performance optimization

@@ -85,6 +85,7 @@ func section2ContextLogging() {
 	)...)
 
 	fmt.Println("✓ Trace IDs included via WithFields pattern")
+	fmt.Println()
 }
 
 // extractTraceFields is a helper to extract trace context as fields

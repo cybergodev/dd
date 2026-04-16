@@ -59,6 +59,7 @@ func section1FileWriter() {
 	logger.Info("Direct file writer output")
 
 	fmt.Println("✓ File: logs/direct.log")
+	fmt.Println()
 }
 
 // Section 2: BufferedWriter for high throughput
@@ -99,6 +100,7 @@ func section2BufferedWriter() {
 
 	fmt.Printf("✓ 1000 messages in %v\n", duration)
 	fmt.Println("  Note: Close() flushes the buffer")
+	fmt.Println()
 }
 
 // Section 3: MultiWriter for multiple outputs

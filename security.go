@@ -1276,6 +1276,27 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 
 	// Handle structs
 	if kind == reflect.Struct {
+		// Fast path: return well-known types as-is before decomposing into fields.
+		// Without this, time.Time (all unexported fields) becomes map[string]any{},
+		// and types implementing fmt.Stringer/error get decomposed instead of using
+		// their canonical string representation.
+		if val.CanInterface() {
+			iface := val.Interface()
+			switch v := iface.(type) {
+			case time.Time:
+				return v
+			case time.Duration:
+				return v
+			case fmt.Stringer:
+				return v.String()
+			case error:
+				if v != nil {
+					return v.Error()
+				}
+				return nil
+			}
+		}
+
 		result := make(map[string]any)
 		typ := val.Type()
 		for i := 0; i < val.NumField(); i++ {

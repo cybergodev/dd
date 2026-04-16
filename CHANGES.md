@@ -4,7 +4,107 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
-## v1.2.2 — Security Hardening & API Cleanup (2026-03-21)
+## v1.3.0 - API Unification, Performance & Quality (2026-04-16)
+
+### Breaking Changes
+- Removed `FileConfig` struct, `Config.Output`, `Config.Outputs`, `Config.File` — use `Config.Targets` with `OutputTarget` helpers
+- Removed convenience functions (`ToFile`, `ToConsole`, `ToAll`, `ToAllJSON`, `ToWriter`, `ToWriters`, `ToJSONFile`) — use `New(Config)` with `Targets`
+- Removed all `*WithConfig` constructors — inlined into main constructors (`New`, `NewFileWriter`, `NewBufferedWriter`, `NewAuditLogger`, `NewIntegritySigner`)
+- Removed `DefaultIntegrityConfig()` (panicked on entropy failure) — use `DefaultIntegrityConfigSafe()`
+- Privatized 49 internal identifiers (`ErrCode*` constants, `NewError`, `WrapError`, hook helpers, registry methods)
+- Privatized `ContextExtractorRegistry` → use `Config.ContextExtractors` and `AddContextExtractor()`
+- Privatized `WaitForBackgroundCloses()` → internal coordination only
+- `New(cfgs ...*Config)` → `New(cfg ...Config)` (value type, no pointer)
+- `NewAuditLogger` returns `(*AuditLogger, error)` instead of `*AuditLogger`
+- `LoggerRecorder.NewLogger` returns `(*Logger, error)` instead of `*Logger`
+- `NewFileWriter(path, cfg ...FileWriterConfig)` → `NewFileWriter(path, cfg FileWriterConfig)` (non-variadic)
+- `NewBufferedWriter(w, bufferSizes ...int)` → `NewBufferedWriter(w, cfg BufferedWriterConfig)` (Config struct)
+- `NewIntegritySigner(cfg ...IntegrityConfig)` → `NewIntegritySigner(cfg IntegrityConfig)` (non-variadic)
+- Config functions return values: `DefaultConfig()`, `Clone()`, `DefaultAuditConfig()` etc. no longer return pointers
+- Exported `Config.Validate()` replaces private `Config.validate()`
+- Removed `validateErrorCodeMapping()` (was a no-op)
+- Removed `namedErr()` deprecated alias — use `ErrWithKey()`
+
+### Added
+- `OutputTarget` struct with `ConsoleOutput()`, `FileOutput(path)`, `CustomOutput(w)` helpers
+- `OutputType` enum (`OutputConsole`, `OutputFile`, `OutputCustom`)
+- `BufferedWriterConfig` struct with `DefaultBufferedWriterConfig()` and `Validate()`
+- `FileWriterConfig.Validate()` public validation method
+- `AuditConfig.Validate()` and `IntegrityConfig.Validate()` methods
+- `Config.Targets []OutputTarget` field for unified output configuration
+- `OutputTarget.resolve()` method converts `OutputTarget` to `io.Writer`
+- Panic recovery guards in all public logging paths (`logCoreWithDepth`, `FilterValueRecursive`, `safeWrite`)
+- Nil-receiver guards on `ClearPatterns()` and all public `Logger` methods
+- Pre-compiled security patterns at init time — eliminates runtime panics in `SecurityConfigForLevel()`
+- `WaitForBackgroundCloses(timeout)` for background close goroutine coordination
+- Godoc comments on all exported types and methods (`Logger`, `LogLevel`, `FileWriter`, `MultiWriter`, `SensitiveDataFilter`, etc.)
+- `examples/11_testing.go` — LoggerRecorder usage example
+- `resource_leak_test.go` — 7 resource leak verification tests
+- `boundary_test.go` — 50+ boundary condition test cases
+- `loadHooks()`, `loadContextExtractors()`, `loadSamplingState()` typed accessors for cleaner atomic access
+
+### Changed
+- Context extractors now invoked in logging pipeline (previously stored but never called)
+- `Logger.Close()` calls `WaitForFilterGoroutines()` before closing writers
+- `SensitiveDataFilter.Close()` releases cache map on shutdown
+- `AuditLogger.Close()` clears statistics map on shutdown
+- HMAC hasher pool replaced with direct `hmac.New()` per operation (fixes nil-key reuse)
+- `SensitiveDataFilter.Clone()` now initializes all fields including `goroutineCond` and cache
+- Error sentinels (`ErrSymlinkNotAllowed`, `ErrHardlinkNotAllowed`, `ErrOverlongEncoding`) now match via `errors.Is()`
+- `MultiWriter.Close()` idempotent via `atomic.Bool` guard
+- `FileWriter` closed-flag prevents `Write()` after `Close()`
+- Standard streams cached at init time (fixes race with concurrent `os.Stdout` modification)
+- Hash seed initialization uses `sync.Once` for thread safety
+- `incrementTypeCount()` counter race fixed — new counters start at 0
+- `shouldLog()` simplified — eliminated duplicated level-check branches
+- `Doc.go` package examples updated to use `Targets` API
+- All test and example files updated to use `Targets` instead of deprecated `Output`/`File` fields
+
+### Fixed
+- `time.Time` values converted to empty map `{}` by security filter — now preserved as RFC3339 timestamps
+- Context extractor fields bypassed sensitive data filtering (security gap)
+- `Shutdown()` closed writers after canceling context (reversed order — deadline semantics broken)
+- `LoggerRecorder` double-entry bug from whitespace-only writes on single-writer fast path
+- `SanitizeControlChars` incomplete 0xEF BOM handling (only appended first byte)
+- `mergeFieldSlices` exceeded 2× field limit (only capped `newFields`, not `existingFields`)
+- `SecureBuffer.Grow` incomplete zeroing during reallocation (only zeroed up to len, not cap)
+- `IntegritySigner` mutated caller's `SignaturePrefix` via non-deep-copied config
+- `SensitiveDataFilter.Clone()` nil pointer panic on `WaitForGoroutines` (zero-value `sync.Cond`)
+- Divide-by-zero in `handleRateLimited()` when `SamplingRate <= 0`
+- Redundant full-string regex pass in `filterInChunksWithContext` (overlap chunking already covers boundaries)
+- `shouldSample()` race condition — counter reset and increment now atomic within same mutex scope
+- `LoggerEntry` methods panicked on nil logger receiver
+- `NewLogger`/`NewLoggerWithConfig` silently swallowed errors, could return nil `*Logger`
+- README: incorrect API references (wrong function names, missing error returns, nonexistent types)
+- Example code: missing `defer Close()`, silently discarded errors, wrong API usage
+- `LoadOrStore` race path ineffectual assignment in `caller.go`
+- Multiple lint issues (errcheck, QF1001, QF1008, SA9003)
+
+### Performance
+- Single-pass `SanitizeControlChars` — +37% faster for large messages
+- Direct field writing to text builder — eliminates 1 string allocation per log with fields
+- `formatJSONDirect()` fast path — eliminates 2 map allocations for simple JSON logs
+- Zero-copy string-to-bytes via `unsafe.Slice` for single-writer path — eliminates pool Get/Put
+- Pooled buffers: `sanitizeBufferPool`, `chunkFilterBufPool`, `signDataPool`, `auditEncoderPool`
+- Type-switch fast paths for common map key types (avoids `fmt.Sprintf` for string/int/float/bool)
+- Bulk scan + `WriteString` for non-escaped JSON strings with lookup-table escape detection
+- Pre-allocated slices in error paths and writer operations
+- 65 of 82 benchmarks improved, 0 meaningful regressions
+- JSON/Simple: up to −80% allocations (5→1), −27% memory, −20% latency
+- Text/WithFields: −25% allocations, −14% memory, −8% latency
+
+### Removed
+- `convenience.go` file (single `DefaultLogPath` constant merged into `constants.go`)
+- `validateErrorCodeMapping()` no-op function
+- `namedErr()` deprecated function (replaced by `ErrWithKey()`)
+- `structured.go` deprecated `NamedErr` function
+- `DefaultLogPath` from `convenience.go` → moved to `constants.go`
+- 7+ duplicate test functions (~190 lines)
+- ~65 lines of dead code and unused helpers
+
+---
+
+## v1.2.2 - Security Hardening & API Cleanup (2026-03-21)
 
 ### Breaking Changes
 - Removed all `*Ctx` methods from `Logger`, `LoggerEntry`, and package-level functions; use `ContextExtractors` with `*With()` methods instead

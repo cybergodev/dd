@@ -40,7 +40,7 @@ func section1PackageLevel() {
 	// dd.Fatal("Fatal: severe errors, exits program") // Uncomment to test
 
 	// Structured logging with package-level functions
-	dd.InfoWith("Request processed",
+	dd.InfoWith("Request processed:",
 		dd.String("method", "GET"),
 		dd.Int("status", 200),
 	)
