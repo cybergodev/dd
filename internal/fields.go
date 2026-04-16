@@ -57,11 +57,7 @@ func FormatFields(fields []Field) string {
 			return
 		}
 		// Zero the buffer contents for security
-		b := buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		fieldPool.Put(buf)
 	}()
 

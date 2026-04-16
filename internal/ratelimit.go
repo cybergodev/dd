@@ -181,19 +181,22 @@ func (rl *RateLimiter) handleRateLimited() bool {
 	switch rl.config.Strategy {
 	case RateLimitStrategySample:
 		// Keep 1 in N messages
+		samplingRate := rl.config.SamplingRate
+		if samplingRate <= 0 {
+			return true // Invalid sampling rate, drop to be safe
+		}
 		counter := rl.sampleCounter.Add(1)
-		return counter%int64(rl.config.SamplingRate) != 0
+		return counter%int64(samplingRate) != 0
 
 	case RateLimitStrategyThrottle:
 		// For throttle, we'd need blocking behavior which isn't suitable
 		// for the hot path. Fall through to drop behavior.
+		fallthrough
 
-	case RateLimitStrategyDrop:
-		// Drop the message
+	default:
+		// RateLimitStrategyDrop and any unknown strategy: drop the message
 		return true
 	}
-
-	return true
 }
 
 // GetStats returns current rate limiter statistics.

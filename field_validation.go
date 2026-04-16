@@ -1,4 +1,4 @@
-// Package dd provides field validation functionality for structured logging.
+// Field validation for structured logging keys.
 package dd
 
 import (
@@ -136,6 +136,11 @@ func StrictCamelCaseConfig() *FieldValidationConfig {
 // ValidateFieldKey validates a field key against the configured naming convention.
 // Returns an error describing the validation failure, or nil if valid.
 // Security validation is always performed when Mode is not FieldValidationNone.
+//
+// Returns errors:
+//   - Empty key error: when the key is an empty string
+//   - Security validation errors: Log4Shell detection, homograph attack, overlong UTF-8
+//   - Convention mismatch: when the key doesn't match the configured naming convention
 func (c *FieldValidationConfig) ValidateFieldKey(key string) error {
 	if c == nil || c.Mode == FieldValidationNone {
 		return nil
@@ -188,47 +193,18 @@ func (c *FieldValidationConfig) ValidateFieldKey(key string) error {
 // Pre-computed to avoid allocation on every call to isCommonAbbreviation.
 var commonSuffixes = []string{"_id", "_url", "_uri", "_ip", "_api"}
 
-// Common abbreviations that are allowed regardless of naming convention
+// Common abbreviations that are allowed regardless of naming convention.
+// Stored in lowercase; isCommonAbbreviation normalizes the lookup.
 var commonAbbreviations = map[string]bool{
-	"id":    true,
-	"ID":    true,
-	"url":   true,
-	"URL":   true,
-	"uri":   true,
-	"URI":   true,
-	"http":  true,
-	"HTTP":  true,
-	"https": true,
-	"HTTPS": true,
-	"api":   true,
-	"API":   true,
-	"json":  true,
-	"JSON":  true,
-	"xml":   true,
-	"XML":   true,
-	"html":  true,
-	"HTML":  true,
-	"sql":   true,
-	"SQL":   true,
-	"ip":    true,
-	"IP":    true,
-	"tcp":   true,
-	"TCP":   true,
-	"udp":   true,
-	"UDP":   true,
-	"ssl":   true,
-	"SSL":   true,
-	"tls":   true,
-	"TLS":   true,
-	"jwt":   true,
-	"JWT":   true,
-	"oauth": true,
-	"OAuth": true,
+	"id": true, "url": true, "uri": true, "http": true, "https": true,
+	"api": true, "json": true, "xml": true, "html": true, "sql": true,
+	"ip": true, "tcp": true, "udp": true, "ssl": true, "tls": true,
+	"jwt": true, "oauth": true,
 }
 
 func isCommonAbbreviation(key string) bool {
-	// Check exact match
-	if commonAbbreviations[key] {
+	// Case-insensitive exact match
+	if commonAbbreviations[strings.ToLower(key)] {
 		return true
 	}
 

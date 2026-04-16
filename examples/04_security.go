@@ -17,6 +17,8 @@ import (
 // 3. Custom filtering patterns
 // 4. Filter statistics and monitoring
 // 5. Disable filtering when needed
+//
+// Industry-specific presets: HealthcareConfig(), FinancialConfig(), GovernmentConfig()
 func main() {
 	fmt.Println("=== DD Security Features ===")
 
@@ -89,11 +91,14 @@ func section3CustomFiltering() {
 
 	// Start with empty filter and add custom patterns
 	filter := dd.NewEmptySensitiveDataFilter()
-	filter.AddPatterns(
+	if err := filter.AddPatterns(
 		`(?i)(internal_token[:\s=]+)[^\s]+`,
 		`(?i)(session_id[:\s=]+)[^\s]+`,
 		`(?i)(company_secret[:\s=]+)[^\s]+`,
-	)
+	); err != nil {
+		fmt.Printf("  Invalid pattern: %v\n", err)
+		return
+	}
 
 	cfg := dd.DefaultConfig()
 	cfg.Security = &dd.SecurityConfig{
@@ -161,7 +166,10 @@ func section4FilterStats() {
 
 // Example: Disable filtering completely (use with caution)
 func section5DisableFiltering() {
-	// No filtering - maximum performance
+	fmt.Println("5. Disable Filtering & Industry Presets")
+	fmt.Println("-----------------------------------------")
+
+	// No filtering - maximum performance (development only)
 	cfg := dd.DefaultConfig()
 	cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
 
@@ -170,5 +178,21 @@ func section5DisableFiltering() {
 
 	logger.Info("password=raw_password") // Not filtered
 
-	// Note: Only disable when you need raw data or maximum performance
+	// Industry-specific presets (additional patterns for compliance):
+	// - dd.HealthcareConfig()   — HIPAA/PHI: ICD codes, MRN, patient IDs
+	// - dd.FinancialConfig()    — PCI-DSS: SWIFT/BIC, IBAN, CVV, account numbers
+	// - dd.GovernmentConfig()   — PII: passport numbers, driver's license, SSN variants
+
+	healthcareLogger, _ := func() (*dd.Logger, error) {
+		c := dd.DefaultConfig()
+		c.Security = dd.HealthcareConfig()
+		return dd.New(c)
+	}()
+	if healthcareLogger != nil {
+		defer healthcareLogger.Close()
+		healthcareLogger.Info("patient_id=MRN-123456") // Filtered by healthcare patterns
+	}
+
+	fmt.Println("  Available presets: HealthcareConfig, FinancialConfig, GovernmentConfig")
+	fmt.Println()
 }

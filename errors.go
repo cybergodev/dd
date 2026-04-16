@@ -7,38 +7,40 @@ import (
 )
 
 // Error codes for structured error handling.
-// These codes enable programmatic error matching using errors.Is() and errors.As().
+// These codes are used internally by LoggerError to map to public sentinel errors
+// so that errors.Is(err, dd.ErrInvalidLevel) works correctly.
+// Do not use these codes directly in application code; use the Err* sentinel errors.
 const (
-	ErrCodeNilConfig          = "NIL_CONFIG"
-	ErrCodeNilWriter          = "NIL_WRITER"
-	ErrCodeNilFilter          = "NIL_FILTER"
-	ErrCodeNilHook            = "NIL_HOOK"
-	ErrCodeNilExtractor       = "NIL_EXTRACTOR"
-	ErrCodeLoggerClosed       = "LOGGER_CLOSED"
-	ErrCodeWriterNotFound     = "WRITER_NOT_FOUND"
-	ErrCodeInvalidLevel       = "INVALID_LEVEL"
-	ErrCodeInvalidFormat      = "INVALID_FORMAT"
-	ErrCodeMaxWritersExceeded = "MAX_WRITERS_EXCEEDED"
-	ErrCodeEmptyFilePath      = "EMPTY_FILE_PATH"
-	ErrCodePathTooLong        = "PATH_TOO_LONG"
-	ErrCodePathTraversal      = "PATH_TRAVERSAL"
-	ErrCodeNullByte           = "NULL_BYTE"
-	ErrCodeInvalidPath        = "INVALID_PATH"
-	ErrCodeSymlinkNotAllowed  = "SYMLINK_NOT_ALLOWED"
-	ErrCodeHardlinkNotAllowed = "HARDLINK_NOT_ALLOWED"
-	ErrCodeOverlongEncoding   = "OVERLONG_ENCODING"
-	ErrCodeMaxSizeExceeded    = "MAX_SIZE_EXCEEDED"
-	ErrCodeMaxBackupsExceeded = "MAX_BACKUPS_EXCEEDED"
-	ErrCodeBufferSizeTooLarge = "BUFFER_SIZE_TOO_LARGE"
-	ErrCodeInvalidPattern     = "INVALID_PATTERN"
-	ErrCodeEmptyPattern       = "EMPTY_PATTERN"
-	ErrCodePatternTooLong     = "PATTERN_TOO_LONG"
-	ErrCodeReDoSPattern       = "REDOS_PATTERN"
-	ErrCodePatternFailed      = "PATTERN_FAILED"
-	ErrCodeConfigValidation   = "CONFIG_VALIDATION"
-	ErrCodeWriterAdd          = "WRITER_ADD"
-	ErrCodeMultipleConfigs    = "MULTIPLE_CONFIGS"
-	ErrCodeNilMultiWriter     = "NIL_MULTIWRITER"
+	errCodeNilConfig          = "NIL_CONFIG"
+	errCodeNilWriter          = "NIL_WRITER"
+	errCodeNilFilter          = "NIL_FILTER"
+	errCodeNilHook            = "NIL_HOOK"
+	errCodeNilExtractor       = "NIL_EXTRACTOR"
+	errCodeLoggerClosed       = "LOGGER_CLOSED"
+	errCodeWriterNotFound     = "WRITER_NOT_FOUND"
+	errCodeInvalidLevel       = "INVALID_LEVEL"
+	errCodeInvalidFormat      = "INVALID_FORMAT"
+	errCodeMaxWritersExceeded = "MAX_WRITERS_EXCEEDED"
+	errCodeEmptyFilePath      = "EMPTY_FILE_PATH"
+	errCodePathTooLong        = "PATH_TOO_LONG"
+	errCodePathTraversal      = "PATH_TRAVERSAL"
+	errCodeNullByte           = "NULL_BYTE"
+	errCodeInvalidPath        = "INVALID_PATH"
+	errCodeSymlinkNotAllowed  = "SYMLINK_NOT_ALLOWED"
+	errCodeHardlinkNotAllowed = "HARDLINK_NOT_ALLOWED"
+	errCodeOverlongEncoding   = "OVERLONG_ENCODING"
+	errCodeMaxSizeExceeded    = "MAX_SIZE_EXCEEDED"
+	errCodeMaxBackupsExceeded = "MAX_BACKUPS_EXCEEDED"
+	errCodeBufferSizeTooLarge = "BUFFER_SIZE_TOO_LARGE"
+	errCodeInvalidPattern     = "INVALID_PATTERN"
+	errCodeEmptyPattern       = "EMPTY_PATTERN"
+	errCodePatternTooLong     = "PATTERN_TOO_LONG"
+	errCodeReDoSPattern       = "REDOS_PATTERN"
+	errCodePatternFailed      = "PATTERN_FAILED"
+	errCodeConfigValidation   = "CONFIG_VALIDATION"
+	errCodeWriterAdd          = "WRITER_ADD"
+	errCodeMultipleConfigs    = "MULTIPLE_CONFIGS"
+	errCodeNilMultiWriter     = "NIL_MULTIWRITER"
 )
 
 // LoggerError represents a structured error with additional context.
@@ -79,93 +81,36 @@ func (e *LoggerError) Unwrap() error {
 
 // errorCodeToSentinel maps error codes to their corresponding sentinel errors.
 var errorCodeToSentinel = map[string]error{
-	ErrCodeNilConfig:          ErrNilConfig,
-	ErrCodeNilWriter:          ErrNilWriter,
-	ErrCodeNilFilter:          ErrNilFilter,
-	ErrCodeNilHook:            ErrNilHook,
-	ErrCodeNilExtractor:       ErrNilExtractor,
-	ErrCodeLoggerClosed:       ErrLoggerClosed,
-	ErrCodeWriterNotFound:     ErrWriterNotFound,
-	ErrCodeInvalidLevel:       ErrInvalidLevel,
-	ErrCodeInvalidFormat:      ErrInvalidFormat,
-	ErrCodeMaxWritersExceeded: ErrMaxWritersExceeded,
-	ErrCodeEmptyFilePath:      ErrEmptyFilePath,
-	ErrCodePathTooLong:        ErrPathTooLong,
-	ErrCodePathTraversal:      ErrPathTraversal,
-	ErrCodeNullByte:           ErrNullByte,
-	ErrCodeInvalidPath:        ErrInvalidPath,
-	ErrCodeSymlinkNotAllowed:  ErrSymlinkNotAllowed,
-	ErrCodeHardlinkNotAllowed: ErrHardlinkNotAllowed,
-	ErrCodeOverlongEncoding:   ErrOverlongEncoding,
-	ErrCodeMaxSizeExceeded:    ErrMaxSizeExceeded,
-	ErrCodeMaxBackupsExceeded: ErrMaxBackupsExceeded,
-	ErrCodeBufferSizeTooLarge: ErrBufferSizeTooLarge,
-	ErrCodeInvalidPattern:     ErrInvalidPattern,
-	ErrCodeEmptyPattern:       ErrEmptyPattern,
-	ErrCodePatternTooLong:     ErrPatternTooLong,
-	ErrCodeReDoSPattern:       ErrReDoSPattern,
-	ErrCodePatternFailed:      ErrPatternFailed,
-	ErrCodeConfigValidation:   ErrConfigValidation,
-	ErrCodeWriterAdd:          ErrWriterAdd,
-	ErrCodeMultipleConfigs:    ErrMultipleConfigs,
-	ErrCodeNilMultiWriter:     ErrNilMultiWriter,
-}
-
-// allErrorCodes contains all defined error codes for validation.
-// This is used by ValidateErrorCodeMapping to ensure all codes have sentinel errors.
-var allErrorCodes = []string{
-	ErrCodeNilConfig,
-	ErrCodeNilWriter,
-	ErrCodeNilFilter,
-	ErrCodeNilHook,
-	ErrCodeNilExtractor,
-	ErrCodeLoggerClosed,
-	ErrCodeWriterNotFound,
-	ErrCodeInvalidLevel,
-	ErrCodeInvalidFormat,
-	ErrCodeMaxWritersExceeded,
-	ErrCodeEmptyFilePath,
-	ErrCodePathTooLong,
-	ErrCodePathTraversal,
-	ErrCodeNullByte,
-	ErrCodeInvalidPath,
-	ErrCodeSymlinkNotAllowed,
-	ErrCodeHardlinkNotAllowed,
-	ErrCodeOverlongEncoding,
-	ErrCodeMaxSizeExceeded,
-	ErrCodeMaxBackupsExceeded,
-	ErrCodeBufferSizeTooLarge,
-	ErrCodeInvalidPattern,
-	ErrCodeEmptyPattern,
-	ErrCodePatternTooLong,
-	ErrCodeReDoSPattern,
-	ErrCodePatternFailed,
-	ErrCodeConfigValidation,
-	ErrCodeWriterAdd,
-	ErrCodeMultipleConfigs,
-	ErrCodeNilMultiWriter,
-}
-
-// validateErrorCodeMapping validates that all error codes have a corresponding
-// sentinel error mapping. This is intended for use in tests to catch developer
-// mistakes when adding new error codes without updating the map.
-// Returns a slice of missing error codes, or nil if all codes are mapped.
-func validateErrorCodeMapping() []string {
-	var missing []string
-	for _, code := range allErrorCodes {
-		if _, ok := errorCodeToSentinel[code]; !ok {
-			missing = append(missing, code)
-		}
-	}
-	return missing
-}
-
-func init() {
-	// Validate error code mapping at startup to catch developer mistakes early.
-	// This ensures all error codes have corresponding sentinel errors.
-	if missing := validateErrorCodeMapping(); len(missing) > 0 {
-		panic(fmt.Sprintf("dd: internal error: missing error code mappings: %v", missing))
-	}
+	errCodeNilConfig:          ErrNilConfig,
+	errCodeNilWriter:          ErrNilWriter,
+	errCodeNilFilter:          ErrNilFilter,
+	errCodeNilHook:            ErrNilHook,
+	errCodeNilExtractor:       ErrNilExtractor,
+	errCodeLoggerClosed:       ErrLoggerClosed,
+	errCodeWriterNotFound:     ErrWriterNotFound,
+	errCodeInvalidLevel:       ErrInvalidLevel,
+	errCodeInvalidFormat:      ErrInvalidFormat,
+	errCodeMaxWritersExceeded: ErrMaxWritersExceeded,
+	errCodeEmptyFilePath:      ErrEmptyFilePath,
+	errCodePathTooLong:        ErrPathTooLong,
+	errCodePathTraversal:      ErrPathTraversal,
+	errCodeNullByte:           ErrNullByte,
+	errCodeInvalidPath:        ErrInvalidPath,
+	errCodeSymlinkNotAllowed:  ErrSymlinkNotAllowed,
+	errCodeHardlinkNotAllowed: ErrHardlinkNotAllowed,
+	errCodeOverlongEncoding:   ErrOverlongEncoding,
+	errCodeMaxSizeExceeded:    ErrMaxSizeExceeded,
+	errCodeMaxBackupsExceeded: ErrMaxBackupsExceeded,
+	errCodeBufferSizeTooLarge: ErrBufferSizeTooLarge,
+	errCodeInvalidPattern:     ErrInvalidPattern,
+	errCodeEmptyPattern:       ErrEmptyPattern,
+	errCodePatternTooLong:     ErrPatternTooLong,
+	errCodeReDoSPattern:       ErrReDoSPattern,
+	errCodePatternFailed:      ErrPatternFailed,
+	errCodeConfigValidation:   ErrConfigValidation,
+	errCodeWriterAdd:          ErrWriterAdd,
+	errCodeMultipleConfigs:    ErrMultipleConfigs,
+	errCodeNilMultiWriter:     ErrNilMultiWriter,
 }
 
 // Is enables matching against sentinel errors using errors.Is().
@@ -177,17 +122,17 @@ func (e *LoggerError) Is(target error) bool {
 	return false
 }
 
-// NewError creates a new LoggerError with the given code and message.
-func NewError(code, message string) *LoggerError {
+// newError creates a new LoggerError with the given code and message.
+func newError(code, message string) *LoggerError {
 	return &LoggerError{
 		Code:    code,
 		Message: message,
 	}
 }
 
-// WrapError wraps an existing error with a code and message.
+// wrapError wraps an existing error with a code and message.
 // If the error is nil, returns nil.
-func WrapError(code, message string, cause error) *LoggerError {
+func wrapError(code, message string, cause error) *LoggerError {
 	if cause == nil {
 		return nil
 	}
@@ -300,7 +245,7 @@ func (e *MultiWriterError) Error() string {
 		return e.Errors[0].Error()
 	}
 
-	var msgs []string
+	msgs := make([]string, 0, len(e.Errors))
 	for _, err := range e.Errors {
 		msgs = append(msgs, err.Error())
 	}
@@ -342,8 +287,8 @@ func (e *MultiWriterError) FirstError() error {
 	return &e.Errors[0]
 }
 
-// AddError adds a writer error to the collection.
-func (e *MultiWriterError) AddError(index int, writer io.Writer, err error) {
+// addError adds a writer error to the collection.
+func (e *MultiWriterError) addError(index int, writer io.Writer, err error) {
 	e.Errors = append(e.Errors, WriterError{
 		Index:  index,
 		Writer: writer,

@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"strings"
 	"sync"
 )
@@ -8,6 +9,25 @@ import (
 // HexChars is a package-level constant for hex digit conversion.
 // Avoids allocation in SanitizeControlChars hot path.
 const HexChars = "0123456789abcdef"
+
+// zeroBuffer securely zeroes the contents of a bytes.Buffer.
+// Used before returning buffers to sync.Pool to prevent sensitive data retention.
+func zeroBuffer(buf *bytes.Buffer) {
+	b := buf.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	buf.Reset()
+}
+
+// zeroSlice securely zeroes the contents of a byte slice pointer.
+// Used before returning slices to sync.Pool to prevent sensitive data retention.
+func zeroSlice(ptr *[]byte) {
+	for i := range *ptr {
+		(*ptr)[i] = 0
+	}
+	*ptr = (*ptr)[:0]
+}
 
 // sanitizeBufferPool pools byte slices for sanitization to reduce allocations.
 // Initial capacity of 256 bytes covers most common messages.
@@ -37,7 +57,7 @@ func SanitizeControlChars(message string) string {
 	// Fast path: check if sanitization is needed using string indexing
 	// Avoids []byte allocation when no sanitization is needed
 	needsSanitization := false
-	for i := 0; i < msgLen; i++ {
+	for i := range msgLen {
 		b := message[i]
 		// 0x1b is ESC character (start of ANSI escape sequences)
 		// \n (0x0a) and \r (0x0d) are escaped to prevent CRLF injection
@@ -57,58 +77,13 @@ func SanitizeControlChars(message string) string {
 		return message
 	}
 
-	// Slow path: replace control characters and remove ANSI sequences
-	// Now we need the byte slice for manipulation
-	msgBytes := []byte(message)
-
-	// First pass: calculate result size and identify sequences to remove
-	resultSize := 0
-	for i := 0; i < len(msgBytes); i++ {
-		b := msgBytes[i]
-		if b == 0x00 || b == 127 {
-			// These are removed
-			continue
-		} else if b == 0x1b {
-			// Skip ANSI escape sequence
-			i += skipAnsiSequence(msgBytes, i+1)
-			continue
-		} else if b == 0xEF && i+2 < len(msgBytes) {
-			// Check for BOM: EF BB BF (U+FEFF)
-			if msgBytes[i+1] == 0xBB && msgBytes[i+2] == 0xBF {
-				i += 2
-				continue
-			}
-			resultSize++
-		} else if b == 0xE2 && i+2 < len(msgBytes) {
-			// Check for Unicode control characters in U+2000-U+20FF range
-			// These are encoded as E2 80 XX or E2 82 XX in UTF-8
-			if isUnicodeControlSequence(msgBytes[i+1], msgBytes[i+2]) {
-				i += 2
-				continue
-			}
-			resultSize += 3
-		} else if b == '\n' || b == '\r' {
-			// Escape newlines as visible \n and \r to prevent CRLF injection
-			resultSize += 2 // \\n or \\r is 2 bytes
-		} else if b < 32 && b != '\t' {
-			resultSize += 4 // \xNN is 4 bytes
-		} else {
-			resultSize++
-		}
-	}
-
-	// Get buffer from pool for result building
+	// Slow path: single-pass replacement of control characters and removal of ANSI sequences.
+	// Uses a pooled buffer that grows as needed, eliminating the two-pass approach.
 	resultPtr := sanitizeBufferPool.Get().(*[]byte)
 	result := (*resultPtr)[:0]
-	if cap(*resultPtr) < resultSize {
-		// Pool buffer too small, allocate new one
-		*resultPtr = make([]byte, 0, resultSize)
-		result = (*resultPtr)[:0]
-	}
 
-	// Second pass: build the result
-	for i := 0; i < len(msgBytes); i++ {
-		b := msgBytes[i]
+	for i := 0; i < msgLen; i++ {
+		b := message[i]
 		switch {
 		case b == 0x00:
 			// Null bytes are removed entirely for security (prevent log truncation)
@@ -118,22 +93,25 @@ func SanitizeControlChars(message string) string {
 			continue
 		case b == 0x1b:
 			// ESC character - skip the entire ANSI escape sequence
-			i += skipAnsiSequence(msgBytes, i+1)
+			i += skipAnsiSequenceString(message, i+1)
 			continue
-		case b == 0xEF && i+2 < len(msgBytes):
+		case b == 0xEF && i+2 < msgLen:
 			// Check for BOM: EF BB BF (U+FEFF)
-			if msgBytes[i+1] == 0xBB && msgBytes[i+2] == 0xBF {
+			if message[i+1] == 0xBB && message[i+2] == 0xBF {
 				i += 2
 				continue
 			}
-			result = append(result, b)
-		case b == 0xE2 && i+2 < len(msgBytes):
+			// Non-BOM 0xEF sequence: keep all 3 bytes as a unit
+			// Consistent with 0xE2 handling and correct for invalid UTF-8
+			result = append(result, b, message[i+1], message[i+2])
+			i += 2
+		case b == 0xE2 && i+2 < msgLen:
 			// Check for Unicode control characters
-			if isUnicodeControlSequence(msgBytes[i+1], msgBytes[i+2]) {
+			if isUnicodeControlSequence(message[i+1], message[i+2]) {
 				i += 2
 				continue
 			}
-			result = append(result, b, msgBytes[i+1], msgBytes[i+2])
+			result = append(result, b, message[i+1], message[i+2])
 			i += 2
 		case b == '\n':
 			// Escape newline as visible \n to prevent CRLF injection
@@ -154,10 +132,7 @@ func SanitizeControlChars(message string) string {
 
 	// SECURITY: Zero buffer contents before returning to pool
 	// This prevents sensitive data from remaining in pooled memory
-	for i := range *resultPtr {
-		(*resultPtr)[i] = 0
-	}
-	*resultPtr = (*resultPtr)[:0]
+	zeroSlice(resultPtr)
 	sanitizeBufferPool.Put(resultPtr)
 
 	return resultStr
@@ -228,17 +203,46 @@ func SanitizeUnicodeControlChars(s string) string {
 		return s
 	}
 
-	// Build the result without the control characters
-	var result strings.Builder
-	result.Grow(len(s))
+	// Use pooled buffer instead of allocating a fresh strings.Builder per call
+	bufPtr := sanitizeBufferPool.Get().(*[]byte)
+	buf := (*bufPtr)[:0]
 
 	for _, r := range s {
 		if !isUnicodeControlRune(r) {
-			result.WriteRune(r)
+			buf = appendRune(buf, r)
 		}
 	}
 
-	return result.String()
+	result := string(buf)
+
+	// SECURITY: Zero buffer contents before returning to pool
+	zeroSlice(bufPtr)
+	sanitizeBufferPool.Put(bufPtr)
+
+	return result
+}
+
+// appendRune appends a rune to a byte slice, growing as needed.
+func appendRune(buf []byte, r rune) []byte {
+	if r < 0x80 {
+		return append(buf, byte(r))
+	}
+	if r < 0x800 {
+		return append(buf, byte(0xC0|(r>>6)), byte(0x80|(r&0x3F)))
+	}
+	if r >= 0x10000 {
+		return append(buf,
+			byte(0xF0|(r>>18)),
+			byte(0x80|((r>>12)&0x3F)),
+			byte(0x80|((r>>6)&0x3F)),
+			byte(0x80|(r&0x3F)),
+		)
+	}
+	return append(buf,
+		byte(0xE0|(r>>12)),
+		byte(0x80|((r>>6)&0x3F)),
+		byte(0x80|(r&0x3F)),
+	)
 }
 
 // isUnicodeControlRune checks if a rune is a dangerous Unicode control character.
@@ -278,76 +282,50 @@ func isUnicodeControlRune(r rune) bool {
 	}
 }
 
-// skipAnsiSequence skips an ANSI escape sequence starting after the ESC character.
-// Returns the number of bytes to skip (not including the ESC character itself).
-// ANSI escape sequences follow these patterns:
-//   - CSI: ESC [ ... final byte (0x40-0x7E)
-//   - OSC: ESC ] ... BEL or ESC ] ... ST (ESC \)
-//   - DCS: ESC P ... ST (Device Control String)
-//   - APC: ESC _ ... ST (Application Program Command)
-//   - PM: ESC ^ ... ST (Privacy Message)
-//   - SOS: ESC X ... ST (Start of String)
-//   - Other: ESC followed by a single intermediate/final byte
-//
-// SECURITY: Includes maximum length limit to prevent malformed sequences
-// from causing excessive processing. Max sequence length is 256 bytes.
-func skipAnsiSequence(data []byte, start int) int {
+// skipAnsiSequenceString skips an ANSI escape sequence in a string starting after the ESC character.
+// It avoids the O(n) []byte(string) allocation by operating directly on the string.
+func skipAnsiSequenceString(data string, start int) int {
 	if start >= len(data) {
 		return 0
 	}
 
-	// SECURITY: Maximum ANSI sequence length to prevent abuse
 	const maxSequenceLen = 256
 
 	b := data[start]
 
 	// CSI (Control Sequence Introducer): ESC [
 	if b == '[' {
-		skip := 1 // for the '['
+		skip := 1
 		for i := start + 1; i < len(data) && skip < maxSequenceLen; i++ {
 			c := data[i]
-			// Parameter bytes: 0x30-0x3F
-			// Intermediate bytes: 0x20-0x2F
-			// Final byte: 0x40-0x7E
 			if c >= 0x40 && c <= 0x7E {
-				return skip + 1 // include the final byte
+				return skip + 1
 			}
 			skip++
 		}
-		return skip // reached end of data or max length
+		return skip
 	}
 
-	// OSC (Operating System Command): ESC ]
-	// DCS (Device Control String): ESC P
-	// APC (Application Program Command): ESC _
-	// PM (Privacy Message): ESC ^
-	// SOS (Start of String): ESC X
-	// All these use ST (String Terminator) or BEL to terminate
+	// OSC/DCS/APC/PM/SOS: terminated by BEL or ST (ESC \)
 	if b == ']' || b == 'P' || b == '_' || b == '^' || b == 'X' {
-		skip := 1 // for the initial character
+		skip := 1
 		for i := start + 1; i < len(data) && skip < maxSequenceLen; i++ {
 			c := data[i]
-			if c == 0x07 { // BEL terminates these sequences
+			if c == 0x07 {
 				return skip + 1
 			}
 			if c == 0x1b && i+1 < len(data) && data[i+1] == '\\' {
-				// ST (String Terminator): ESC \ terminates these sequences
 				return skip + 2
 			}
 			skip++
 		}
-		return skip // reached end of data or max length
+		return skip
 	}
 
-	// Other single-character sequences (ESC followed by one char)
-	// Includes: ESC (, ESC ), ESC *, ESC +, ESC -, ESC ., ESC /, ESC #
-	// These are typically 2-byte sequences
-	if (b >= 0x20 && b <= 0x2F) || // Intermediate bytes
-		(b >= 0x30 && b <= 0x3F) || // Parameter bytes range
-		(b >= 0x40 && b <= 0x5F) { // Final byte range for non-CSI
+	// Other single-character sequences
+	if (b >= 0x20 && b <= 0x2F) || (b >= 0x30 && b <= 0x3F) || (b >= 0x40 && b <= 0x5F) {
 		return 1
 	}
 
-	// Unknown sequence, just skip the ESC and the next byte
 	return 1
 }

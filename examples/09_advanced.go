@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/cybergodev/dd"
@@ -46,7 +45,7 @@ func section1LogSampling() {
 		Thereafter: 100, // Then log 1 in every 100
 		Tick:       time.Second,
 	}
-	cfg.Output = os.Stdout
+	cfg.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -194,38 +193,39 @@ func section5DebugUtilities() {
 	fmt.Println("5. Debug Utilities")
 	fmt.Println("--------------------")
 
-	// WARNING: These output DIRECTLY to stdout WITHOUT sensitive data filtering
-	// Use only for development debugging, NEVER for production logging
+	// Package-level debug functions output DIRECTLY to stdout.
+	// WARNING: NO sensitive data filtering — use only for development.
+	// NEVER pass passwords, tokens, or secrets to these functions.
 
-	// Text() - Quick pretty-printed output
-	fmt.Println("Text():")
+	// dd.Text() - Pretty-printed output to stdout
+	fmt.Println("dd.Text():")
 	dd.Text("Quick debug:", "value", 42, true)
 	dd.Text("Complex:", map[string]any{"name": "Alice", "age": 30})
 
-	// Textf() - Formatted output
-	fmt.Println("\nTextf():")
+	// dd.Textf() - Formatted output to stdout
+	fmt.Println("\ndd.Textf():")
 	dd.Textf("User: %s, Age: %d", "Bob", 25)
 
-	// JSON() - Compact JSON output
-	fmt.Println("\nJSON():")
+	// dd.JSON() - Compact JSON to stdout
+	fmt.Println("\ndd.JSON():")
 	dd.JSON("data", 123, map[string]string{"status": "active"})
 
-	// JSONF() - Formatted JSON output
-	fmt.Println("\nJSONF():")
+	// dd.JSONF() - Formatted JSON to stdout
+	fmt.Println("\ndd.JSONF():")
 	dd.JSONF("Request from %s", "192.168.1.1")
 
-	// Logger methods
+	// Logger-level debug methods write to configured writers (with filtering)
 	logger, _ := dd.New()
 	defer logger.Close()
 
-	fmt.Println("\nLogger.Text() and Logger.JSON():")
+	fmt.Println("\nlogger.Text() and logger.JSON():")
 	logger.Text("Processing", "item", 42)
 	logger.JSON("result", true, "count", 100)
 
-	// Exit() and Exitf() - Debug and exit (commented out to avoid termination)
+	// Exit() and Exitf() - Debug output + os.Exit(0)
 	// dd.Exit("Program terminated here")
 	// dd.Exitf("Fatal error: %s", "critical")
 
-	fmt.Println("\n  Note: Exit() and Exitf() call os.Exit(0)")
-	fmt.Println("  WARNING: These do NOT filter sensitive data!")
+	fmt.Println("\n  WARNING: Package-level dd.Text/JSON/etc. do NOT filter data!")
+	fmt.Println("  Logger methods (logger.Text/JSON) write to configured writers with filtering.")
 }

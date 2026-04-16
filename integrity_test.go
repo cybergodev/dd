@@ -6,7 +6,7 @@ import (
 )
 
 func TestIntegritySigner_Sign(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -34,7 +34,7 @@ func TestIntegritySigner_Sign(t *testing.T) {
 }
 
 func TestIntegritySigner_SignFields(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -59,7 +59,7 @@ func TestIntegritySigner_SignFields(t *testing.T) {
 }
 
 func TestIntegritySigner_Verify(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: false, // Disable for predictable signatures
@@ -89,7 +89,7 @@ func TestIntegritySigner_Verify(t *testing.T) {
 }
 
 func TestIntegritySigner_VerifyNoSignature(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: false,
@@ -115,7 +115,7 @@ func TestIntegritySigner_VerifyNoSignature(t *testing.T) {
 }
 
 func TestIntegritySigner_GetSequence(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:       make([]byte, 32),
 		HashAlgorithm:   HashAlgorithmSHA256,
 		IncludeSequence: true,
@@ -142,7 +142,7 @@ func TestIntegritySigner_GetSequence(t *testing.T) {
 }
 
 func TestIntegritySigner_ResetSequence(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:       make([]byte, 32),
 		HashAlgorithm:   HashAlgorithmSHA256,
 		IncludeSequence: true,
@@ -166,7 +166,7 @@ func TestIntegritySigner_ResetSequence(t *testing.T) {
 }
 
 func TestIntegritySigner_Stats(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey:        make([]byte, 32),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -224,9 +224,14 @@ func TestIntegritySigner_NilSafety(t *testing.T) {
 }
 
 func TestNewIntegritySigner_NilConfig(t *testing.T) {
-	signer, err := NewIntegritySigner(nil)
+	// Calling with generated default config
+	cfg, err := DefaultIntegrityConfigSafe()
 	if err != nil {
-		t.Fatalf("NewIntegritySigner(nil) error = %v", err)
+		t.Fatalf("DefaultIntegrityConfigSafe() error = %v", err)
+	}
+	signer, err := NewIntegritySigner(cfg)
+	if err != nil {
+		t.Fatalf("NewIntegritySigner() error = %v", err)
 	}
 
 	if signer == nil {
@@ -235,7 +240,7 @@ func TestNewIntegritySigner_NilConfig(t *testing.T) {
 }
 
 func TestNewIntegritySigner_ShortKey(t *testing.T) {
-	config := &IntegrityConfig{
+	config := IntegrityConfig{
 		SecretKey: make([]byte, 16), // Too short
 	}
 
@@ -246,7 +251,7 @@ func TestNewIntegritySigner_ShortKey(t *testing.T) {
 }
 
 func TestIntegrityConfig_Clone(t *testing.T) {
-	original := &IntegrityConfig{
+	original := IntegrityConfig{
 		SecretKey:        []byte("test-key-32-bytes-long-enough!!"),
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -255,10 +260,6 @@ func TestIntegrityConfig_Clone(t *testing.T) {
 	}
 
 	cloned := original.Clone()
-
-	if cloned == original {
-		t.Error("Clone should return a new instance")
-	}
 
 	if string(cloned.SecretKey) != string(original.SecretKey) {
 		t.Error("SecretKey should be copied")
@@ -274,16 +275,16 @@ func TestIntegrityConfig_Clone(t *testing.T) {
 func TestIntegrityConfig_CloneNil(t *testing.T) {
 	var config *IntegrityConfig
 	cloned := config.Clone()
-	if cloned != nil {
-		t.Error("Cloning nil should return nil")
+	// Cloning nil pointer returns zero-value IntegrityConfig
+	if cloned.HashAlgorithm != 0 || len(cloned.SecretKey) != 0 {
+		t.Error("Cloning nil should return zero-value IntegrityConfig")
 	}
 }
 
 func TestDefaultIntegrityConfig(t *testing.T) {
-	config := DefaultIntegrityConfig()
-
-	if config == nil {
-		t.Fatal("DefaultIntegrityConfig should not return nil")
+	config, err := DefaultIntegrityConfigSafe()
+	if err != nil {
+		t.Fatalf("DefaultIntegrityConfigSafe error = %v", err)
 	}
 
 	if len(config.SecretKey) != 32 {
@@ -304,10 +305,6 @@ func TestDefaultIntegrityConfigSafe(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("DefaultIntegrityConfigSafe should not return error, got: %v", err)
-	}
-
-	if config == nil {
-		t.Fatal("DefaultIntegrityConfigSafe should not return nil config")
 	}
 
 	if len(config.SecretKey) != 32 {

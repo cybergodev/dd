@@ -7,11 +7,12 @@ import (
 )
 
 var (
-	errEmptyPath     = errors.New("empty path")
-	errNullByte      = errors.New("null byte")
-	errPathTooLong   = errors.New("path too long")
-	errPathTraversal = errors.New("path traversal")
-	errInvalidPath   = errors.New("invalid path")
+	errEmptyPath       = errors.New("empty path")
+	errNullByte        = errors.New("null byte")
+	errPathTooLong     = errors.New("path too long")
+	errPathTraversal   = errors.New("path traversal")
+	errInvalidPath     = errors.New("invalid path")
+	errOverlong        = errors.New("UTF-8 overlong encoding detected")
 )
 
 func TestValidateAndSecurePath(t *testing.T) {
@@ -29,16 +30,16 @@ func TestValidateAndSecurePath(t *testing.T) {
 		{"backslash encoded", "%2e%2e%5csecret", errPathTraversal},
 		{"mixed encoding", "..%2fsecret", errPathTraversal},
 		// UTF-8 overlong encoding tests
-		{"overlong dot 2-byte", string([]byte{0xC0, 0xAE}), ErrOverlongEncoding},   // overlong '.'
-		{"overlong slash 2-byte", string([]byte{0xC0, 0xAF}), ErrOverlongEncoding}, // overlong '/'
-		{"overlong path with dot", "logs" + string([]byte{0xC0, 0xAE}), ErrOverlongEncoding},
-		{"overlong 3-byte", string([]byte{0xE0, 0x80, 0xAF}), ErrOverlongEncoding},       // overlong '/'
-		{"overlong 4-byte", string([]byte{0xF0, 0x80, 0x80, 0xAF}), ErrOverlongEncoding}, // overlong '/'
+		{"overlong dot 2-byte", string([]byte{0xC0, 0xAE}), errOverlong},   // overlong '.'
+		{"overlong slash 2-byte", string([]byte{0xC0, 0xAF}), errOverlong}, // overlong '/'
+		{"overlong path with dot", "logs" + string([]byte{0xC0, 0xAE}), errOverlong},
+		{"overlong 3-byte", string([]byte{0xE0, 0x80, 0xAF}), errOverlong},       // overlong '/'
+		{"overlong 4-byte", string([]byte{0xF0, 0x80, 0x80, 0xAF}), errOverlong}, // overlong '/'
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ValidateAndSecurePath(tt.path, 4096, errEmptyPath, errNullByte, errPathTooLong, errPathTraversal, errInvalidPath)
+			_, err := ValidateAndSecurePath(tt.path, 4096, errEmptyPath, errNullByte, errPathTooLong, errPathTraversal, errInvalidPath, errOverlong)
 			if err == nil {
 				if tt.wantErr != nil {
 					t.Errorf("ValidateAndSecurePath(%q) expected error %v, got nil", tt.path, tt.wantErr)

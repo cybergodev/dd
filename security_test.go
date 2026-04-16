@@ -278,7 +278,7 @@ func TestFilterClone(t *testing.T) {
 	original := NewSensitiveDataFilter()
 	originalCount := original.PatternCount()
 
-	clone := original.Clone()
+	clone := original.clone()
 
 	if clone == nil {
 		t.Fatal("Clone should not be nil")
@@ -299,7 +299,7 @@ func TestFilterClone(t *testing.T) {
 
 func TestNilFilterClone(t *testing.T) {
 	var filter *SensitiveDataFilter
-	clone := filter.Clone()
+	clone := filter.clone()
 
 	if clone != nil {
 		t.Error("Cloning nil filter should return nil")
@@ -564,11 +564,11 @@ func TestConcurrentFilterAccess(t *testing.T) {
 func TestSecurityIntegrationWithLogger(t *testing.T) {
 	var buf strings.Builder
 	config := DefaultConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
 		MaxMessageSize:  1024,
 		MaxWriters:      10,
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -592,7 +592,7 @@ func TestSecurityIntegrationWithLogger(t *testing.T) {
 func TestSecurityMessageSizeLimit(t *testing.T) {
 	var buf strings.Builder
 	config := DefaultConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
 		MaxMessageSize: 100, // Small limit for testing
 		MaxWriters:     10,
@@ -621,9 +621,9 @@ func TestSecurityMessageSizeLimit(t *testing.T) {
 func TestSecurityFieldFiltering(t *testing.T) {
 	var buf strings.Builder
 	config := JSONConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -865,9 +865,9 @@ func TestPhoneNumberFiltering(t *testing.T) {
 func TestPhoneNumberFieldFiltering(t *testing.T) {
 	var buf strings.Builder
 	config := JSONConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -1104,9 +1104,9 @@ func TestDatabaseConnectionFiltering(t *testing.T) {
 func TestDatabaseConnectionFieldFiltering(t *testing.T) {
 	var buf strings.Builder
 	config := JSONConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)
@@ -1144,9 +1144,9 @@ func TestDatabaseConnectionFieldFiltering(t *testing.T) {
 func TestDatabaseConnectionInMessage(t *testing.T) {
 	var buf strings.Builder
 	config := JSONConfig()
-	config.Output = &buf
+	config.Targets = []OutputTarget{CustomOutput(&buf)}
 	config.Security = &SecurityConfig{
-		SensitiveFilter: NewBasicSensitiveDataFilter(),
+		SensitiveFilter: newBasicSensitiveDataFilter(),
 	}
 
 	logger, err := New(config)

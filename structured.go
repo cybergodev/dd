@@ -116,16 +116,6 @@ func ErrWithKey(key string, err error) Field {
 	return Field{Key: key, Value: err.Error()}
 }
 
-// NamedErr creates a field from an error with a custom key name.
-// This is an alias for ErrWithKey, provided for naming consistency
-// with other field constructors.
-//
-// Deprecated: Use ErrWithKey instead. The two functions are identical,
-// but ErrWithKey follows the naming convention of other field constructors.
-func NamedErr(key string, err error) Field {
-	return ErrWithKey(key, err)
-}
-
 // ErrWithStack creates a field from an error including its stack trace.
 // Note: Stack trace capture has a small performance overhead.
 func ErrWithStack(err error) Field {

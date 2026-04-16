@@ -1,6 +1,7 @@
 package dd
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -14,15 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-// hasherPool is a pool for reusing HMAC hashers.
-// This avoids allocating a new hasher for each Sign/Verify operation
-// while ensuring thread-safe concurrent access.
-var hasherPool = sync.Pool{
-	New: func() any {
-		return hmac.New(sha256.New, nil)
-	},
-}
 
 // HashAlgorithm defines the hash algorithm for integrity verification.
 type HashAlgorithm int
@@ -65,25 +57,22 @@ type IntegrityConfig struct {
 	SignaturePrefix string
 }
 
-// DefaultIntegrityConfig returns an IntegrityConfig with sensible defaults.
-// Note: A cryptographically secure random key is generated but should be replaced for production use.
-// IMPORTANT: Store the generated key securely if you need to verify logs across restarts.
-//
-// For production environments where panic is unacceptable, use DefaultIntegrityConfigSafe() instead.
-func DefaultIntegrityConfig() *IntegrityConfig {
-	cfg, err := DefaultIntegrityConfigSafe()
-	if err != nil {
-		// This should never happen with crypto/rand, but panic if it does
-		// as we cannot safely continue without a secure key.
-		// Use DefaultIntegrityConfigSafe() for panic-free initialization.
-		panic("dd: failed to generate secure random key for integrity config: " + err.Error())
+// Validate validates the IntegrityConfig and returns an error if any field is invalid.
+func (c IntegrityConfig) Validate() error {
+	if len(c.SecretKey) < 32 {
+		return fmt.Errorf("secret key must be at least 32 bytes, got %d", len(c.SecretKey))
 	}
-	return cfg
+	switch c.HashAlgorithm {
+	case HashAlgorithmSHA256:
+		// Supported
+	default:
+		return fmt.Errorf("unsupported hash algorithm: %v", c.HashAlgorithm)
+	}
+	return nil
 }
 
 // DefaultIntegrityConfigSafe returns an IntegrityConfig with sensible defaults.
-// Unlike DefaultIntegrityConfig, this function returns an error instead of panicking
-// if the secure random key generation fails.
+// Returns an error if the secure random key generation fails (does not panic).
 // This is the recommended function for production environments.
 //
 // Example:
@@ -93,14 +82,14 @@ func DefaultIntegrityConfig() *IntegrityConfig {
 //	    // Handle error gracefully
 //	    log.Fatal(err)
 //	}
-func DefaultIntegrityConfigSafe() (*IntegrityConfig, error) {
+func DefaultIntegrityConfigSafe() (IntegrityConfig, error) {
 	// Generate a cryptographically secure random key
 	defaultKey := make([]byte, 32)
 	if _, err := rand.Read(defaultKey); err != nil {
-		return nil, fmt.Errorf("failed to generate secure random key: %w", err)
+		return IntegrityConfig{}, fmt.Errorf("failed to generate secure random key: %w", err)
 	}
 
-	return &IntegrityConfig{
+	return IntegrityConfig{
 		SecretKey:        defaultKey,
 		HashAlgorithm:    HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -109,8 +98,26 @@ func DefaultIntegrityConfigSafe() (*IntegrityConfig, error) {
 	}, nil
 }
 
+// signDataPool pools bytes.Buffer for sign/verify operations to reduce allocations.
+// Used for building the data to be hashed. Security-critical: zeroed before return.
+var signDataPool = sync.Pool{
+	New: func() any {
+		buf := &bytes.Buffer{}
+		buf.Grow(256) // typical signed data size
+		return buf
+	},
+}
+
+// signResultPool pools signResult structs to reduce allocations in the hot signing path.
+var signResultPool = sync.Pool{
+	New: func() any {
+		return &signResult{}
+	},
+}
+
 // IntegritySigner signs log entries for integrity verification.
-// It uses a sync.Pool for hashers to ensure thread-safe concurrent access.
+// It creates a new HMAC hasher for each Sign/Verify operation to ensure
+// correct key management without pool-related complications.
 type IntegritySigner struct {
 	config    *IntegrityConfig
 	secretKey []byte // Store key for creating new hashers
@@ -118,60 +125,42 @@ type IntegritySigner struct {
 }
 
 // NewIntegritySigner creates a new IntegritySigner with the given configuration.
-// If no configuration is provided, a secure default configuration is generated.
-// Returns an error if the default configuration cannot be generated (extremely rare,
-// indicates system entropy exhaustion).
-func NewIntegritySigner(configs ...*IntegrityConfig) (*IntegritySigner, error) {
-	var config *IntegrityConfig
-	if len(configs) > 0 {
-		config = configs[0]
-	}
-	if config == nil {
-		var err error
-		config, err = DefaultIntegrityConfigSafe()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create default integrity config: %w", err)
-		}
-	}
-
-	if len(config.SecretKey) < 32 {
-		return nil, fmt.Errorf("secret key must be at least 32 bytes, got %d", len(config.SecretKey))
+// Use DefaultIntegrityConfigSafe() to generate a cryptographically secure key.
+//
+// Returns errors:
+//   - When SecretKey is less than 32 bytes
+//   - When HashAlgorithm is not supported
+//
+// Example:
+//
+//	cfg, err := dd.DefaultIntegrityConfigSafe()
+//	if err != nil { /* handle */ }
+//	signer, err := dd.NewIntegritySigner(cfg)
+func NewIntegritySigner(cfg IntegrityConfig) (*IntegritySigner, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
-	if config.SignaturePrefix == "" {
-		config.SignaturePrefix = "[SIG:"
-	}
-
-	// Validate hash algorithm
-	switch config.HashAlgorithm {
-	case HashAlgorithmSHA256:
-		// Supported
-	default:
-		return nil, fmt.Errorf("unsupported hash algorithm: %v", config.HashAlgorithm)
+	if cfg.SignaturePrefix == "" {
+		cfg.SignaturePrefix = "[SIG:"
 	}
 
 	// Copy the secret key to ensure we own the memory
-	secretKey := make([]byte, len(config.SecretKey))
-	copy(secretKey, config.SecretKey)
+	secretKey := make([]byte, len(cfg.SecretKey))
+	copy(secretKey, cfg.SecretKey)
 
 	return &IntegritySigner{
-		config:    config,
+		config:    &cfg,
 		secretKey: secretKey,
 	}, nil
 }
 
-// getHasher returns an HMAC hasher from the pool, configured with the secret key.
-func (s *IntegritySigner) getHasher() hash.Hash {
-	h := hasherPool.Get().(hash.Hash)
-	h.Reset()
-	h.Write(s.secretKey)
-	return h
-}
-
-// putHasher returns a hasher to the pool after resetting it.
-func (s *IntegritySigner) putHasher(h hash.Hash) {
-	h.Reset()
-	hasherPool.Put(h)
+// newHasher creates a new HMAC-SHA256 hasher configured with the secret key.
+// Each operation gets a fresh hasher to avoid pool-related key management issues
+// where hmac.Reset() restores the original creation key rather than a nil-key state.
+// The allocation cost is negligible compared to the crypto operation itself.
+func (s *IntegritySigner) newHasher() hash.Hash {
+	return hmac.New(sha256.New, s.secretKey)
 }
 
 // signResult contains the components needed to build a signature string
@@ -181,43 +170,53 @@ type signResult struct {
 	signature []byte
 }
 
-// signData computes the HMAC signature for the given data builder content.
+// signData computes the HMAC signature for the given data buffer content.
 // It appends timestamp and sequence if configured, then computes the signature.
-func (s *IntegritySigner) signData(data *strings.Builder) signResult {
-	var timestamp int64
-	var sequence uint64
+// Uses pooled buffer to avoid allocations.
+func (s *IntegritySigner) signData(data *bytes.Buffer) *signResult {
+	result := signResultPool.Get().(*signResult)
+	result.timestamp = 0
+	result.sequence = 0
+	result.signature = result.signature[:0]
 
 	if s.config.IncludeTimestamp {
-		timestamp = time.Now().UnixNano()
+		result.timestamp = time.Now().UnixNano()
 		data.WriteString("|")
-		data.WriteString(strconv.FormatInt(timestamp, 10))
+		data.WriteString(strconv.FormatInt(result.timestamp, 10))
 	}
 
 	if s.config.IncludeSequence {
-		sequence = s.sequence.Add(1)
+		result.sequence = s.sequence.Add(1)
 		data.WriteString("|")
-		data.WriteString(strconv.FormatUint(sequence, 10))
+		data.WriteString(strconv.FormatUint(result.sequence, 10))
 	}
 
-	// Get hasher from pool and compute HMAC
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
+	// Create a fresh hasher and compute HMAC directly from buffer bytes
+	hasher := s.newHasher()
+	hasher.Write(data.Bytes())
+	result.signature = hasher.Sum(result.signature)
 
-	hasher.Write([]byte(data.String()))
-	signature := hasher.Sum(nil)
-
-	return signResult{
-		timestamp: timestamp,
-		sequence:  sequence,
-		signature: signature,
-	}
+	return result
 }
 
 // buildSignatureString constructs the signature output string from the sign result.
-func (s *IntegritySigner) buildSignatureString(result signResult) string {
+// Uses pooled buffer to reduce allocations.
+func (s *IntegritySigner) buildSignatureString(result *signResult) string {
 	encodedSig := base64.RawURLEncoding.EncodeToString(result.signature)
 
-	var sigBuilder strings.Builder
+	sigBuilder := signDataPool.Get().(*bytes.Buffer)
+	sigBuilder.Reset()
+
+	defer func() {
+		// SECURITY: Zero buffer before returning to pool
+		b := sigBuilder.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		sigBuilder.Reset()
+		signDataPool.Put(sigBuilder)
+	}()
+
 	sigBuilder.WriteString(s.config.SignaturePrefix)
 
 	if s.config.IncludeTimestamp {
@@ -230,6 +229,10 @@ func (s *IntegritySigner) buildSignatureString(result signResult) string {
 	sigBuilder.WriteString(":")
 	sigBuilder.WriteString(encodedSig)
 	sigBuilder.WriteString("]")
+
+	// Release the signResult back to pool
+	result.signature = result.signature[:0]
+	signResultPool.Put(result)
 
 	return sigBuilder.String()
 }
@@ -246,10 +249,20 @@ func (s *IntegritySigner) Sign(message string) string {
 		return ""
 	}
 
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
-	result := s.signData(&data)
+	result := s.signData(data)
+
+	// Return data buffer to pool after signing
+	b := data.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
+
 	return s.buildSignatureString(result)
 }
 
@@ -264,17 +277,27 @@ func (s *IntegritySigner) SignFields(message string, fields []Field) string {
 		return ""
 	}
 
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
 	for _, f := range fields {
 		data.WriteString("|")
 		data.WriteString(f.Key)
 		data.WriteString("=")
-		data.WriteString(fmt.Sprintf("%v", f.Value))
+		fmt.Fprintf(data, "%v", f.Value)
 	}
 
-	result := s.signData(&data)
+	result := s.signData(data)
+
+	// Return data buffer to pool after signing
+	b := data.Bytes()
+	for i := range b {
+		b[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
+
 	return s.buildSignatureString(result)
 }
 
@@ -368,7 +391,8 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 	}
 
 	// Rebuild the signed data with the same format as Sign()
-	var data strings.Builder
+	data := signDataPool.Get().(*bytes.Buffer)
+	data.Reset()
 	data.WriteString(message)
 
 	if s.config.IncludeTimestamp && timestampStr != "" {
@@ -381,12 +405,18 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		data.WriteString(sequenceStr)
 	}
 
-	// Get hasher from pool and recompute signature
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
-
-	hasher.Write([]byte(data.String()))
+	// Create a fresh hasher and recompute signature directly from buffer bytes
+	hasher := s.newHasher()
+	hasher.Write(data.Bytes())
 	expectedSig := hasher.Sum(nil)
+
+	// Return buffer to pool
+	bufBytes := data.Bytes()
+	for i := range bufBytes {
+		bufBytes[i] = 0
+	}
+	data.Reset()
+	signDataPool.Put(data)
 
 	// Compare signatures (constant-time comparison)
 	if !hmac.Equal(signature, expectedSig) {
@@ -417,10 +447,8 @@ func (s *IntegritySigner) verifyLegacy(message, sigStr string) (*LogIntegrity, e
 	}
 
 	// For legacy signatures, we can only verify the message portion
-	// Get hasher from pool and recompute signature
-	hasher := s.getHasher()
-	defer s.putHasher(hasher)
-
+	// Create a fresh hasher and recompute signature
+	hasher := s.newHasher()
 	hasher.Write([]byte(message))
 	expectedSig := hasher.Sum(nil)
 
@@ -458,15 +486,15 @@ func (s *IntegritySigner) ResetSequence() {
 }
 
 // Clone creates a copy of the IntegrityConfig.
-func (c *IntegrityConfig) Clone() *IntegrityConfig {
+func (c *IntegrityConfig) Clone() IntegrityConfig {
 	if c == nil {
-		return nil
+		return IntegrityConfig{}
 	}
 
 	copiedKey := make([]byte, len(c.SecretKey))
 	copy(copiedKey, c.SecretKey)
 
-	return &IntegrityConfig{
+	return IntegrityConfig{
 		SecretKey:        copiedKey,
 		HashAlgorithm:    c.HashAlgorithm,
 		IncludeTimestamp: c.IncludeTimestamp,

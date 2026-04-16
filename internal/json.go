@@ -136,11 +136,7 @@ func formatJSONFast(entry map[string]any) (string, bool) {
 	// SECURITY: Clear buffer contents before returning to pool
 	defer func() {
 		// Zero the buffer contents for security before returning to pool
-		bytes := buf.Bytes()
-		for i := range bytes {
-			bytes[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		jsonBuilderPool.Put(buf)
 	}()
 
@@ -338,11 +334,43 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 	}
 }
 
+// needsJSONEscaped reports whether s contains bytes that need JSON escaping.
+// Characters requiring escape: 0x00-0x1F (control chars), '"', '\\', '<', '>', '&'.
+var needsJSONEscape = [256]bool{
+	'"': true, '\\': true,
+	'<': true, '>': true, '&': true,
+	'\n': true, '\r': true, '\t': true,
+}
+var needsJSONEscapeControl [256]bool
+
+func init() {
+	for i := range 0x20 {
+		needsJSONEscapeControl[i] = true
+	}
+}
+
 // writeJSONString writes a JSON-escaped string.
 // SECURITY: Also escapes HTML special characters (<, >, &) to prevent
 // XSS attacks when logs are rendered in HTML contexts (e.g., log viewers).
 func writeJSONString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
+
+	// Fast path: check if any character needs escaping.
+	// Bulk scan first to avoid byte-by-byte switch overhead for clean strings.
+	needsEscape := false
+	for i := 0; i < len(s); i++ {
+		if needsJSONEscape[s[i]] || needsJSONEscapeControl[s[i]] {
+			needsEscape = true
+			break
+		}
+	}
+	if !needsEscape {
+		buf.WriteString(s)
+		buf.WriteByte('"')
+		return
+	}
+
+	// Slow path: byte-by-byte escaping
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch c {
@@ -397,7 +425,7 @@ func formatJSONStandard(entry map[string]any, opts *JSONOptions) string {
 		jsonEncoderPool.Put(pe)
 	}()
 
-	// Reset encoder settings (escape HTML is already false from pool init)
+	// Reset encoder settings (escape HTML is already true from pool init)
 	if opts.PrettyPrint {
 		pe.enc.SetIndent("", opts.Indent)
 	} else {

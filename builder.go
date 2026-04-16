@@ -3,6 +3,7 @@ package dd
 import (
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/cybergodev/dd/internal"
 )
@@ -30,8 +31,8 @@ type internalConfig struct {
 
 // build creates a new Logger from the configuration.
 // This is an internal method used by dd.New().
-func (c *Config) build() (*Logger, error) {
-	if err := c.validate(); err != nil {
+func (c Config) build() (*Logger, error) {
+	if err := c.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -64,28 +65,18 @@ func (c *Config) build() (*Logger, error) {
 		}
 	}
 
-	// Collect writers
+	// Collect writers from Targets
 	var writers []io.Writer
-
-	// Add single output writer
-	if c.Output != nil {
-		writers = append(writers, c.Output)
-	}
-
-	// Add multiple output writers
-	for _, w := range c.Outputs {
-		if w != nil {
-			writers = append(writers, w)
+	if len(c.Targets) > 0 {
+		for _, t := range c.Targets {
+			w, err := t.resolve()
+			if err != nil {
+				return nil, err
+			}
+			if w != nil {
+				writers = append(writers, w)
+			}
 		}
-	}
-
-	// Handle file output
-	if c.File != nil && c.File.Path != "" {
-		fileWriter, err := c.createFileWriter()
-		if err != nil {
-			return nil, err
-		}
-		writers = append(writers, fileWriter)
 	}
 
 	// Default to stdout if no writers configured
@@ -98,28 +89,34 @@ func (c *Config) build() (*Logger, error) {
 	return newFromInternalConfig(loggerConfig)
 }
 
-// createFileWriter creates a FileWriter from FileConfig.
-func (c *Config) createFileWriter() (*FileWriter, error) {
-	if c.File == nil || c.File.Path == "" {
-		return nil, nil
+// resolve converts an OutputTarget to an io.Writer.
+func (t OutputTarget) resolve() (io.Writer, error) {
+	switch t.Type {
+	case OutputConsole:
+		return os.Stdout, nil
+	case OutputFile:
+		if t.Path == "" {
+			return nil, ErrEmptyFilePath
+		}
+		return NewFileWriter(t.Path, FileWriterConfig{
+			MaxSizeMB:  t.MaxSizeMB,
+			MaxBackups: t.MaxBackups,
+			MaxAge:     t.MaxAge,
+			Compress:   t.Compress,
+		})
+	case OutputCustom:
+		if t.Writer == nil {
+			return nil, ErrNilWriter
+		}
+		return t.Writer, nil
+	default:
+		return nil, fmt.Errorf("unknown output type: %d", t.Type)
 	}
-
-	config := FileWriterConfig{
-		MaxSizeMB:  c.File.MaxSizeMB,
-		MaxBackups: c.File.MaxBackups,
-		MaxAge:     c.File.MaxAge,
-		Compress:   c.File.Compress,
-	}
-
-	return NewFileWriter(c.File.Path, config)
 }
 
-// validate validates the configuration.
-func (c *Config) validate() error {
-	if c == nil {
-		return ErrNilConfig
-	}
-
+// Validate validates the configuration and returns an error if any field is invalid.
+// Call this before passing a Config to New() to catch configuration errors early.
+func (c Config) Validate() error {
 	// Validate log level
 	if c.Level < LevelDebug || c.Level > LevelFatal {
 		return fmt.Errorf("%w: %d (valid range: %d-%d)", ErrInvalidLevel, c.Level, LevelDebug, LevelFatal)
@@ -138,24 +135,20 @@ func (c *Config) validate() error {
 	}
 
 	// Count total writers
-	writerCount := 0
-	if c.Output != nil {
-		writerCount++
-	}
-	writerCount += len(c.Outputs)
-	if c.File != nil && c.File.Path != "" {
-		writerCount++
-	}
+	writerCount := len(c.Targets)
 
 	// Validate writer count
 	if writerCount > maxWriterCount {
 		return fmt.Errorf("%w: %d writers configured, maximum is %d", ErrMaxWritersExceeded, writerCount, maxWriterCount)
 	}
 
-	// Check for nil writers in Outputs slice
-	for i, w := range c.Outputs {
-		if w == nil {
-			return fmt.Errorf("writer at Outputs[%d] is nil", i)
+	// Validate Targets
+	for _, t := range c.Targets {
+		if t.Type == OutputCustom && t.Writer == nil {
+			return fmt.Errorf("OutputTarget with OutputCustom type has nil Writer")
+		}
+		if t.Type == OutputFile && t.Path == "" {
+			return fmt.Errorf("OutputTarget with OutputFile type has empty Path")
 		}
 	}
 

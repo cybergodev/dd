@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/cybergodev/dd"
@@ -84,6 +85,7 @@ func section2ContextLogging() {
 	)...)
 
 	fmt.Println("✓ Trace IDs included via WithFields pattern")
+	fmt.Println()
 }
 
 // extractTraceFields is a helper to extract trace context as fields
@@ -101,49 +103,55 @@ func extractTraceFields(ctx context.Context) []dd.Field {
 	return fields
 }
 
-// Section 3: Custom context extraction pattern
+// Section 3: Context extractor pattern
+//
+// IMPORTANT: Context extractors registered via Config are called with
+// context.Background() since logging methods do not accept a context parameter.
+// Use extractors for GLOBAL/static data (hostname, PID, deployment info).
+// For REQUEST-SCOPED data, use the WithFields pattern shown in sections 2 & 5.
 func section3CustomExtractors() {
-	fmt.Println("3. Custom Context Extraction Pattern")
-	fmt.Println("---------------------------------------")
+	fmt.Println("3. Context Extractors (Global Fields)")
+	fmt.Println("--------------------------------------")
 
-	logger, _ := dd.New()
+	// Context extractors add GLOBAL fields to every log entry automatically.
+	// They receive context.Background() since log methods don't accept context.
+	hostnameExtractor := func(ctx context.Context) []dd.Field {
+		hostname, _ := os.Hostname()
+		return []dd.Field{dd.String("hostname", hostname)}
+	}
+
+	deployExtractor := func(ctx context.Context) []dd.Field {
+		// Static environment info — available without context
+		return []dd.Field{
+			dd.String("service", "user-api"),
+			dd.String("env", "production"),
+		}
+	}
+
+	cfg := dd.DefaultConfig()
+	cfg.ContextExtractors = []dd.ContextExtractor{hostnameExtractor, deployExtractor}
+	logger, _ := dd.New(cfg)
 	defer logger.Close()
 
-	// Context with custom values
-	ctx := context.WithValue(context.Background(), "tenant_id", "tenant-abc")
-	ctx = context.WithValue(ctx, "user_id", 12345)
-
-	// Pattern: Create a reusable extractor function for your context
-	tenantFields := extractTenantFields(ctx)
-
-	// Use extracted fields with logger
-	logger.InfoWith("Custom context extracted", append(tenantFields,
+	// Every log entry automatically includes hostname, service, and env
+	logger.InfoWith("Request processed",
 		dd.String("action", "data_access"),
-	)...)
+	)
 
-	// You can also combine multiple extraction functions
-	allFields := append(extractTraceFields(ctx), extractTenantFields(ctx)...)
-	logger.InfoWith("Combined context fields", append(allFields,
-		dd.String("operation", "combined"),
-	)...)
+	// For REQUEST-SCOPED data (trace_id, user_id, etc.), use WithFields:
+	ctx := dd.WithTraceID(context.Background(), "trace-xyz")
+	ctx = dd.WithSpanID(ctx, "span-789")
 
+	logger.WithFields(
+		dd.String("trace_id", dd.GetTraceID(ctx)),
+		dd.String("span_id", dd.GetSpanID(ctx)),
+	).InfoWith("Request with trace context",
+		dd.String("action", "update"),
+	)
+
+	fmt.Println("  Global extractors: hostname, service, env (auto-added)")
+	fmt.Println("  Request-scoped: trace_id, span_id (via WithFields)")
 	fmt.Println()
-}
-
-// extractTenantFields extracts tenant-specific context data
-func extractTenantFields(ctx context.Context) []dd.Field {
-	var fields []dd.Field
-	if tenantID := ctx.Value("tenant_id"); tenantID != nil {
-		if s, ok := tenantID.(string); ok {
-			fields = append(fields, dd.String("tenant_id", s))
-		}
-	}
-	if userID := ctx.Value("user_id"); userID != nil {
-		if i, ok := userID.(int); ok {
-			fields = append(fields, dd.Int("user_id", i))
-		}
-	}
-	return fields
 }
 
 // Section 4: Hook system
@@ -217,7 +225,7 @@ func section5RequestScopedLogging() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{Path: "logs/requests.log"}
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/requests.log")}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()

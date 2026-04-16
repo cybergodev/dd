@@ -39,7 +39,11 @@ func section1AuditLogging() {
 	cfg.Output = os.Stdout // Redirect to stdout for demo
 	cfg.JSONFormat = true
 
-	auditLogger := dd.NewAuditLogger(cfg)
+	auditLogger, err := dd.NewAuditLogger(cfg)
+	if err != nil {
+		fmt.Printf("  Error creating audit logger: %v\n", err)
+		return
+	}
 	defer auditLogger.Close()
 
 	// Log security events using helper methods
@@ -82,7 +86,11 @@ func section2IntegritySigning() {
 	// Create integrity config with a secret key
 	// IMPORTANT: In production, use a securely generated key (32+ bytes)
 	// and store it securely (e.g., environment variable, secret manager)
-	integrityCfg := dd.DefaultIntegrityConfig()
+	integrityCfg, err := dd.DefaultIntegrityConfigSafe()
+	if err != nil {
+		fmt.Printf("  Error creating integrity config: %v\n", err)
+		return
+	}
 
 	// Create signer
 	signer, err := dd.NewIntegritySigner(integrityCfg)
@@ -104,7 +112,7 @@ func section2IntegritySigning() {
 		dd.Time("timestamp", time.Now()),
 	}
 	signedMessage := signer.SignFields("Audit event", fields)
-	fmt.Printf("  Signed with fields: %s\n", signedMessage[:minInt(50, len(signedMessage))]+"...")
+	fmt.Printf("  Signed with fields: %s\n", signedMessage[:min(50, len(signedMessage))]+"...")
 
 	fmt.Println()
 }
@@ -116,7 +124,7 @@ func section3Verification() {
 
 	// Create signer with known key for verification demo
 	secretKey := []byte("demo-secret-key-must-be-32-bytes-long!!")
-	integrityCfg := &dd.IntegrityConfig{
+	integrityCfg := dd.IntegrityConfig{
 		SecretKey:        secretKey,
 		HashAlgorithm:    dd.HashAlgorithmSHA256,
 		IncludeTimestamp: true,
@@ -129,14 +137,14 @@ func section3Verification() {
 	// Sign a message
 	message := "Critical audit event: admin access granted"
 	signedEntry := message + signer.Sign(message)
-	fmt.Printf("  Signed entry: %s\n", signedEntry[:minInt(60, len(signedEntry))]+"...")
+	fmt.Printf("  Signed entry: %s\n", signedEntry[:min(60, len(signedEntry))]+"...")
 
 	// Verify the signature
 	result := dd.VerifyAuditEvent(signedEntry, signer)
 	if result.Valid {
 		fmt.Println("  ✓ Signature is VALID")
 		if result.Event != nil {
-			fmt.Printf("  Event type: %s\n", result.Event.Type)
+			fmt.Printf("  Event type: %d\n", result.Event.Type)
 		}
 	} else {
 		fmt.Printf("  ✗ Signature INVALID: %s\n", result.Error)
@@ -150,11 +158,4 @@ func section3Verification() {
 	}
 
 	fmt.Println()
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

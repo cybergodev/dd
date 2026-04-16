@@ -40,7 +40,7 @@ func section1PackageLevel() {
 	// dd.Fatal("Fatal: severe errors, exits program") // Uncomment to test
 
 	// Structured logging with package-level functions
-	dd.InfoWith("Request processed",
+	dd.InfoWith("Request processed:",
 		dd.String("method", "GET"),
 		dd.Int("status", 200),
 	)
@@ -108,6 +108,7 @@ func section4GlobalLogger() {
 	cfg := dd.DefaultConfig()
 	cfg.Level = dd.LevelDebug
 	customLogger, _ := dd.New(cfg)
+	defer customLogger.Close()
 
 	// SetDefault affects ALL package-level functions
 	dd.SetDefault(customLogger)

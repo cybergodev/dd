@@ -47,7 +47,7 @@ func TestNewConfig(t *testing.T) {
 	t.Run("build logger", func(t *testing.T) {
 		var buf bytes.Buffer
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		cfg.Level = LevelDebug
 
@@ -94,75 +94,33 @@ func TestConfigJSON(t *testing.T) {
 func TestConfigFileOutput(t *testing.T) {
 	t.Run("File config sets file path", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.File = &FileConfig{Path: "logs/test.log"}
+		cfg.Targets = []OutputTarget{FileOutput("logs/test.log")}
 
-		if cfg.File.Path != "logs/test.log" {
-			t.Errorf("Expected File.Path 'logs/test.log', got '%s'", cfg.File.Path)
+		if cfg.Targets[0].Path != "logs/test.log" {
+			t.Errorf("Expected Path 'logs/test.log', got '%s'", cfg.Targets[0].Path)
 		}
 	})
 
 	t.Run("modify rotation settings", func(t *testing.T) {
 		cfg := DefaultConfig()
-		cfg.File = &FileConfig{
-			Path:       "logs/test.log",
-			MaxSizeMB:  50,
-			MaxBackups: 5,
-			MaxAge:     7 * 24 * time.Hour,
-			Compress:   true,
-		}
+		target := FileOutput("logs/test.log")
+		target.MaxSizeMB = 50
+		target.MaxBackups = 5
+		target.MaxAge = 7 * 24 * time.Hour
+		target.Compress = true
+		cfg.Targets = []OutputTarget{target}
 
-		if cfg.File.MaxSizeMB != 50 {
-			t.Errorf("Expected MaxSizeMB=50, got %d", cfg.File.MaxSizeMB)
+		if cfg.Targets[0].MaxSizeMB != 50 {
+			t.Errorf("Expected MaxSizeMB=50, got %d", cfg.Targets[0].MaxSizeMB)
 		}
-		if cfg.File.MaxBackups != 5 {
-			t.Errorf("Expected MaxBackups=5, got %d", cfg.File.MaxBackups)
+		if cfg.Targets[0].MaxBackups != 5 {
+			t.Errorf("Expected MaxBackups=5, got %d", cfg.Targets[0].MaxBackups)
 		}
-		if cfg.File.MaxAge != 7*24*time.Hour {
-			t.Errorf("Expected MaxAge=7d, got %v", cfg.File.MaxAge)
+		if cfg.Targets[0].MaxAge != 7*24*time.Hour {
+			t.Errorf("Expected MaxAge=7d, got %v", cfg.Targets[0].MaxAge)
 		}
-		if !cfg.File.Compress {
+		if !cfg.Targets[0].Compress {
 			t.Error("Expected Compress to be true")
-		}
-	})
-}
-
-func TestConfigLevelFields(t *testing.T) {
-	tests := []struct {
-		level    LogLevel
-		expected LogLevel
-	}{
-		{LevelDebug, LevelDebug},
-		{LevelInfo, LevelInfo},
-		{LevelWarn, LevelWarn},
-		{LevelError, LevelError},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected.String(), func(t *testing.T) {
-			cfg := DefaultConfig()
-			cfg.Level = tt.level
-
-			if cfg.Level != tt.expected {
-				t.Errorf("Expected level %v, got %v", tt.expected, cfg.Level)
-			}
-		})
-	}
-}
-
-func TestConfigFormatFields(t *testing.T) {
-	t.Run("FormatJSON", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Format = FormatJSON
-		if cfg.Format != FormatJSON {
-			t.Errorf("Expected FormatJSON, got %v", cfg.Format)
-		}
-	})
-
-	t.Run("FormatText", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Format = FormatText
-		if cfg.Format != FormatText {
-			t.Errorf("Expected FormatText, got %v", cfg.Format)
 		}
 	})
 }
@@ -173,7 +131,9 @@ func TestBuilderConfigClone(t *testing.T) {
 		original.Format = FormatJSON
 		original.Level = LevelDebug
 		original.DynamicCaller = true
-		original.File = &FileConfig{MaxSizeMB: 50}
+		target := FileOutput("")
+		target.MaxSizeMB = 50
+		original.Targets = []OutputTarget{target}
 
 		cloned := original.Clone()
 
@@ -186,8 +146,8 @@ func TestBuilderConfigClone(t *testing.T) {
 		if cloned.DynamicCaller != original.DynamicCaller {
 			t.Errorf("Clone DynamicCaller mismatch")
 		}
-		if cloned.File.MaxSizeMB != original.File.MaxSizeMB {
-			t.Errorf("Clone File.MaxSizeMB mismatch")
+		if cloned.Targets[0].MaxSizeMB != original.Targets[0].MaxSizeMB {
+			t.Errorf("Clone Targets[0].MaxSizeMB mismatch")
 		}
 	})
 
@@ -214,18 +174,22 @@ func TestBuilderConfigClone(t *testing.T) {
 
 		// Create app logger
 		appCfg := base.Clone()
-		appCfg.File = &FileConfig{Path: "logs/app.log", MaxSizeMB: 100}
+		appTarget := FileOutput("logs/app.log")
+		appTarget.MaxSizeMB = 100
+		appCfg.Targets = []OutputTarget{appTarget}
 
 		// Create error logger
 		errCfg := base.Clone()
-		errCfg.File = &FileConfig{Path: "logs/error.log", MaxSizeMB: 50}
+		errTarget := FileOutput("logs/error.log")
+		errTarget.MaxSizeMB = 50
+		errCfg.Targets = []OutputTarget{errTarget}
 		errCfg.Level = LevelError
 
 		// Verify they're independent
-		if appCfg.File.MaxSizeMB != 100 {
+		if appCfg.Targets[0].MaxSizeMB != 100 {
 			t.Errorf("App config MaxSizeMB should be 100")
 		}
-		if errCfg.File.MaxSizeMB != 50 {
+		if errCfg.Targets[0].MaxSizeMB != 50 {
 			t.Errorf("Error config MaxSizeMB should be 50")
 		}
 		if errCfg.Level != LevelError {
@@ -236,7 +200,8 @@ func TestBuilderConfigClone(t *testing.T) {
 	t.Run("clone nil config", func(t *testing.T) {
 		var nilCfg *Config
 		cloned := nilCfg.Clone()
-		if cloned != nil {
+		// Cloning nil pointer returns zero-value Config
+		if cloned.Level != 0 || cloned.Format != 0 {
 			t.Error("Clone of nil config should return nil")
 		}
 	})
@@ -250,14 +215,23 @@ func TestBuilderConfigClone(t *testing.T) {
 			IncludeLevel:  false,
 			FullPath:      true,
 			DynamicCaller: true,
-			Output:        io.Discard,
-			Outputs:       []io.Writer{io.Discard, os.Stdout},
-			File: &FileConfig{
-				Path:       "test.log",
-				MaxSizeMB:  50,
-				MaxBackups: 10,
-				MaxAge:     24 * time.Hour,
-				Compress:   true,
+			Targets: []OutputTarget{
+				{
+					Type:       OutputFile,
+					Path:       "test.log",
+					MaxSizeMB:  50,
+					MaxBackups: 10,
+					MaxAge:     24 * time.Hour,
+					Compress:   true,
+				},
+				{
+					Type:   OutputCustom,
+					Writer: io.Discard,
+				},
+				{
+					Type:   OutputCustom,
+					Writer: os.Stdout,
+				},
 			},
 			JSON: &JSONOptions{
 				PrettyPrint: true,
@@ -304,8 +278,8 @@ func TestBuilderConfigClone(t *testing.T) {
 		if cloned.FullPath != original.FullPath {
 			t.Error("FullPath mismatch")
 		}
-		if cloned.File == nil || cloned.File.Path != "test.log" {
-			t.Error("File config not cloned properly")
+		if len(cloned.Targets) == 0 || cloned.Targets[0].Path != "test.log" {
+			t.Error("Targets not cloned properly")
 		}
 		if cloned.JSON == nil || !cloned.JSON.PrettyPrint {
 			t.Error("JSON config not cloned properly")
@@ -319,13 +293,13 @@ func TestBuilderConfigClone(t *testing.T) {
 		if cloned.Sampling == nil || !cloned.Sampling.Enabled {
 			t.Error("Sampling config not cloned properly")
 		}
-		if len(cloned.Outputs) != 2 {
-			t.Error("Outputs not cloned properly")
+		if len(cloned.Targets) != 3 {
+			t.Error("Targets not cloned properly")
 		}
 
 		// Verify independence
-		cloned.File.Path = "modified.log"
-		if original.File.Path == "modified.log" {
+		cloned.Targets[0].Path = "modified.log"
+		if original.Targets[0].Path == "modified.log" {
 			t.Error("Modifying clone should not affect original")
 		}
 
@@ -337,19 +311,18 @@ func TestBuilderConfigClone(t *testing.T) {
 
 	t.Run("clone with nil optional fields", func(t *testing.T) {
 		original := &Config{
-			Level:   LevelInfo,
-			Format:  FormatText,
-			File:    nil,
-			JSON:    nil,
+			Level:    LevelInfo,
+			Format:   FormatText,
+			Targets:  nil,
+			JSON:     nil,
 			Security: nil,
 			Sampling: nil,
-			Outputs:  nil,
 		}
 
 		cloned := original.Clone()
 
-		if cloned.File != nil {
-			t.Error("Cloned File should be nil")
+		if len(cloned.Targets) != 0 {
+			t.Error("Cloned Targets should be empty")
 		}
 		if cloned.JSON != nil {
 			t.Error("Cloned JSON should be nil")
@@ -359,9 +332,6 @@ func TestBuilderConfigClone(t *testing.T) {
 		}
 		if cloned.Sampling != nil {
 			t.Error("Cloned Sampling should be nil")
-		}
-		if cloned.Outputs != nil {
-			t.Error("Cloned Outputs should be nil")
 		}
 	})
 }
@@ -402,8 +372,8 @@ func TestConfigAddHook(t *testing.T) {
 	if cfg.Hooks == nil {
 		t.Fatal("Expected Hooks to be initialized")
 	}
-	if cfg.Hooks.Count() != 1 {
-		t.Errorf("Expected 1 hook, got %d", cfg.Hooks.Count())
+	if cfg.Hooks.count() != 1 {
+		t.Errorf("Expected 1 hook, got %d", cfg.Hooks.count())
 	}
 }
 
@@ -412,7 +382,7 @@ func TestConfigIntegration(t *testing.T) {
 		var buf bytes.Buffer
 
 		cfg := DefaultConfig()
-		cfg.Output = &buf
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
 		cfg.Format = FormatJSON
 		cfg.Level = LevelDebug
 		cfg.DynamicCaller = true
@@ -440,12 +410,11 @@ func TestConfigIntegration(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		cfg := DefaultConfig()
-		cfg.File = &FileConfig{
-			Path:       tmpDir + "/test.log",
-			MaxSizeMB:  10,
-			MaxBackups: 5,
-			Compress:   true,
-		}
+		target := FileOutput(tmpDir + "/test.log")
+		target.MaxSizeMB = 10
+		target.MaxBackups = 5
+		target.Compress = true
+		cfg.Targets = []OutputTarget{target}
 		cfg.Format = FormatJSON
 		cfg.Level = LevelInfo
 

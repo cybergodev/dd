@@ -15,15 +15,29 @@ import (
 	"github.com/cybergodev/dd/internal"
 )
 
+// standardStreams caches the original standard stream pointers at init time.
+// This avoids reading the global os.Stdout/os.Stderr/os.Stdin variables in
+// background goroutines, which would race with tests that modify those globals.
+var standardStreams = struct {
+	stdin  *os.File
+	stdout *os.File
+	stderr *os.File
+}{
+	stdin:  os.Stdin,
+	stdout: os.Stdout,
+	stderr: os.Stderr,
+}
+
 // closeWriter safely closes a writer if it implements io.Closer.
 // Standard streams (os.Stdout, os.Stderr, os.Stdin) are never closed.
+// Uses cached stream pointers to avoid data races with tests that modify os.Stdout.
 // Returns the error from Close() if one occurs, nil otherwise.
 func closeWriter(w io.Writer) error {
 	if w == nil {
 		return nil
 	}
-	// Never close standard streams
-	if w == os.Stdout || w == os.Stderr || w == os.Stdin {
+	// Never close standard streams (use cached pointers to avoid reading globals)
+	if w == standardStreams.stdin || w == standardStreams.stdout || w == standardStreams.stderr {
 		return nil
 	}
 	if closer, ok := w.(io.Closer); ok {
@@ -32,6 +46,8 @@ func closeWriter(w io.Writer) error {
 	return nil
 }
 
+// FileWriter provides thread-safe file writing with log rotation support.
+// It supports size-based rotation, compression, and age-based cleanup of old log files.
 type FileWriter struct {
 	path       string
 	maxSize    int64
@@ -42,12 +58,15 @@ type FileWriter struct {
 	mu          sync.Mutex
 	file        *os.File
 	currentSize atomic.Int64
+	closed      atomic.Bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
+// FileWriterConfig configures file writer behavior including rotation settings.
+// Use DefaultFileWriterConfig() to obtain a Config with sensible defaults.
 type FileWriterConfig struct {
 	MaxSizeMB  int
 	MaxAge     time.Duration
@@ -66,13 +85,74 @@ func DefaultFileWriterConfig() FileWriterConfig {
 	}
 }
 
-func NewFileWriter(path string, opts ...FileWriterConfig) (*FileWriter, error) {
-	var config FileWriterConfig
-	if len(opts) > 0 {
-		config = opts[0]
-	}
+// Validate checks the FileWriterConfig for invalid values.
+// Returns an error if MaxSizeMB or MaxBackups exceed their limits.
+func (c FileWriterConfig) Validate() error {
+	return validateFileWriterConfig(&c)
+}
 
-	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath)
+// BufferedWriterConfig configures a BufferedWriter.
+// Use DefaultBufferedWriterConfig() for sensible defaults.
+type BufferedWriterConfig struct {
+	// BufferSize in bytes. Default: 1024 (1KB). Maximum: 10MB.
+	// Values below the default are clamped to the default.
+	BufferSize int
+	// FlushTime is the auto-flush interval. Default: 100ms.
+	// The writer flushes when the buffer is half full or after this interval.
+	FlushTime time.Duration
+}
+
+// DefaultBufferedWriterConfig returns BufferedWriterConfig with sensible defaults.
+// Default values: BufferSize=1KB, FlushTime=100ms.
+func DefaultBufferedWriterConfig() BufferedWriterConfig {
+	return BufferedWriterConfig{
+		BufferSize: defaultBufferSizeKB * 1024,
+		FlushTime:  autoFlushInterval,
+	}
+}
+
+// Validate checks the BufferedWriterConfig for invalid values.
+// Returns an error if BufferSize exceeds the maximum (10MB)
+// or if FlushTime is negative.
+func (c BufferedWriterConfig) Validate() error {
+	if c.BufferSize < 0 {
+		return fmt.Errorf("buffer size must be non-negative, got %d", c.BufferSize)
+	}
+	if c.BufferSize > maxBufferSizeKB*1024 {
+		return fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSizeKB/1024)
+	}
+	if c.FlushTime < 0 {
+		return fmt.Errorf("flush time must be non-negative, got %v", c.FlushTime)
+	}
+	return nil
+}
+
+// NewFileWriter creates a thread-safe file writer with rotation support.
+// The file is validated for security (path traversal, null bytes, symlinks).
+// Use DefaultFileWriterConfig() to obtain a Config with sensible defaults.
+//
+// Returns errors:
+//   - ErrEmptyFilePath: when path is empty
+//   - ErrNullByte: when path contains null bytes
+//   - ErrPathTooLong: when path exceeds 4096 bytes
+//   - ErrPathTraversal: when path contains directory traversal sequences
+//   - ErrInvalidPath: when path is otherwise invalid
+//   - ErrSymlinkNotAllowed: when path points to a symlink
+//   - ErrOverlongEncoding: when path contains overlong UTF-8 encoding
+//   - ErrMaxSizeExceeded: when MaxSizeMB exceeds 10240
+//   - ErrMaxBackupsExceeded: when MaxBackups exceeds 1000
+//
+// Example:
+//
+//	cfg := dd.DefaultFileWriterConfig()
+//	cfg.MaxSizeMB = 50
+//	fw, err := dd.NewFileWriter("logs/app.log", cfg)
+func NewFileWriter(path string, cfg FileWriterConfig) (*FileWriter, error) {
+	return newFileWriterWithConfig(path, cfg)
+}
+
+func newFileWriterWithConfig(path string, config FileWriterConfig) (*FileWriter, error) {
+	securePath, err := internal.ValidateAndSecurePath(path, maxPathLength, ErrEmptyFilePath, ErrNullByte, ErrPathTooLong, ErrPathTraversal, ErrInvalidPath, ErrOverlongEncoding)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +183,7 @@ func NewFileWriter(path string, opts ...FileWriterConfig) (*FileWriter, error) {
 		return nil, fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	file, size, err := internal.OpenFile(securePath)
+	file, size, err := internal.OpenFile(securePath, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to open file %s: %w", securePath, err)
@@ -158,7 +238,13 @@ func applyFileWriterDefaults(config FileWriterConfig) FileWriterConfig {
 	return config
 }
 
+// Write writes data to the log file. Triggers rotation if the file exceeds MaxSizeMB.
+// Returns os.ErrClosed if the writer has been closed.
 func (fw *FileWriter) Write(p []byte) (int, error) {
+	if fw.closed.Load() {
+		return 0, os.ErrClosed
+	}
+
 	pLen := len(p)
 	if pLen == 0 {
 		return 0, nil
@@ -182,7 +268,13 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// Close stops cleanup goroutines and closes the underlying file.
+// Returns os.ErrClosed if already closed. Safe to call multiple times.
 func (fw *FileWriter) Close() error {
+	if !fw.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+
 	fw.cancel()
 	fw.wg.Wait()
 
@@ -210,7 +302,7 @@ func (fw *FileWriter) rotate() error {
 
 	if err := os.Rename(fw.path, backupPath); err != nil {
 		// Rename failed, try to reopen the original file
-		file, size, reopenErr := internal.OpenFile(fw.path)
+		file, size, reopenErr := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 		if reopenErr != nil {
 			return fmt.Errorf("rename to backup failed and cannot reopen file: rename=%w, reopen=%w", err, reopenErr)
 		}
@@ -221,7 +313,7 @@ func (fw *FileWriter) rotate() error {
 
 	// Rename succeeded, now open new file
 	// If this fails, we need to handle it carefully to avoid data loss
-	file, size, err := internal.OpenFile(fw.path)
+	file, size, err := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 	if err != nil {
 		// Try to recover by renaming backup back to original
 		if renameBackErr := os.Rename(backupPath, fw.path); renameBackErr != nil {
@@ -231,7 +323,7 @@ func (fw *FileWriter) rotate() error {
 			return fmt.Errorf("open new file failed and recovery failed: open=%w, recovery=%w", err, renameBackErr)
 		}
 		// Recovery succeeded, try to reopen the original file
-		file, size, reopenErr := internal.OpenFile(fw.path)
+		file, size, reopenErr := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 		if reopenErr != nil {
 			return fmt.Errorf("open new file failed, recovery succeeded but reopen failed: open=%w, reopen=%w", err, reopenErr)
 		}
@@ -298,24 +390,41 @@ type BufferedWriter struct {
 	closed    atomic.Bool
 }
 
-// NewBufferedWriter creates a new BufferedWriter with the specified buffer size.
-// The writer automatically flushes when the buffer is half full or every 100ms.
+// NewBufferedWriter creates a new BufferedWriter with the specified configuration.
+// The writer automatically flushes when the buffer is half full or at the configured interval.
 // Remember to call Close() to ensure all buffered data is written to the underlying writer.
-// If bufferSize is not specified or is 0, 1KB is used.
-func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error) {
+// Use DefaultBufferedWriterConfig() to obtain a Config with sensible defaults.
+//
+// Returns errors:
+//   - ErrNilWriter: when the underlying writer is nil
+//   - ErrBufferSizeTooLarge: when BufferSize exceeds 10MB
+//
+// Example:
+//
+//	cfg := dd.DefaultBufferedWriterConfig()
+//	cfg.BufferSize = 4096
+//	bw, err := dd.NewBufferedWriter(fileWriter, cfg)
+func NewBufferedWriter(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
+	return newBufferedWriterWithConfig(w, cfg)
+}
+
+func newBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*BufferedWriter, error) {
 	if w == nil {
 		return nil, ErrNilWriter
 	}
 
-	bufferSize := 0
-	if len(bufferSizes) > 0 {
-		bufferSize = bufferSizes[0]
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+
+	bufferSize := cfg.BufferSize
 	if bufferSize < defaultBufferSizeKB*1024 {
 		bufferSize = defaultBufferSizeKB * 1024
 	}
-	if bufferSize > maxBufferSizeKB*1024 {
-		return nil, fmt.Errorf("%w: maximum %dMB", ErrBufferSizeTooLarge, maxBufferSizeKB/1024)
+
+	flushTime := cfg.FlushTime
+	if flushTime <= 0 {
+		flushTime = autoFlushInterval
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -324,7 +433,7 @@ func NewBufferedWriter(w io.Writer, bufferSizes ...int) (*BufferedWriter, error)
 		writer:    w,
 		buffer:    bufio.NewWriterSize(w, bufferSize),
 		flushSize: bufferSize / autoFlushThreshold,
-		flushTime: autoFlushInterval,
+		flushTime: flushTime,
 		ctx:       ctx,
 		cancel:    cancel,
 		lastFlush: time.Now(),
@@ -377,7 +486,8 @@ func (bw *BufferedWriter) Close() error {
 		return nil
 	}
 
-	var errs []error
+	// Pre-allocate error slice: max 2 errors (flush + close writer)
+	errs := make([]error, 0, 2)
 
 	// Flush buffer BEFORE canceling context and stopping goroutine
 	// This ensures no data is lost if the goroutine was about to flush
@@ -438,16 +548,20 @@ func (bw *BufferedWriter) autoFlushRoutine() {
 	}
 }
 
+// MultiWriter distributes writes across multiple writers.
+// It uses atomic pointer for lock-free reads on the write hot path.
 type MultiWriter struct {
 	// writersPtr stores an immutable slice of writers using atomic pointer.
 	// This eliminates slice copying during write operations (hot path).
 	// The slice is replaced atomically when writers are added/removed.
 	writersPtr atomic.Pointer[[]io.Writer]
 	mu         sync.Mutex // protects AddWriter/RemoveWriter operations
+	closed     atomic.Bool
 }
 
+// NewMultiWriter creates a new MultiWriter. Nil writers are silently ignored.
 func NewMultiWriter(writers ...io.Writer) *MultiWriter {
-	var validWriters []io.Writer
+	validWriters := make([]io.Writer, 0, len(writers))
 	for _, w := range writers {
 		if w != nil {
 			validWriters = append(validWriters, w)
@@ -459,6 +573,7 @@ func NewMultiWriter(writers ...io.Writer) *MultiWriter {
 	return mw
 }
 
+// Write writes data to all registered writers. Collects errors from failed writers.
 func (mw *MultiWriter) Write(p []byte) (int, error) {
 	pLen := len(p)
 	if pLen == 0 {
@@ -486,11 +601,11 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 	for i := 0; i < writerCount; i++ {
 		n, err := writers[i].Write(p)
 		if err != nil {
-			allErrors.AddError(i, writers[i], err)
+			allErrors.addError(i, writers[i], err)
 			continue
 		}
 		if n != pLen {
-			allErrors.AddError(i, writers[i], fmt.Errorf("short write (%d/%d bytes)", n, pLen))
+			allErrors.addError(i, writers[i], fmt.Errorf("short write (%d/%d bytes)", n, pLen))
 			continue
 		}
 		successCount++
@@ -509,6 +624,7 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 	return pLen, nil
 }
 
+// AddWriter adds a writer to the MultiWriter. Duplicate writers are silently accepted.
 func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	if mw == nil {
 		return ErrNilMultiWriter
@@ -547,6 +663,7 @@ func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	return nil
 }
 
+// RemoveWriter removes a writer from the MultiWriter.
 func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 	if mw == nil {
 		return ErrNilMultiWriter
@@ -578,7 +695,12 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 	return ErrWriterNotFound
 }
 
+// Close closes all registered writers that implement io.Closer.
 func (mw *MultiWriter) Close() error {
+	if !mw.closed.CompareAndSwap(false, true) {
+		return nil // Already closed
+	}
+
 	// Load writers atomically
 	writersPtr := mw.writersPtr.Load()
 	if writersPtr == nil {
@@ -586,7 +708,7 @@ func (mw *MultiWriter) Close() error {
 	}
 	writers := *writersPtr
 
-	var errs []error
+	errs := make([]error, 0, len(writers))
 	for _, w := range writers {
 		if err := closeWriter(w); err != nil {
 			errs = append(errs, err)

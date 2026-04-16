@@ -10,7 +10,9 @@ import (
 type LogFormat = internal.LogFormat
 
 const (
+	// FormatText outputs log messages in human-readable text format.
 	FormatText LogFormat = internal.LogFormatText
+	// FormatJSON outputs log messages as structured JSON objects.
 	FormatJSON LogFormat = internal.LogFormatJSON
 )
 
@@ -81,9 +83,12 @@ const (
 )
 
 const (
-	DefaultMaxSizeMB    = 100
-	DefaultMaxBackups   = 10
-	DefaultMaxAge       = 30 * 24 * time.Hour
+	// DefaultMaxSizeMB is the default maximum log file size in megabytes before rotation.
+	DefaultMaxSizeMB = 100
+	// DefaultMaxBackups is the default maximum number of rotated backup files to retain.
+	DefaultMaxBackups = 10
+	// DefaultMaxAge is the default maximum age for backup files before cleanup.
+	DefaultMaxAge = 30 * 24 * time.Hour
 	defaultBufferSizeKB = 1
 	maxBufferSizeKB     = 10 * 1024
 	autoFlushThreshold  = 2
@@ -96,7 +101,7 @@ const (
 	dirPermissions = 0700
 )
 
-// FilePermissions (0600) for log files is defined in the internal package.
+// FilePermissions (0600) for log files is defined in internal/json.go.
 
 const (
 	// defaultFilterTimeout is the maximum time for sensitive data filtering.
@@ -127,6 +132,7 @@ const (
 )
 
 const (
+	// DefaultTimeFormat is the default timestamp format (ISO 8601 with timezone).
 	DefaultTimeFormat = "2006-01-02T15:04:05Z07:00"
 	devTimeFormat     = "15:04:05.000"
 )
@@ -167,3 +173,6 @@ const (
 	// Value of 2 means: 0 = current function, 1 = caller, 2 = caller's caller.
 	debugVisualizationDepth = 2
 )
+
+// DefaultLogPath is the default path for log files.
+const DefaultLogPath = "logs/app.log"

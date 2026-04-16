@@ -1,10 +1,16 @@
 package internal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+)
+
+var (
+	testErrSymlinkNotAllowed  = errors.New("symlinks not allowed")
+	testErrHardlinkNotAllowed = errors.New("hardlinks not allowed")
 )
 
 func TestOpenFile(t *testing.T) {
@@ -12,7 +18,7 @@ func TestOpenFile(t *testing.T) {
 	testFile := filepath.Join(tmpDir, "test.log")
 
 	// Test opening new file
-	file, size, err := OpenFile(testFile)
+	file, size, err := OpenFile(testFile, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if err != nil {
 		t.Fatalf("OpenFile() error = %v", err)
 	}
@@ -31,7 +37,7 @@ func TestOpenFile(t *testing.T) {
 	file.Close()
 
 	// Test opening existing file
-	file2, size2, err := OpenFile(testFile)
+	file2, size2, err := OpenFile(testFile, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if err != nil {
 		t.Fatalf("OpenFile() existing file error = %v", err)
 	}
@@ -62,7 +68,7 @@ func TestOpenFileRejectsHardlink(t *testing.T) {
 	}
 
 	// Attempt to open the hardlinked file - should be rejected
-	file, _, err := OpenFile(hardlinkFile)
+	file, _, err := OpenFile(hardlinkFile, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if file != nil {
 		file.Close()
 	}

@@ -82,13 +82,12 @@ func section3FileRotation() {
 
 	cfg := dd.DefaultConfig()
 	cfg.Format = dd.FormatJSON
-	cfg.File = &dd.FileConfig{
-		Path:       "logs/app.log",
-		MaxSizeMB:  100,                 // Rotate at 100MB
-		MaxBackups: 10,                  // Keep 10 old files
-		MaxAge:     30 * 24 * time.Hour, // Delete after 30 days
-		Compress:   true,                // Gzip old files
-	}
+	fileTarget := dd.FileOutput("logs/app.log")
+	fileTarget.MaxSizeMB = 100              // Rotate at 100MB
+	fileTarget.MaxBackups = 10              // Keep 10 old files
+	fileTarget.MaxAge = 30 * 24 * time.Hour // Delete after 30 days
+	fileTarget.Compress = true              // Gzip old files
+	cfg.Targets = []dd.OutputTarget{fileTarget}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -145,25 +144,24 @@ func section5Clone() {
 	// Clone for application logs
 	appCfg := baseCfg.Clone()
 	appCfg.Level = dd.LevelInfo
-	appCfg.File = &dd.FileConfig{Path: "logs/app.log"}
+	appCfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/app.log")}
 	appLogger, _ := dd.New(appCfg)
 	defer appLogger.Close()
 
 	// Clone for audit logs (larger size)
 	auditCfg := baseCfg.Clone()
 	auditCfg.Level = dd.LevelInfo
-	auditCfg.File = &dd.FileConfig{
-		Path:       "logs/audit.log",
-		MaxSizeMB:  500,
-		MaxBackups: 50,
-	}
+	auditTarget := dd.FileOutput("logs/audit.log")
+	auditTarget.MaxSizeMB = 500
+	auditTarget.MaxBackups = 50
+	auditCfg.Targets = []dd.OutputTarget{auditTarget}
 	auditLogger, _ := dd.New(auditCfg)
 	defer auditLogger.Close()
 
 	// Clone for error logs (errors only)
 	errCfg := baseCfg.Clone()
 	errCfg.Level = dd.LevelError
-	errCfg.File = &dd.FileConfig{Path: "logs/errors.log"}
+	errCfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/errors.log")}
 	errLogger, _ := dd.New(errCfg)
 	defer errLogger.Close()
 

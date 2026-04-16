@@ -94,10 +94,9 @@ func GetCaller(callerDepth int, fullPath bool) string {
 		// Try to reserve a slot
 		if callerCacheCount.CompareAndSwap(current, current+1) {
 			// Slot reserved, now try to store
-			if actual, loaded := callerCache.LoadOrStore(pc, entry); loaded {
-				// Another goroutine stored first, release our slot and use their entry
+			if _, loaded := callerCache.LoadOrStore(pc, entry); loaded {
+				// Another goroutine stored first, release our reserved slot
 				callerCacheCount.Add(-1)
-				entry = actual.(*callerCacheEntry)
 			}
 			break // Exit after successful reservation (whether stored or loaded)
 		}

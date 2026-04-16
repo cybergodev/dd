@@ -33,12 +33,18 @@ func NewDebugBuffer() *DebugBuffer {
 func (b *DebugBuffer) Release() {
 	if b.Buffer != nil {
 		// Discard buffers that grew too large to prevent unbounded memory growth
-		if b.Buffer.Cap() <= MaxDebugBufferSize {
+		if b.Cap() <= MaxDebugBufferSize {
 			b.Reset()
 			debugBufPool.Put(b.Buffer)
 		}
 		b.Buffer = nil
 	}
+}
+
+// writeString writes to w ignoring errors, for debug/diagnostic output
+// where write failures are not actionable.
+func writeString(w io.Writer, s string) {
+	_, _ = io.WriteString(w, s)
 }
 
 // IsSimpleType checks if a value is a simple type that doesn't need JSON formatting.
@@ -150,7 +156,7 @@ func FormatJSONData(data ...any) string {
 // It outputs complex types as pretty-printed JSON and simple types as-is.
 func OutputTextData(w io.Writer, data ...any) {
 	if len(data) == 0 {
-		fmt.Fprintln(w)
+		writeString(w, "\n")
 		return
 	}
 
@@ -165,9 +171,9 @@ func OutputTextData(w io.Writer, data ...any) {
 		if IsSimpleType(item) {
 			output := FormatSimpleValue(item)
 			if i < len(data)-1 {
-				fmt.Fprintf(w, "%s ", output)
+				writeString(w, output+" ")
 			} else {
-				fmt.Fprintf(w, "%s\n", output)
+				writeString(w, output+"\n")
 			}
 			continue
 		}
@@ -176,11 +182,11 @@ func OutputTextData(w io.Writer, data ...any) {
 		convertedItem := ConvertValue(item)
 
 		if err := encoder.Encode(convertedItem); err != nil {
-			fmt.Fprintf(w, "[%d] %v", i, item)
+			writeString(w, fmt.Sprintf("[%d] %v", i, item))
 			if i < len(data)-1 {
-				fmt.Fprint(w, " ")
+				writeString(w, " ")
 			} else {
-				fmt.Fprintln(w)
+				writeString(w, "\n")
 			}
 			continue
 		}
@@ -191,9 +197,9 @@ func OutputTextData(w io.Writer, data ...any) {
 		}
 
 		if i < len(data)-1 {
-			fmt.Fprintf(w, "%s ", out)
+			writeString(w, string(out)+" ")
 		} else {
-			fmt.Fprintf(w, "%s\n", out)
+			writeString(w, string(out)+"\n")
 		}
 	}
 }
@@ -201,22 +207,22 @@ func OutputTextData(w io.Writer, data ...any) {
 // OutputJSON writes JSON-formatted data to the specified writer with caller info.
 func OutputJSON(w io.Writer, caller string, data ...any) {
 	if len(data) == 0 {
-		fmt.Fprintf(w, "%s {}\n", caller)
+		writeString(w, caller+" {}\n")
 		return
 	}
 
 	converted := FormatJSONData(data...)
-	fmt.Fprintf(w, "%s %s\n", caller, converted)
+	writeString(w, caller+" "+converted+"\n")
 }
 
 // OutputText writes text-formatted data to the specified writer with caller info.
 func OutputText(w io.Writer, caller string, data ...any) {
 	if len(data) == 0 {
-		fmt.Fprintf(w, "%s\n", caller)
+		writeString(w, caller+"\n")
 		return
 	}
 
-	fmt.Fprint(w, caller)
+	writeString(w, caller)
 
 	buf := NewDebugBuffer()
 	defer buf.Release()
@@ -229,9 +235,9 @@ func OutputText(w io.Writer, caller string, data ...any) {
 		if IsSimpleType(item) {
 			output := FormatSimpleValue(item)
 			if i < len(data)-1 {
-				fmt.Fprintf(w, " %s", output)
+				writeString(w, " "+output)
 			} else {
-				fmt.Fprintf(w, " %s\n", output)
+				writeString(w, " "+output+"\n")
 			}
 			continue
 		}
@@ -240,7 +246,7 @@ func OutputText(w io.Writer, caller string, data ...any) {
 		convertedItem := ConvertValue(item)
 
 		if err := encoder.Encode(convertedItem); err != nil {
-			fmt.Fprintf(w, " [%d] %v", i, item)
+			writeString(w, fmt.Sprintf(" [%d] %v", i, item))
 			continue
 		}
 
@@ -250,9 +256,9 @@ func OutputText(w io.Writer, caller string, data ...any) {
 		}
 
 		if i < len(data)-1 {
-			fmt.Fprintf(w, " %s", output)
+			writeString(w, " "+string(output))
 		} else {
-			fmt.Fprintf(w, " %s\n", output)
+			writeString(w, " "+string(output)+"\n")
 		}
 	}
 }

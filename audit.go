@@ -1,6 +1,7 @@
 package dd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -141,10 +142,18 @@ type AuditConfig struct {
 	IntegritySigner *IntegritySigner
 }
 
+// Validate validates the AuditConfig and returns an error if any field is invalid.
+func (c AuditConfig) Validate() error {
+	if c.BufferSize < 0 {
+		return fmt.Errorf("audit buffer size must be non-negative, got %d", c.BufferSize)
+	}
+	return nil
+}
+
 // DefaultAuditConfig returns an AuditConfig with sensible defaults.
 // Note: Audit logging is enabled by default for security monitoring.
-func DefaultAuditConfig() *AuditConfig {
-	return &AuditConfig{
+func DefaultAuditConfig() AuditConfig {
+	return AuditConfig{
 		Enabled:          true,
 		Output:           os.Stderr,
 		BufferSize:       1000,
@@ -152,6 +161,23 @@ func DefaultAuditConfig() *AuditConfig {
 		JSONFormat:       true,
 		MinimumSeverity:  AuditSeverityInfo,
 	}
+}
+
+// auditEncoderPool pools json.Encoder for audit event marshaling to reduce allocations.
+var auditEncoderPool = sync.Pool{
+	New: func() any {
+		buf := &bytes.Buffer{}
+		buf.Grow(512) // typical audit event size
+		enc := json.NewEncoder(buf)
+		enc.SetEscapeHTML(true)
+		return &auditEncoder{buf: buf, enc: enc}
+	},
+}
+
+// auditEncoder holds a buffer and encoder pair for reuse.
+type auditEncoder struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
 }
 
 // AuditLogger logs security audit events asynchronously.
@@ -171,18 +197,26 @@ type AuditLogger struct {
 }
 
 // NewAuditLogger creates a new AuditLogger with the given configuration.
-// If no configuration is provided, DefaultAuditConfig() is used.
-func NewAuditLogger(configs ...*AuditConfig) *AuditLogger {
-	var config *AuditConfig
-	if len(configs) > 0 {
-		config = configs[0]
-	}
-	if config == nil {
-		config = DefaultAuditConfig()
+// Use DefaultAuditConfig() to obtain a Config with sensible defaults.
+//
+// Returns an error if the configuration is invalid (e.g., negative BufferSize).
+//
+// Example:
+//
+//	cfg := dd.DefaultAuditConfig()
+//	cfg.BufferSize = 2000
+//	auditLogger, err := dd.NewAuditLogger(cfg)
+func NewAuditLogger(cfg AuditConfig) (*AuditLogger, error) {
+	return newAuditLoggerWithConfig(cfg)
+}
+
+func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
 
 	al := &AuditLogger{
-		config: config,
+		config: &config,
 		events: make(chan AuditEvent, config.BufferSize),
 		done:   make(chan struct{}),
 	}
@@ -192,7 +226,7 @@ func NewAuditLogger(configs ...*AuditConfig) *AuditLogger {
 		go al.processEvents()
 	}
 
-	return al
+	return al, nil
 }
 
 // Log records an audit event asynchronously.
@@ -315,12 +349,36 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 
 	var output string
 	if al.config.JSONFormat {
-		data, err := json.Marshal(event)
-		if err != nil {
+		// Use pooled encoder for better performance than json.Marshal
+		pe := auditEncoderPool.Get().(*auditEncoder)
+		pe.buf.Reset()
+
+		if err := pe.enc.Encode(event); err != nil {
+			// SECURITY: Zero buffer before returning to pool
+			b := pe.buf.Bytes()
+			for i := range b {
+				b[i] = 0
+			}
+			pe.buf.Reset()
+			auditEncoderPool.Put(pe)
 			fmt.Fprintf(os.Stderr, "dd: failed to marshal audit event: %v\n", err)
 			return
 		}
+
+		// json.Encoder adds a trailing newline, remove it
+		data := pe.buf.Bytes()
+		if len(data) > 0 && data[len(data)-1] == '\n' {
+			data = data[:len(data)-1]
+		}
 		output = string(data)
+
+		// SECURITY: Zero buffer before returning to pool
+		b := pe.buf.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		pe.buf.Reset()
+		auditEncoderPool.Put(pe)
 	} else {
 		if al.config.IncludeTimestamp {
 			output = fmt.Sprintf("[%s] %s: %s",
@@ -344,7 +402,8 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 		output = output + " " + signature
 	}
 
-	fmt.Fprintln(al.config.Output, output)
+	// Best-effort audit output; write failure is not actionable for the caller.
+	_, _ = fmt.Fprintln(al.config.Output, output)
 }
 
 // incrementTypeCount increments the count for an event type.
@@ -360,15 +419,18 @@ func (al *AuditLogger) incrementTypeCount(eventType AuditEventType) {
 		}
 	}
 
-	// Slow path: use LoadOrStore to atomically get or create the counter
+	// Slow path: use LoadOrStore to atomically get or create the counter.
+	// New counter starts at 0; the first Add(1) happens when the caller
+	// wins the LoadOrStore race. If the caller loses, it increments the
+	// existing counter directly.
 	counter := &atomic.Int64{}
-	counter.Store(1)
 	if actual, loaded := al.byType.LoadOrStore(eventType, counter); loaded {
-		// Another goroutine created the counter first, use it
 		if existingCounter, ok := actual.(*atomic.Int64); ok {
-			// Add 1 to account for the initial count we tried to set
 			existingCounter.Add(1)
 		}
+	} else {
+		// We won the race — this is the first event of this type
+		counter.Add(1)
 	}
 }
 
@@ -408,6 +470,7 @@ func (al *AuditLogger) Stats() AuditStats {
 }
 
 // Close stops the audit logger and flushes remaining events.
+// Releases internal statistics maps to free memory.
 func (al *AuditLogger) Close() error {
 	if al == nil || al.closed.Swap(true) {
 		return nil
@@ -416,17 +479,23 @@ func (al *AuditLogger) Close() error {
 	close(al.done)
 	al.wg.Wait()
 
+	// Release statistics memory
+	al.byType.Range(func(key, _ any) bool {
+		al.byType.Delete(key)
+		return true
+	})
+
 	return nil
 }
 
 // Clone creates a copy of the AuditConfig.
 // Note: IntegritySigner is shared (not cloned) as it maintains internal state.
-func (c *AuditConfig) Clone() *AuditConfig {
+func (c *AuditConfig) Clone() AuditConfig {
 	if c == nil {
-		return nil
+		return AuditConfig{}
 	}
 
-	return &AuditConfig{
+	return AuditConfig{
 		Enabled:          c.Enabled,
 		Output:           c.Output,
 		BufferSize:       c.BufferSize,

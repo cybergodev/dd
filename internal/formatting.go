@@ -27,28 +27,27 @@ var (
 )
 
 // getDDPackagePrefix returns the package path prefix for the dd package.
-// It uses runtime.Caller to dynamically detect the prefix at initialization.
+// It uses runtime.Caller(0) to get the fully qualified function name,
+// then extracts the module path by finding the "/internal." boundary.
+// This is more robust than file-path-based detection which could match
+// unrelated directories named "dd".
 func getDDPackagePrefix() string {
 	ddPackagePrefixOnce.Do(func() {
-		// Get the function name of this file to extract the package prefix
+		// runtime.Caller(0) returns the function name of the caller.
 		// Example: github.com/cybergodev/dd/internal.getDDPackagePrefix
 		// We want: github.com/cybergodev/dd
-		if _, file, _, ok := runtime.Caller(0); ok {
-			// file is like: /path/to/github.com/cybergodev/dd/internal/formatting.go
-			// Find the package path in the file path
-			// Look for the pattern: module/path/package/file.go
-
-			// Extract the package prefix by finding the dd package in the path
-			// Common patterns:
-			// - github.com/user/dd/...
-			// - golang.org/x/...
-			parts := strings.Split(file, "/")
-			for i, part := range parts {
-				if part == "dd" && i > 0 {
-					// Found "dd" package, construct prefix from parts before it
-					ddPackagePrefix = strings.Join(parts[:i+1], "/")
-					return
-				}
+		if pc, _, _, ok := runtime.Caller(0); ok {
+			fn := runtime.FuncForPC(pc).Name()
+			// Find the "/internal." boundary to extract the module root.
+			// The function name contains the full import path before the ".func" part.
+			if idx := strings.LastIndex(fn, "/internal."); idx > 0 {
+				ddPackagePrefix = fn[:idx]
+				return
+			}
+			// Fallback: try to strip ".func" suffix for the dd package itself
+			if idx := strings.LastIndex(fn, "/dd."); idx > 0 {
+				ddPackagePrefix = fn[:idx+3]
+				return
 			}
 		}
 		// Fallback to known prefix if detection fails
@@ -107,8 +106,8 @@ var pcsPool = sync.Pool{
 
 // depthCacheEntry stores cached adjusted caller depth
 type depthCacheEntry struct {
-	pc     uintptr // program counter used as key
-	depth  int     // adjusted depth value
+	pc    uintptr // program counter used as key
+	depth int     // adjusted depth value
 }
 
 // depthCache caches adjusted caller depth to avoid repeated stack walking.
@@ -299,11 +298,7 @@ func (f *MessageFormatter) FormatArgsToString(args ...any) string {
 			return
 		}
 		// Zero the buffer contents for security
-		b := buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		argsBuilderPool.Put(buf)
 	}()
 
@@ -407,11 +402,7 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 			return
 		}
 		// Zero the buffer contents for security
-		b := buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		buf.Reset()
+		zeroBuffer(buf)
 		textBuilderPool.Put(buf)
 	}()
 
@@ -456,11 +447,22 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 	}
 	buf.WriteString(message)
 
-	// Add fields
+	// Add fields directly to buffer to avoid intermediate string allocation
 	if len(fields) > 0 {
-		if fieldsStr := FormatFields(fields); fieldsStr != "" {
-			buf.WriteByte(' ')
-			buf.WriteString(fieldsStr)
+		wroteField := false
+		for _, field := range fields {
+			if field.Key == "" {
+				continue
+			}
+			if !wroteField {
+				buf.WriteByte(' ')
+				wroteField = true
+			} else {
+				buf.WriteByte(' ')
+			}
+			buf.WriteString(field.Key)
+			buf.WriteByte('=')
+			formatFieldValueBytes(buf, field.Value)
 		}
 	}
 
@@ -470,7 +472,16 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message string, fields []Field) string {
 	fieldNames := f.getJSONFieldNames()
 
-	// Use pooled entry map for better performance
+	// Fast path: direct buffer writing for compact JSON with simple field types.
+	// Avoids map allocation entirely for the common case of primitive field values.
+	if !f.jsonOpts.PrettyPrint && allFieldsAreSimple(fields) {
+		if result, ok := f.formatJSONDirect(level, callerDepth, message, fields, fieldNames); ok {
+			return result
+		}
+	}
+
+	// Slow path: use map-based approach for complex types or pretty print.
+	// Use pooled entry map for better performance.
 	entryPtr := jsonEntryMapPool.Get().(*map[string]any)
 	entry := *entryPtr
 
@@ -534,6 +545,120 @@ func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message s
 	jsonEntryMapPool.Put(entryPtr)
 
 	return result
+}
+
+// allFieldsAreSimple checks if all field values can be written by the fast JSON path.
+// Complex types (structs, maps, slices of interfaces) require the map-based approach.
+func allFieldsAreSimple(fields []Field) bool {
+	for _, field := range fields {
+		if !isSimpleJSONValue(field.Value) {
+			return false
+		}
+	}
+	return true
+}
+
+// isSimpleJSONValue returns true if the value can be written directly to JSON
+// without going through the map-based encoding/json path.
+func isSimpleJSONValue(v any) bool {
+	switch v.(type) {
+	case string, int, int64, int32, int16, int8,
+		uint, uint64, uint32, uint16, uint8,
+		float64, float32, bool, nil,
+		time.Time, time.Duration:
+		return true
+	case []string, []int, []int64, []float64, []bool:
+		return true
+	default:
+		return false
+	}
+}
+
+// formatJSONDirect writes JSON directly to a buffer without creating maps.
+// Returns (result, true) on success, or ("", false) if fallback is needed.
+// SECURITY: Zeroes buffer contents before returning to pool.
+func (f *MessageFormatter) formatJSONDirect(level LogLevel, callerDepth int, message string, fields []Field, fieldNames *JSONFieldNames) (string, bool) {
+	buf := jsonBuilderPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	// SECURITY: Clear buffer contents before returning to pool
+	defer func() {
+		zeroBuffer(buf)
+		jsonBuilderPool.Put(buf)
+	}()
+
+	buf.WriteByte('{')
+
+	first := true
+
+	// Write timestamp
+	if f.includeTime {
+		writeJSONString(buf, fieldNames.Timestamp)
+		buf.WriteByte(':')
+		writeJSONString(buf, f.timeCache.getFormattedTime())
+		first = false
+	}
+
+	// Write level
+	if f.includeLevel {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		writeJSONString(buf, fieldNames.Level)
+		buf.WriteByte(':')
+		writeJSONString(buf, level.String())
+	}
+
+	// Write caller
+	if f.dynamicCaller {
+		if callerInfo := GetCaller(callerDepth, f.fullPath); callerInfo != "" {
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			writeJSONString(buf, fieldNames.Caller)
+			buf.WriteByte(':')
+			writeJSONString(buf, callerInfo)
+		}
+	}
+
+	// Write message
+	if !first {
+		buf.WriteByte(',')
+	}
+	first = false
+	writeJSONString(buf, fieldNames.Message)
+	buf.WriteByte(':')
+	writeJSONString(buf, message)
+
+	// Write fields
+	if len(fields) > 0 {
+		if !first {
+			buf.WriteByte(',')
+		}
+		writeJSONString(buf, fieldNames.Fields)
+		buf.WriteString(":{")
+		fieldFirst := true
+		for _, field := range fields {
+			if field.Key == "" {
+				continue
+			}
+			if !fieldFirst {
+				buf.WriteByte(',')
+			}
+			fieldFirst = false
+			writeJSONString(buf, field.Key)
+			buf.WriteByte(':')
+			if !writeJSONValueFast(buf, field.Value) {
+				return "", false // Need fallback for complex type
+			}
+		}
+		buf.WriteByte('}')
+	}
+
+	buf.WriteByte('}')
+	return buf.String(), true
 }
 
 // getJSONFieldNames returns the cached JSON field names configuration.

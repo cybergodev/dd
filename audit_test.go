@@ -91,7 +91,7 @@ func TestDefaultAuditConfig(t *testing.T) {
 func TestAuditLogger_Log(t *testing.T) {
 	// Test with nil output to just capture events in stats
 
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:          true,
 		Output:           nil, // No output, just capture events
 		BufferSize:       100,
@@ -100,7 +100,10 @@ func TestAuditLogger_Log(t *testing.T) {
 		MinimumSeverity:  AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	// Log some events
@@ -121,14 +124,17 @@ func TestAuditLogger_Log(t *testing.T) {
 }
 
 func TestAuditLogger_SeverityFilter(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      100,
 		MinimumSeverity: AuditSeverityWarning,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	// Log events below threshold - should be filtered
@@ -161,14 +167,17 @@ func TestAuditLogger_SeverityFilter(t *testing.T) {
 }
 
 func TestAuditLogger_HelperMethods(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      100,
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	// Test all helper methods
@@ -188,14 +197,17 @@ func TestAuditLogger_HelperMethods(t *testing.T) {
 }
 
 func TestAuditLogger_BufferOverflow(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      10, // Small buffer
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	// Send more events than buffer can hold
@@ -221,11 +233,14 @@ func TestAuditLogger_BufferOverflow(t *testing.T) {
 }
 
 func TestAuditLogger_Disabled(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled: false,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	al.Log(AuditEvent{
@@ -255,14 +270,17 @@ func TestAuditLogger_NilSafety(t *testing.T) {
 }
 
 func TestAuditLogger_Close(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      100,
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 
 	// Log some events
 	for i := 0; i < 10; i++ {
@@ -274,7 +292,7 @@ func TestAuditLogger_Close(t *testing.T) {
 	}
 
 	// Close should flush remaining events
-	err := al.Close()
+	err = al.Close()
 	if err != nil {
 		t.Errorf("Close() error = %v", err)
 	}
@@ -287,14 +305,17 @@ func TestAuditLogger_Close(t *testing.T) {
 }
 
 func TestAuditLogger_StatsByType(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      100,
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	// Log different types of events
@@ -315,7 +336,7 @@ func TestAuditLogger_StatsByType(t *testing.T) {
 }
 
 func TestAuditConfig_Clone(t *testing.T) {
-	original := &AuditConfig{
+	original := AuditConfig{
 		Enabled:          true,
 		BufferSize:       500,
 		IncludeTimestamp: false,
@@ -324,10 +345,6 @@ func TestAuditConfig_Clone(t *testing.T) {
 	}
 
 	cloned := original.Clone()
-
-	if cloned == original {
-		t.Error("Clone should return a new instance")
-	}
 
 	if cloned.BufferSize != original.BufferSize {
 		t.Error("BufferSize should be copied")
@@ -343,20 +360,25 @@ func TestAuditConfig_Clone(t *testing.T) {
 func TestAuditConfig_CloneNil(t *testing.T) {
 	var config *AuditConfig
 	cloned := config.Clone()
-	if cloned != nil {
-		t.Error("Cloning nil should return nil")
+	// Cloning nil pointer returns zero-value AuditConfig
+	if cloned.Enabled || cloned.BufferSize != 0 {
+		t.Error("Cloning nil should return zero-value AuditConfig")
 	}
 }
 
 func TestNewAuditLogger_NilConfig(t *testing.T) {
-	al := NewAuditLogger(nil)
+	// Calling with default config
+	al, err := NewAuditLogger(DefaultAuditConfig())
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 
 	if al == nil {
 		t.Fatal("NewAuditLogger should not return nil")
 	}
 
 	if al.config.BufferSize != 1000 {
-		t.Error("Nil config should use defaults")
+		t.Error("Default config should have BufferSize=1000")
 	}
 
 	al.Close()
@@ -366,14 +388,17 @@ func TestNewAuditLogger_NilConfig(t *testing.T) {
 // handles concurrent increments for the same event type without losing counts.
 // This test validates the fix for the check-then-act race condition.
 func TestAuditLogger_ConcurrentTypeCount(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      1000,
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	numGoroutines := 100
@@ -429,14 +454,17 @@ func TestAuditLogger_ConcurrentTypeCount(t *testing.T) {
 // TestAuditLogger_ConcurrentMultipleTypes tests concurrent logging of multiple
 // event types to verify that LoadOrStore handles multiple new types correctly.
 func TestAuditLogger_ConcurrentMultipleTypes(t *testing.T) {
-	config := &AuditConfig{
+	config := AuditConfig{
 		Enabled:         true,
 		Output:          nil,
 		BufferSize:      2000,
 		MinimumSeverity: AuditSeverityInfo,
 	}
 
-	al := NewAuditLogger(config)
+	al, err := NewAuditLogger(config)
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
 	defer al.Close()
 
 	eventTypes := []AuditEventType{
@@ -507,7 +535,7 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 		}
 		defer f.Close()
 
-		config := &AuditConfig{
+		config := AuditConfig{
 			Enabled:          true,
 			Output:           f,
 			BufferSize:       100,
@@ -516,7 +544,10 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 			MinimumSeverity:  AuditSeverityInfo,
 		}
 
-		al := NewAuditLogger(config)
+		al, err := NewAuditLogger(config)
+		if err != nil {
+			t.Fatalf("NewAuditLogger() error = %v", err)
+		}
 		defer al.Close()
 
 		al.Log(AuditEvent{
@@ -559,7 +590,7 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 		}
 		defer f.Close()
 
-		config := &AuditConfig{
+		config := AuditConfig{
 			Enabled:          true,
 			Output:           f,
 			BufferSize:       100,
@@ -568,7 +599,7 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 			MinimumSeverity:  AuditSeverityInfo,
 		}
 
-		al := NewAuditLogger(config)
+		al, _ := NewAuditLogger(config)
 		defer al.Close()
 
 		al.Log(AuditEvent{
@@ -610,7 +641,7 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 		}
 		defer f.Close()
 
-		config := &AuditConfig{
+		config := AuditConfig{
 			Enabled:          true,
 			Output:           f,
 			BufferSize:       100,
@@ -619,7 +650,7 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 			MinimumSeverity:  AuditSeverityInfo,
 		}
 
-		al := NewAuditLogger(config)
+		al, _ := NewAuditLogger(config)
 		defer al.Close()
 
 		al.Log(AuditEvent{

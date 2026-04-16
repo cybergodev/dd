@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/cybergodev/dd"
@@ -52,7 +51,7 @@ func section1FileWriter() {
 
 	// Use with logger
 	cfg := dd.DefaultConfig()
-	cfg.Output = fileWriter
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(fileWriter)}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -60,6 +59,7 @@ func section1FileWriter() {
 	logger.Info("Direct file writer output")
 
 	fmt.Println("✓ File: logs/direct.log")
+	fmt.Println()
 }
 
 // Section 2: BufferedWriter for high throughput
@@ -68,10 +68,15 @@ func section2BufferedWriter() {
 	fmt.Println("-------------------------------------")
 
 	// Create underlying file writer
-	fileWriter, _ := dd.NewFileWriter("logs/buffered.log")
+	fileWriter, err := dd.NewFileWriter("logs/buffered.log", dd.DefaultFileWriterConfig())
+	if err != nil {
+		fmt.Printf("Failed: %v\n", err)
+		return
+	}
+	defer fileWriter.Close()
 
 	// Wrap with buffer (default 4KB buffer)
-	bufferedWriter, err := dd.NewBufferedWriter(fileWriter)
+	bufferedWriter, err := dd.NewBufferedWriter(fileWriter, dd.DefaultBufferedWriterConfig())
 	if err != nil {
 		fmt.Printf("Failed: %v\n", err)
 		return
@@ -79,7 +84,7 @@ func section2BufferedWriter() {
 	defer bufferedWriter.Close() // IMPORTANT: Always call Close to flush!
 
 	cfg := dd.DefaultConfig()
-	cfg.Output = bufferedWriter
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(bufferedWriter)}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -95,6 +100,7 @@ func section2BufferedWriter() {
 
 	fmt.Printf("✓ 1000 messages in %v\n", duration)
 	fmt.Println("  Note: Close() flushes the buffer")
+	fmt.Println()
 }
 
 // Section 3: MultiWriter for multiple outputs
@@ -103,11 +109,16 @@ func section3MultiWriter() {
 	fmt.Println("-----------------------------------")
 
 	// Create MultiWriter combining outputs
-	fileWriter, _ := dd.NewFileWriter("logs/multi.log")
+	fileWriter, err := dd.NewFileWriter("logs/multi.log", dd.DefaultFileWriterConfig())
+	if err != nil {
+		fmt.Printf("Failed to create file writer: %v\n", err)
+		return
+	}
+	defer fileWriter.Close()
 	multiWriter := dd.NewMultiWriter(os.Stdout, fileWriter)
 
 	cfg := dd.DefaultConfig()
-	cfg.Output = multiWriter
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(multiWriter)}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -131,7 +142,11 @@ func section4DynamicManagement() {
 	fmt.Printf("Initial writers: %d\n", logger.WriterCount())
 
 	// Add writers dynamically
-	fileWriter, _ := dd.NewFileWriter("logs/dynamic.log")
+	fileWriter, err := dd.NewFileWriter("logs/dynamic.log", dd.DefaultFileWriterConfig())
+	if err != nil {
+		fmt.Printf("Failed to create file writer: %v\n", err)
+		return
+	}
 	logger.AddWriter(fileWriter)
 	fmt.Printf("After adding file: %d writers\n", logger.WriterCount())
 
@@ -153,19 +168,10 @@ func section5WriterErrors() {
 	fmt.Println("5. Writer Error Handling")
 	fmt.Println("-------------------------")
 
-	var errorCount int
-	var mu sync.Mutex
-
-	// Custom error handler
-	handler := func(writer io.Writer, err error) {
-		mu.Lock()
-		errorCount++
-		mu.Unlock()
-		fmt.Printf("  [Write Error] %T: %v\n", writer, err)
-	}
-
 	cfg := dd.DefaultConfig()
-	cfg.WriteErrorHandler = handler
+	cfg.WriteErrorHandler = func(writer io.Writer, err error) {
+		fmt.Printf("  [Config Handler] %T: %v\n", writer, err)
+	}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -178,7 +184,7 @@ func section5WriterErrors() {
 	logger.Info("Normal logging works fine")
 
 	// Flush to ensure all data is written
-	logger.Flush()
+	_ = logger.Flush() // best-effort flush in demo
 
 	fmt.Println("  Errors captured by handler")
 }
