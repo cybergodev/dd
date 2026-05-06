@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/cybergodev/dd/internal"
@@ -123,6 +124,14 @@ type Logger struct {
 	// sampling stores the sampling configuration and state.
 	sampling atomic.Value // stores *samplingState
 
+	// rateLimiter provides rate limiting to prevent log flooding.
+	// Initialized from SecurityConfig.RateLimitConfig when set.
+	rateLimiter *internal.RateLimiter
+
+	// auditLogger records security events for audit trail.
+	// Initialized from Config.Audit when set.
+	auditLogger *AuditLogger
+
 	// ctx and cancel provide graceful shutdown for background operations.
 	// When Close() is called, cancel() signals all background goroutines
 	// (compression, cleanup) to stop. This ensures clean shutdown without
@@ -207,6 +216,10 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 	l.level.Store(int32(config.level))
 	if config.securityConfig != nil {
 		l.securityConfig.Store(config.securityConfig.Clone())
+		// Initialize rate limiter from security config
+		if config.securityConfig.RateLimitConfig != nil {
+			l.rateLimiter = internal.NewRateLimiter(config.securityConfig.RateLimitConfig)
+		}
 	} else {
 		l.securityConfig.Store(DefaultSecurityConfig())
 	}
@@ -233,6 +246,14 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 	// Initialize sampling
 	if config.sampling != nil && config.sampling.Enabled {
 		l.SetSampling(config.sampling)
+	}
+
+	// Initialize audit logger
+	if config.auditConfig != nil && config.auditConfig.Enabled {
+		al, err := newAuditLoggerWithConfig(*config.auditConfig)
+		if err == nil {
+			l.auditLogger = al
+		}
 	}
 
 	if config.writers != nil {
@@ -262,7 +283,9 @@ func (l *Logger) SetWriteErrorHandler(handler WriteErrorHandler) {
 // getWriteErrorHandler returns the current write error handler (thread-safe).
 func (l *Logger) getWriteErrorHandler() WriteErrorHandler {
 	if v := l.writeErrorHandler.Load(); v != nil {
-		return v.(WriteErrorHandler)
+		if handler, ok := v.(WriteErrorHandler); ok {
+			return handler
+		}
 	}
 	return nil
 }
@@ -270,7 +293,9 @@ func (l *Logger) getWriteErrorHandler() WriteErrorHandler {
 // loadHooks returns the current hook registry or nil if no hooks are set.
 func (l *Logger) loadHooks() *HookRegistry {
 	if v := l.hooks.Load(); v != nil {
-		return v.(*HookRegistry)
+		if registry, ok := v.(*HookRegistry); ok {
+			return registry
+		}
 	}
 	return nil
 }
@@ -278,7 +303,9 @@ func (l *Logger) loadHooks() *HookRegistry {
 // loadContextExtractors returns the current context extractor registry or nil.
 func (l *Logger) loadContextExtractors() *contextExtractorRegistry {
 	if v := l.contextExtractors.Load(); v != nil {
-		return v.(*contextExtractorRegistry)
+		if reg, ok := v.(*contextExtractorRegistry); ok {
+			return reg
+		}
 	}
 	return nil
 }
@@ -286,7 +313,9 @@ func (l *Logger) loadContextExtractors() *contextExtractorRegistry {
 // loadSamplingState returns the current sampling state or nil.
 func (l *Logger) loadSamplingState() *samplingState {
 	if v := l.sampling.Load(); v != nil {
-		return v.(*samplingState)
+		if state, ok := v.(*samplingState); ok {
+			return state
+		}
 	}
 	return nil
 }
@@ -307,6 +336,14 @@ func (l *Logger) shouldLog(level LogLevel) bool {
 		return false
 	}
 	if l.closed.Load() {
+		return false
+	}
+	// Check rate limiter before sampling
+	if l.rateLimiter != nil && l.rateLimiter.ShouldRateLimit(0) {
+		// Emit audit event for rate limit
+		if l.auditLogger != nil {
+			l.auditLogger.LogRateLimitExceeded("log message rate limited", nil)
+		}
 		return false
 	}
 	return l.shouldSample()
@@ -669,6 +706,12 @@ func (l *Logger) SetSecurityConfig(config *SecurityConfig) {
 	if config == nil {
 		config = DefaultSecurityConfig()
 	}
+	// Update rate limiter when security config changes
+	if config.RateLimitConfig != nil {
+		l.rateLimiter = internal.NewRateLimiter(config.RateLimitConfig)
+	} else {
+		l.rateLimiter = nil
+	}
 	l.securityConfig.Store(config)
 }
 
@@ -746,10 +789,15 @@ func (l *Logger) processFields(fields []Field) []Field {
 	result := make([]Field, 0, len(fields))
 
 	for _, field := range fields {
+		filtered := secConfig.SensitiveFilter.FilterValueRecursive(field.Key, field.Value)
 		result = append(result, Field{
 			Key:   field.Key,
-			Value: secConfig.SensitiveFilter.FilterValueRecursive(field.Key, field.Value),
+			Value: filtered,
 		})
+		// Emit audit event for sensitive data redaction
+		if l.auditLogger != nil && filtered != field.Value {
+			l.auditLogger.LogSensitiveDataRedaction("", field.Key, "field value redacted during processing")
+		}
 	}
 
 	return result
@@ -777,7 +825,12 @@ func (l *Logger) applySizeLimit(message string) string {
 	}
 
 	if secConfig.MaxMessageSize > 0 && len(message) > secConfig.MaxMessageSize {
-		message = message[:secConfig.MaxMessageSize] + "..."
+		// Truncate at a valid UTF-8 rune boundary to avoid corrupting multi-byte characters
+		truncIdx := secConfig.MaxMessageSize
+		for truncIdx > 0 && !utf8.RuneStart(message[truncIdx]) {
+			truncIdx--
+		}
+		message = message[:truncIdx] + "..."
 	}
 
 	return message
@@ -847,6 +900,20 @@ func (l *Logger) AddWriter(writer io.Writer) error {
 
 	if l.closed.Load() {
 		return ErrLoggerClosed
+	}
+
+	// Wire FileWriter rotation callback to trigger HookOnRotate
+	if fw, ok := writer.(*FileWriter); ok {
+		fw.SetOnRotateCallback(func(path string) {
+			if registry := l.loadHooks(); registry != nil {
+				hookCtx := &HookContext{
+					Event:     HookOnRotate,
+					Timestamp: time.Now(),
+					Metadata:  map[string]any{"path": path},
+				}
+				_ = registry.Trigger(context.Background(), HookOnRotate, hookCtx)
+			}
+		})
 	}
 
 	l.writersMu.Lock()
@@ -1081,6 +1148,11 @@ func (l *Logger) Close() error {
 	}
 	_ = l.triggerHooks(context.Background(), hookCtx)
 
+	// Close audit logger
+	if l.auditLogger != nil {
+		_ = l.auditLogger.Close()
+	}
+
 	l.cancel()
 
 	// Wait for in-flight security filter goroutines before closing writers.
@@ -1128,12 +1200,27 @@ func (l *Logger) Shutdown(ctx context.Context) error {
 	done := make(chan error, 1)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "dd: recovered from panic during Shutdown: %v\n", r)
+				select {
+				case done <- fmt.Errorf("shutdown panic: %v", r):
+				default:
+				}
+			}
+		}()
+
 		// Trigger OnClose hook
 		hookCtx := &HookContext{
 			Event:     HookOnClose,
 			Timestamp: time.Now(),
 		}
 		_ = l.triggerHooks(ctx, hookCtx)
+
+		// Close audit logger
+		if l.auditLogger != nil {
+			_ = l.auditLogger.Close()
+		}
 
 		// Close writers BEFORE canceling internal context.
 		// This preserves ctx's deadline semantics so closeWritersLocked
@@ -1169,7 +1256,12 @@ func (l *Logger) IsClosed() bool {
 func (l *Logger) handleFatal() {
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "dd: recovered from panic during fatal close: %v\n", r)
+			}
+			close(done)
+		}()
 		_ = l.Close()
 	}()
 
@@ -1513,11 +1605,9 @@ func init() {
 //	}
 func DefaultInitError() error {
 	if v := defaultInitErr.Load(); v != nil {
-		err := v.(error)
-		if err == errNoInit {
-			return nil
+		if err, ok := v.(error); ok && err != errNoInit {
+			return err
 		}
-		return err
 	}
 	return nil
 }

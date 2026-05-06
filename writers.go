@@ -63,6 +63,10 @@ type FileWriter struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// onRotate is called after successful file rotation.
+	// Used to trigger HookOnRotate in the Logger.
+	onRotate func(path string)
 }
 
 // FileWriterConfig configures file writer behavior including rotation settings.
@@ -253,6 +257,10 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
 
+	if fw.file == nil {
+		return 0, os.ErrClosed
+	}
+
 	if internal.NeedsRotation(fw.currentSize.Load(), int64(pLen), fw.maxSize) {
 		if err := fw.rotate(); err != nil {
 			return 0, fmt.Errorf("rotation failed: %w", err)
@@ -289,6 +297,12 @@ func (fw *FileWriter) Close() error {
 	return nil
 }
 
+// SetOnRotateCallback sets a callback that is called after successful file rotation.
+// This is used internally by Logger to trigger HookOnRotate events.
+func (fw *FileWriter) SetOnRotateCallback(fn func(path string)) {
+	fw.onRotate = fn
+}
+
 func (fw *FileWriter) rotate() error {
 	if fw.file != nil {
 		if err := fw.file.Close(); err != nil {
@@ -311,9 +325,9 @@ func (fw *FileWriter) rotate() error {
 		return fmt.Errorf("rename to backup: %w", err)
 	}
 
-	// Rename succeeded, now open new file
+	// Rename succeeded, now open new file using O_EXCL to prevent symlink TOCTOU attacks
 	// If this fails, we need to handle it carefully to avoid data loss
-	file, size, err := internal.OpenFile(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
+	file, size, err := internal.OpenFileExclusive(fw.path, ErrSymlinkNotAllowed, ErrHardlinkNotAllowed)
 	if err != nil {
 		// Try to recover by renaming backup back to original
 		if renameBackErr := os.Rename(backupPath, fw.path); renameBackErr != nil {
@@ -340,6 +354,11 @@ func (fw *FileWriter) rotate() error {
 	if fw.compress {
 		fw.wg.Add(1)
 		go fw.compressBackup(backupPath)
+	}
+
+	// Trigger rotation callback for HookOnRotate
+	if fw.onRotate != nil {
+		fw.onRotate(fw.path)
 	}
 
 	return nil

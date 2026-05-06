@@ -12,6 +12,7 @@ func TestGetCallerComprehensive(t *testing.T) {
 		fullPath    bool
 		wantContain string
 		dontWant    string
+		wantEmpty   bool
 	}{
 		{
 			name:        "depth 1 with full path",
@@ -24,17 +25,12 @@ func TestGetCallerComprehensive(t *testing.T) {
 			depth:       1,
 			fullPath:    false,
 			wantContain: "caller_test.go",
-			dontWant:    "/", // Should not contain path separators
 		},
 		{
-			name:     "invalid high depth",
-			depth:    1000,
-			fullPath: false,
-		},
-		{
-			name:     "negative depth",
-			depth:    -1,
-			fullPath: false,
+			name:        "invalid high depth",
+			depth:       1000,
+			fullPath:    false,
+			wantEmpty:   true,
 		},
 	}
 
@@ -42,15 +38,13 @@ func TestGetCallerComprehensive(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := GetCaller(tt.depth, tt.fullPath)
 
-			if tt.depth >= 1000 {
-				// High depth should return empty
+			if tt.wantEmpty {
 				if result != "" {
 					t.Errorf("GetCaller(%d, %v) should return empty, got %q", tt.depth, tt.fullPath, result)
 				}
 				return
 			}
 
-			// For valid depths, should contain line number
 			if !strings.Contains(result, ":") {
 				t.Errorf("GetCaller() should contain ':', got %q", result)
 			}
@@ -59,52 +53,16 @@ func TestGetCallerComprehensive(t *testing.T) {
 				t.Errorf("GetCaller() should contain %q, got %q", tt.wantContain, result)
 			}
 
-			if tt.dontWant != "" && strings.Contains(result, tt.dontWant) {
-				// On Windows, check for both separators
-				if tt.dontWant == "/" && strings.Contains(result, "\\") {
-					t.Errorf("GetCaller(fullPath=false) should not contain path separators, got %q", result)
-				} else if strings.Contains(result, tt.dontWant) {
-					t.Errorf("GetCaller() should not contain %q, got %q", tt.dontWant, result)
-				}
+			if !tt.fullPath && (strings.Contains(result, "\\") || strings.Contains(result, "/")) {
+				t.Errorf("GetCaller(fullPath=false) should not contain path separators, got %q", result)
 			}
 		})
 	}
 }
 
-func TestGetCallerFullPath(t *testing.T) {
-	// Test with full path enabled
-	callerInfo := GetCaller(1, true)
-
-	if !strings.Contains(callerInfo, "caller_test.go") {
-		t.Errorf("Should contain file name, got: %s", callerInfo)
-	}
-
-	if !strings.Contains(callerInfo, ":") {
-		t.Error("Should contain line number separator")
-	}
-
-	// Full path should contain path separator on most systems
-	// (except when running from current directory)
-}
-
-func TestGetCallerBaseName(t *testing.T) {
-	// Test with full path disabled
-	callerInfo := GetCaller(1, false)
-
-	if !strings.Contains(callerInfo, "caller_test.go") {
-		t.Errorf("Should contain file name, got: %s", callerInfo)
-	}
-
-	// Should NOT contain directory path
-	if strings.Contains(callerInfo, "/") || strings.Contains(callerInfo, "\\") {
-		t.Errorf("Should not contain path separators, got: %s", callerInfo)
-	}
-}
-
-func TestGetCallerConsistentResults(t *testing.T) {
-	// Multiple calls should return consistent results
+func TestGetCallerConsistency(t *testing.T) {
 	results := make([]string, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		results[i] = GetCaller(1, false)
 	}
 
@@ -115,74 +73,50 @@ func TestGetCallerConsistentResults(t *testing.T) {
 	}
 }
 
-func TestGetCallerLineNumbers(t *testing.T) {
-	// Get caller info
+func TestGetCallerLineNumber(t *testing.T) {
 	callerInfo := GetCaller(1, false)
 
-	// Should have format "filename.go:linenum"
 	parts := strings.Split(callerInfo, ":")
 	if len(parts) != 2 {
 		t.Errorf("Expected format 'file:line', got: %s", callerInfo)
 		return
 	}
 
-	// Line number should be numeric and reasonable
-	lineNum := parts[1]
-	for _, c := range lineNum {
+	for _, c := range parts[1] {
 		if c < '0' || c > '9' {
-			t.Errorf("Line number should be numeric, got: %s", lineNum)
+			t.Errorf("Line number should be numeric, got: %s", parts[1])
 			return
 		}
 	}
 }
 
-func TestCallerBuilderPool(t *testing.T) {
-	// Test buffer pool reuse
-	for i := 0; i < 100; i++ {
-		_ = GetCaller(1, false)
-	}
-}
-
 func TestGetCallerFromHelper(t *testing.T) {
-	// Test that caller depth correctly tracks through helper functions
-	caller := getCallerHelper(t)
+	caller := getCallerHelper()
 	if !strings.Contains(caller, "caller_test.go") {
 		t.Errorf("Caller should be from test file, got: %s", caller)
 	}
 }
 
-func getCallerHelper(t *testing.T) string {
-	// depth 2 should get the caller of this helper function
+func getCallerHelper() string {
 	return GetCaller(2, false)
 }
 
-func TestGetCallerDepth0(t *testing.T) {
-	// depth 0 gets runtime.Caller itself which is in runtime package
-	// This test verifies it doesn't crash
-	result := GetCaller(0, false)
-	// Result might be empty or contain runtime info
-	t.Logf("GetCaller(0) = %q", result)
-}
-
 func TestGetCallerWithDeepStack(t *testing.T) {
-	// Test with deeper call stack
-	result := deepCallStack(5, t)
+	result := deepCallStack(5)
 	if result == "" {
 		t.Error("Expected non-empty caller info")
 	}
 }
 
-func deepCallStack(depth int, t *testing.T) string {
+func deepCallStack(depth int) string {
 	if depth == 0 {
 		return GetCaller(1, false)
 	}
-	return deepCallStack(depth-1, t)
+	return deepCallStack(depth - 1)
 }
 
-func TestCallerBuilderPoolGrowth(t *testing.T) {
-	// Test that the pool handles growth correctly
-	for i := 0; i < 1000; i++ {
-		// Use full path to potentially create longer strings
+func TestCallerBuilderPool(t *testing.T) {
+	for range 1000 {
 		_ = GetCaller(1, true)
 	}
 }

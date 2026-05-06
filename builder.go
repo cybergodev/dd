@@ -27,6 +27,7 @@ type internalConfig struct {
 	contextExtractors []ContextExtractor
 	hooks             *HookRegistry
 	sampling          *SamplingConfig
+	auditConfig       *AuditConfig
 }
 
 // build creates a new Logger from the configuration.
@@ -52,6 +53,7 @@ func (c Config) build() (*Logger, error) {
 		contextExtractors: c.ContextExtractors,
 		hooks:             c.Hooks,
 		sampling:          c.Sampling,
+		auditConfig:       c.Audit,
 	}
 
 	// Handle JSON options

@@ -1,13 +1,14 @@
 # DD - 高性能 Go 日志库
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Documentation](https://img.shields.io/badge/docs-cybergo.dev-blue.svg)](https://www.cybergo.dev/dd)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/dd.svg)](https://pkg.go.dev/github.com/cybergodev/dd)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/security-policy-blue.svg)](SECURITY.md)
 
 一个生产级高性能 Go 日志库，零外部依赖，专为现代云原生应用设计。
 
-**[English Documentation](README.md)** | **[pkg.go.dev](https://pkg.go.dev/github.com/cybergodev/dd)**
+**[English Documentation](README.md)** | **[www.cybergo.dev/dd](https://www.cybergo.dev/dd)**
 
 ---
 

@@ -1,13 +1,14 @@
 # DD - High-Performance Go Logging Library
 
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Documentation](https://img.shields.io/badge/docs-cybergo.dev-blue.svg)](https://www.cybergo.dev/dd)
 [![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/dd.svg)](https://pkg.go.dev/github.com/cybergodev/dd)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![Security](https://img.shields.io/badge/security-policy-blue.svg)](SECURITY.md)
 
 A production-grade high-performance Go logging library with zero external dependencies, designed for modern cloud-native applications.
 
-**[中文文档](README_zh-CN.md)** | **[pkg.go.dev](https://pkg.go.dev/github.com/cybergodev/dd)**
+ **[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/dd](https://www.cybergo.dev/dd)**
 
 ---
 

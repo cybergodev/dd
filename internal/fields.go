@@ -66,12 +66,12 @@ func FormatFields(fields []Field) string {
 		buf.Grow(estimatedSize - buf.Cap())
 	}
 
-	for i, field := range fields {
+	for _, field := range fields {
 		if field.Key == "" {
 			continue
 		}
 
-		if i > 0 {
+		if buf.Len() > 0 {
 			buf.WriteByte(' ')
 		}
 

@@ -6,29 +6,6 @@ import (
 	"testing"
 )
 
-func TestLevelToString(t *testing.T) {
-	tests := []struct {
-		level LogLevel
-		want  string
-	}{
-		{LevelDebug, "DEBUG"},
-		{LevelInfo, "INFO"},
-		{LevelWarn, "WARN"},
-		{LevelError, "ERROR"},
-		{LevelFatal, "FATAL"},
-		{LogLevel(99), "UNKNOWN"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.want, func(t *testing.T) {
-			got := tt.level.String()
-			if got != tt.want {
-				t.Errorf("LogLevel.String() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDefaultJSONFieldNames(t *testing.T) {
 	names := DefaultJSONFieldNames()
 

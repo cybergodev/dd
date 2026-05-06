@@ -149,6 +149,13 @@ func NewIntegritySigner(cfg IntegrityConfig) (*IntegritySigner, error) {
 	secretKey := make([]byte, len(cfg.SecretKey))
 	copy(secretKey, cfg.SecretKey)
 
+	// SECURITY: Zero the config's copy so only secretKey field holds the material.
+	// Prevents key material from existing in two memory locations.
+	for i := range cfg.SecretKey {
+		cfg.SecretKey[i] = 0
+	}
+	cfg.SecretKey = nil
+
 	return &IntegritySigner{
 		config:    &cfg,
 		secretKey: secretKey,
@@ -231,6 +238,9 @@ func (s *IntegritySigner) buildSignatureString(result *signResult) string {
 	sigBuilder.WriteString("]")
 
 	// Release the signResult back to pool
+	for i := range result.signature {
+		result.signature[i] = 0
+	}
 	result.signature = result.signature[:0]
 	signResultPool.Put(result)
 
@@ -253,15 +263,17 @@ func (s *IntegritySigner) Sign(message string) string {
 	data.Reset()
 	data.WriteString(message)
 
-	result := s.signData(data)
+	// SECURITY: Zero buffer on panic to prevent key material leak from pool
+	defer func() {
+		b := data.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		data.Reset()
+		signDataPool.Put(data)
+	}()
 
-	// Return data buffer to pool after signing
-	b := data.Bytes()
-	for i := range b {
-		b[i] = 0
-	}
-	data.Reset()
-	signDataPool.Put(data)
+	result := s.signData(data)
 
 	return s.buildSignatureString(result)
 }
@@ -288,15 +300,17 @@ func (s *IntegritySigner) SignFields(message string, fields []Field) string {
 		fmt.Fprintf(data, "%v", f.Value)
 	}
 
-	result := s.signData(data)
+	// SECURITY: Zero buffer on panic to prevent key material leak from pool
+	defer func() {
+		b := data.Bytes()
+		for i := range b {
+			b[i] = 0
+		}
+		data.Reset()
+		signDataPool.Put(data)
+	}()
 
-	// Return data buffer to pool after signing
-	b := data.Bytes()
-	for i := range b {
-		b[i] = 0
-	}
-	data.Reset()
-	signDataPool.Put(data)
+	result := s.signData(data)
 
 	return s.buildSignatureString(result)
 }
@@ -405,18 +419,20 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		data.WriteString(sequenceStr)
 	}
 
+	// SECURITY: Zero buffer on panic to prevent key material leak from pool
+	defer func() {
+		bufBytes := data.Bytes()
+		for i := range bufBytes {
+			bufBytes[i] = 0
+		}
+		data.Reset()
+		signDataPool.Put(data)
+	}()
+
 	// Create a fresh hasher and recompute signature directly from buffer bytes
 	hasher := s.newHasher()
 	hasher.Write(data.Bytes())
 	expectedSig := hasher.Sum(nil)
-
-	// Return buffer to pool
-	bufBytes := data.Bytes()
-	for i := range bufBytes {
-		bufBytes[i] = 0
-	}
-	data.Reset()
-	signDataPool.Put(data)
 
 	// Compare signatures (constant-time comparison)
 	if !hmac.Equal(signature, expectedSig) {

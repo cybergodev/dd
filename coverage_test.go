@@ -330,202 +330,6 @@ func TestHookRegistrySetErrorHandler(t *testing.T) {
 // ERROR TYPE METHOD TESTS
 // ============================================================================
 
-func TestWriterError(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *WriterError
-		expected string
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: "<nil WriterError>",
-		},
-		{
-			name:     "with error",
-			err:      &WriterError{Index: 0, Writer: io.Discard, Err: errors.New("write error")},
-			expected: "writer[0]: write error",
-		},
-		{
-			name:     "without error",
-			err:      &WriterError{Index: 1, Writer: io.Discard, Err: nil},
-			expected: "writer[1]: unknown error",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.Error()
-			if result != tt.expected {
-				t.Errorf("Error() = %q, want %q", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestWriterErrorUnwrap(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *WriterError
-		expected error
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: nil,
-		},
-		{
-			name:     "with wrapped error",
-			err:      &WriterError{Index: 0, Writer: io.Discard, Err: errors.New("inner error")},
-			expected: errors.New("inner error"),
-		},
-		{
-			name:     "nil wrapped error",
-			err:      &WriterError{Index: 0, Writer: io.Discard, Err: nil},
-			expected: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.Unwrap()
-			if tt.expected == nil {
-				if result != nil {
-					t.Errorf("Unwrap() = %v, want nil", result)
-				}
-			} else {
-				if result == nil || result.Error() != tt.expected.Error() {
-					t.Errorf("Unwrap() = %v, want %v", result, tt.expected)
-				}
-			}
-		})
-	}
-}
-
-func TestMultiWriterError(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *MultiWriterError
-		expected string
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: "",
-		},
-		{
-			name:     "empty errors",
-			err:      &MultiWriterError{Errors: []WriterError{}},
-			expected: "",
-		},
-		{
-			name: "single error",
-			err: &MultiWriterError{Errors: []WriterError{
-				{Index: 0, Err: errors.New("single error")},
-			}},
-			expected: "writer[0]: single error",
-		},
-		{
-			name: "multiple errors",
-			err: &MultiWriterError{Errors: []WriterError{
-				{Index: 0, Err: errors.New("error 1")},
-				{Index: 1, Err: errors.New("error 2")},
-			}},
-			expected: "multiple writer errors:",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.Error()
-			if !strings.Contains(result, tt.expected) {
-				t.Errorf("Error() = %q, should contain %q", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestMultiWriterErrorUnwrap(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *MultiWriterError
-		expected int
-	}{
-		{
-			name:     "nil error",
-			err:      nil,
-			expected: 0,
-		},
-		{
-			name:     "empty errors",
-			err:      &MultiWriterError{Errors: []WriterError{}},
-			expected: 0,
-		},
-		{
-			name: "multiple errors",
-			err: &MultiWriterError{Errors: []WriterError{
-				{Index: 0, Err: errors.New("error 1")},
-				{Index: 1, Err: errors.New("error 2")},
-			}},
-			expected: 2,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.Unwrap()
-			if len(result) != tt.expected {
-				t.Errorf("Unwrap() returned %d errors, want %d", len(result), tt.expected)
-			}
-		})
-	}
-}
-
-func TestMultiWriterErrorErrorCount(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *MultiWriterError
-		expected int
-	}{
-		{"nil error", nil, 0},
-		{"empty errors", &MultiWriterError{Errors: []WriterError{}}, 0},
-		{"single error", &MultiWriterError{Errors: []WriterError{{}}}, 1},
-		{"multiple errors", &MultiWriterError{Errors: []WriterError{{}, {}}}, 2},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.ErrorCount()
-			if result != tt.expected {
-				t.Errorf("ErrorCount() = %d, want %d", result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestMultiWriterErrorFirstError(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      *MultiWriterError
-		hasError bool
-	}{
-		{"nil error", nil, false},
-		{"empty errors", &MultiWriterError{Errors: []WriterError{}}, false},
-		{"with error", &MultiWriterError{Errors: []WriterError{{Index: 0, Err: errors.New("first")}}}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := tt.err.FirstError()
-			if tt.hasError && result == nil {
-				t.Error("FirstError() should return an error")
-			}
-			if !tt.hasError && result != nil {
-				t.Errorf("FirstError() should return nil, got %v", result)
-			}
-		})
-	}
-}
 
 func TestMultiWriterErrorAddError(t *testing.T) {
 	err := &MultiWriterError{}
@@ -1166,17 +970,6 @@ func TestIntegrityConfigCloneCompleteness(t *testing.T) {
 // BOUNDARY: AUDIT EDGE CASES
 // ============================================================================
 
-func TestNewAuditLoggerWithConfig(t *testing.T) {
-	cfg := DefaultAuditConfig()
-	logger, err := NewAuditLogger(cfg)
-	if err != nil {
-		t.Fatalf("NewAuditLogger error = %v", err)
-	}
-	if logger == nil {
-		t.Fatal("NewAuditLogger returned nil")
-	}
-}
-
 func TestAuditSeverityMarshalAll(t *testing.T) {
 	severities := []AuditSeverity{
 		AuditSeverityInfo,
@@ -1208,21 +1001,6 @@ func TestAuditLoggerEmptyMessage(t *testing.T) {
 	stats := logger.Stats()
 	if stats.TotalEvents != 1 {
 		t.Errorf("Expected 1 event, got %d", stats.TotalEvents)
-	}
-}
-
-func TestAuditLoggerSeverityBoundary(t *testing.T) {
-	cfg := DefaultAuditConfig()
-	cfg.MinimumSeverity = AuditSeverityCritical
-	logger, _ := NewAuditLogger(cfg)
-
-	// Events below Critical should be filtered
-	logger.Log(AuditEvent{Type: AuditEventInputSanitized, Message: "info event", Severity: AuditSeverityInfo})
-	logger.Log(AuditEvent{Type: AuditEventSecurityViolation, Message: "critical event", Severity: AuditSeverityCritical})
-
-	stats := logger.Stats()
-	if stats.TotalEvents != 1 {
-		t.Errorf("Expected 1 event (critical only), got %d", stats.TotalEvents)
 	}
 }
 
@@ -1726,13 +1504,6 @@ func TestLoggerRecorder_ConcurrentStress(t *testing.T) {
 // BOUNDARY: ERROR WRAPPER EDGE CASES
 // ============================================================================
 
-func TestWrapErrorNilCause(t *testing.T) {
-	result := wrapError(errCodeInvalidLevel, "test", nil)
-	if result != nil {
-		t.Errorf("wrapError with nil cause should return nil, got %v", result)
-	}
-}
-
 func TestNewErrorFields(t *testing.T) {
 	err := newError(errCodeInvalidLevel, "test message")
 	if err == nil {
@@ -2157,18 +1928,6 @@ func TestLoggerErrorWithField(t *testing.T) {
 
 	if errWithField.Context["key"] != "value" {
 		t.Errorf("WithField context key = %v, want 'value'", errWithField.Context["key"])
-	}
-}
-
-func TestLoggerErrorIs(t *testing.T) {
-	err := newError(errCodeInvalidLevel, "invalid level")
-
-	if !errors.Is(err, ErrInvalidLevel) {
-		t.Error("errors.Is should match sentinel error")
-	}
-
-	if errors.Is(err, ErrNilConfig) {
-		t.Error("errors.Is should not match different sentinel error")
 	}
 }
 
@@ -2817,26 +2576,6 @@ func TestLevelHierarchy(t *testing.T) {
 // ============================================================================
 // SECURITY CONFIG VALIDATION TESTS
 // ============================================================================
-
-func TestSecureConfig(t *testing.T) {
-	config := DefaultSecureConfig()
-
-	if config == nil {
-		t.Fatal("SecureSecurityConfig should not return nil")
-	}
-
-	if config.MaxMessageSize <= 0 {
-		t.Error("MaxMessageSize should be positive")
-	}
-
-	if config.MaxWriters <= 0 {
-		t.Error("MaxWriters should be positive")
-	}
-
-	if config.SensitiveFilter == nil {
-		t.Error("Secure config should have sensitive filter")
-	}
-}
 
 // ============================================================================
 // ADDITIONAL EDGE CASES

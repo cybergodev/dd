@@ -4,6 +4,37 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.3.1 - Production Safety & Quality Fixes (2026-05-07)
+
+### Fixed
+- Zero sensitive key material in `NewIntegritySigner` to prevent memory exposure
+- Panic-safe buffer zeroing for all `IntegritySigner` pool operations
+- UTF-8 corruption in size-limited output — truncate at valid rune boundaries
+- Symlink TOCTOU during log rotation prevented with exclusive file creation (`O_EXCL`)
+- Leading space in `FormatFields` when first field has empty key
+- Nil pointer dereference in `FileWriter.Write` during concurrent `Close()`
+- Byte count accounting in `RateLimiter` — rejected messages no longer inflate counter
+- Signature bytes zeroed before pool return, preventing data leakage through reuse
+- Nil receiver guard on `LoggerEntry` log methods to prevent panics
+- 5 unchecked type assertions in atomic loads replaced with safe comma-ok pattern
+- Panic recovery in `Shutdown()` and `handleFatal()` goroutines to prevent process crash
+- Element count limit (10000) in `FilterValueRecursive` prevents memory exhaustion
+- Abbreviation suffix matching now validates prefix convention
+
+### Changed
+- `RateLimiter` integrated into Logger pipeline via `SecurityConfig.RateLimitConfig`
+- `AuditLogger` integrated into Logger pipeline via `Config.Audit` for automatic event emission
+- Audit events emitted for sensitive data redactions and rate-limit actions
+- `FileWriter` triggers `HookOnRotate` callback after successful rotation
+- `SecurityConfig` and `Config` extended for rate limiting and audit configuration
+
+### Added
+- `SetOnRotateCallback()` method on `FileWriter` for rotation notification
+- `OpenFileExclusive()` for symlink-safe file creation
+- 29 new boundary and coverage tests; 8 caller tests consolidated to table-driven format
+
+---
+
 ## v1.3.0 - API Unification, Performance & Quality (2026-04-16)
 
 ### Breaking Changes

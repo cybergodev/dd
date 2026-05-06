@@ -183,17 +183,26 @@ func (e *LoggerEntry) logWithDepth(level LogLevel, msg string, fields []Field) {
 
 // Log logs a message at the specified level with the entry's fields.
 func (e *LoggerEntry) Log(level LogLevel, args ...any) {
+	if e == nil || e.logger == nil {
+		return
+	}
 	e.logWithDepth(level, e.logger.formatter.FormatArgsToString(args...), e.fields)
 }
 
 // Logf logs a formatted message at the specified level with the entry's fields.
 func (e *LoggerEntry) Logf(level LogLevel, format string, args ...any) {
+	if e == nil || e.logger == nil {
+		return
+	}
 	msg := fmt.Sprintf(format, args...)
 	e.logWithDepth(level, msg, e.fields)
 }
 
 // LogWith logs a structured message with the entry's fields plus additional fields.
 func (e *LoggerEntry) LogWith(level LogLevel, msg string, fields ...Field) {
+	if e == nil || e.logger == nil {
+		return
+	}
 	e.logWithDepth(level, msg, e.mergeFields(fields))
 }
 
