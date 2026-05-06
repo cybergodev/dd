@@ -122,6 +122,11 @@ type Config struct {
 	ContextExtractors []ContextExtractor
 	Hooks             *HookRegistry
 	Sampling          *SamplingConfig
+
+	// Audit configuration for security event logging.
+	// When set, audit events are emitted for sensitive data redactions,
+	// rate limit events, and security violations.
+	Audit *AuditConfig
 }
 
 // DefaultConfig creates a new Config with default settings.
@@ -288,6 +293,19 @@ func (c *Config) Clone() Config {
 			Initial:    c.Sampling.Initial,
 			Thereafter: c.Sampling.Thereafter,
 			Tick:       c.Sampling.Tick,
+		}
+	}
+
+	// Copy Audit config
+	if c.Audit != nil {
+		clone.Audit = &AuditConfig{
+			Enabled:          c.Audit.Enabled,
+			Output:           c.Audit.Output,
+			BufferSize:       c.Audit.BufferSize,
+			IncludeTimestamp: c.Audit.IncludeTimestamp,
+			JSONFormat:       c.Audit.JSONFormat,
+			MinimumSeverity:  c.Audit.MinimumSeverity,
+			IntegritySigner:  c.Audit.IntegritySigner,
 		}
 	}
 

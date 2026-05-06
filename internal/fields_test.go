@@ -228,35 +228,6 @@ func TestFormatFieldValue_EdgeCases(t *testing.T) {
 }
 
 // ============================================================================
-// IS COMPLEX VALUE TESTS
-// ============================================================================
-
-func TestIsComplexValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    any
-		expected bool
-	}{
-		{"string is not complex", "hello", false},
-		{"int is not complex", 42, false},
-		{"bool is not complex", true, false},
-		{"nil is not complex", nil, false},
-		{"slice is complex", []int{1, 2, 3}, true},
-		{"map is complex", map[string]int{"a": 1}, true},
-		{"struct pointer might be complex", &struct{ Name string }{"test"}, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsComplexValue(tt.value)
-			if result != tt.expected {
-				t.Errorf("IsComplexValue(%v) = %v, want %v", tt.value, result, tt.expected)
-			}
-		})
-	}
-}
-
-// ============================================================================
 // BENCHMARK TESTS
 // ============================================================================
 

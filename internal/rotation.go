@@ -15,6 +15,42 @@ import (
 // This protects against decompression bombs (zip bombs) that could exhaust memory.
 const MaxDecompressSize = 100 * 1024 * 1024 // 100MB
 
+// OpenFileExclusive opens a log file with O_EXCL to prevent symlink TOCTOU attacks.
+// Use this when reopening after rotation to prevent an attacker from placing a symlink
+// between the rename and the open. Falls back to normal OpenFile if exclusive create fails.
+func OpenFileExclusive(path string, symlinkErr, hardlinkErr error) (*os.File, int64, error) {
+	// Try exclusive create first — fails if file (or symlink) already exists
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, FilePermissions)
+	if err != nil {
+		// Exclusive create failed (file exists or symlink present) — fall back to normal open
+		return OpenFile(path, symlinkErr, hardlinkErr)
+	}
+
+	// Exclusive create succeeded — validate the file handle
+	fileInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("stat file: %w", err)
+	}
+
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		_ = file.Close()
+		return nil, 0, symlinkErr
+	}
+
+	isHardlinked, err := isHardlink(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, 0, fmt.Errorf("check hardlink: %w", err)
+	}
+	if isHardlinked {
+		_ = file.Close()
+		return nil, 0, hardlinkErr
+	}
+
+	return file, 0, nil // New file, size is 0
+}
+
 // OpenFile opens a log file for appending with security checks.
 // symlinkErr and hardlinkErr are caller-provided sentinel errors so that
 // errors.Is() matching works correctly in the calling package.

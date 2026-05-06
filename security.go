@@ -1156,6 +1156,7 @@ func (f *SensitiveDataFilter) FilterFieldValue(key string, value any) any {
 // It processes maps, slices, arrays, and structs to filter sensitive values.
 // Circular references are detected and replaced with "[CIRCULAR_REFERENCE]".
 // Maximum recursion depth is limited to maxRecursionDepth to prevent stack overflow.
+// Total elements are bounded to prevent resource exhaustion from large structures.
 func (f *SensitiveDataFilter) FilterValueRecursive(key string, value any) (result any) {
 	// SEC-003: Recover from panics in reflection-based recursive filtering.
 	// Return the original value on panic so logging continues without disruption.
@@ -1173,11 +1174,12 @@ func (f *SensitiveDataFilter) FilterValueRecursive(key string, value any) (resul
 		clear(visited)
 		visitedMapPool.Put(visited)
 	}()
-	return f.filterValueRecursiveInternal(key, value, visited, 0)
+	remaining := maxFilterElements
+	return f.filterValueRecursiveInternal(key, value, visited, 0, &remaining)
 }
 
 // filterValueRecursiveInternal is the internal implementation with circular reference detection.
-func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any, visited map[uintptr]bool, depth int) any {
+func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any, visited map[uintptr]bool, depth int, remaining *int) any {
 	if f == nil || !f.enabled.Load() {
 		return value
 	}
@@ -1185,6 +1187,12 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 	// Check recursion depth to prevent stack overflow on deeply nested structures
 	if depth > maxRecursionDepth {
 		return "[MAX_DEPTH_EXCEEDED]"
+	}
+
+	// Check total element count to prevent resource exhaustion
+	*remaining--
+	if *remaining <= 0 {
+		return "[FILTER_LIMIT_EXCEEDED]"
 	}
 
 	// Handle nil values
@@ -1220,7 +1228,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 			return "[CIRCULAR_REFERENCE]"
 		}
 		visited[ptr] = true
-		return f.filterValueRecursiveInternal(key, val.Elem().Interface(), visited, depth+1)
+		return f.filterValueRecursiveInternal(key, val.Elem().Interface(), visited, depth+1, remaining)
 	}
 
 	// Handle interfaces
@@ -1228,7 +1236,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 		if val.IsNil() {
 			return nil
 		}
-		return f.filterValueRecursiveInternal(key, val.Elem().Interface(), visited, depth+1)
+		return f.filterValueRecursiveInternal(key, val.Elem().Interface(), visited, depth+1, remaining)
 	}
 
 	// Handle slices and arrays
@@ -1249,7 +1257,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 		}
 		result := make([]any, val.Len())
 		for i := 0; i < val.Len(); i++ {
-			result[i] = f.filterValueRecursiveInternal("", val.Index(i).Interface(), visited, depth+1)
+			result[i] = f.filterValueRecursiveInternal("", val.Index(i).Interface(), visited, depth+1, remaining)
 		}
 		return result
 	}
@@ -1269,7 +1277,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 		for _, mapKey := range val.MapKeys() {
 			keyStr := internal.MapKeyToString(mapKey)
 			mapValue := val.MapIndex(mapKey).Interface()
-			result[keyStr] = f.filterValueRecursiveInternal(keyStr, mapValue, visited, depth+1)
+			result[keyStr] = f.filterValueRecursiveInternal(keyStr, mapValue, visited, depth+1, remaining)
 		}
 		return result
 	}
@@ -1320,7 +1328,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 				}
 			}
 
-			result[fieldName] = f.filterValueRecursiveInternal(fieldName, field.Interface(), visited, depth+1)
+			result[fieldName] = f.filterValueRecursiveInternal(fieldName, field.Interface(), visited, depth+1, remaining)
 		}
 		return result
 	}
@@ -1340,6 +1348,9 @@ type SecurityConfig struct {
 	// SensitiveFilter is the filter used to redact sensitive data from log output.
 	// A nil filter disables sensitive data filtering.
 	SensitiveFilter *SensitiveDataFilter
+	// RateLimitConfig configures rate limiting to prevent log flooding.
+	// A nil value disables rate limiting.
+	RateLimitConfig *internal.RateLimitConfig
 }
 
 // SecurityLevel defines the security level for the logger.
@@ -1467,6 +1478,9 @@ func (sc *SecurityConfig) Clone() *SecurityConfig {
 	}
 	if sc.SensitiveFilter != nil {
 		clone.SensitiveFilter = sc.SensitiveFilter.clone()
+	}
+	if sc.RateLimitConfig != nil {
+		clone.RateLimitConfig = sc.RateLimitConfig.Clone()
 	}
 	return clone
 }

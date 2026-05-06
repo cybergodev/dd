@@ -162,7 +162,8 @@ func (rl *RateLimiter) ShouldRateLimit(msgSize int) bool {
 			// Check byte token bucket
 			byteTokens := rl.byteTokens.Add(-int64(msgSize))
 			if byteTokens < 0 {
-				rl.byteTokens.Add(int64(msgSize)) // Restore tokens
+				rl.byteTokens.Add(int64(msgSize))           // Restore tokens
+				rl.byteCount.Add(-int64(msgSize))            // Don't count rejected bytes
 				return rl.handleRateLimited()
 			}
 		}

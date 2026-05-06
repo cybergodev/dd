@@ -70,6 +70,10 @@ const (
 	// maxRecursionDepth limits recursive filtering of nested structures.
 	// Prevents stack overflow from deeply nested or circular data.
 	maxRecursionDepth = 100
+
+	// maxFilterElements limits total elements processed during recursive filtering.
+	// Prevents resource exhaustion from structures with many fields/slice elements.
+	maxFilterElements = 10000
 )
 
 const (

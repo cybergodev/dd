@@ -213,13 +213,39 @@ func isCommonAbbreviation(key string) bool {
 	for _, suffix := range commonSuffixes {
 		if strings.HasSuffix(lowerKey, suffix) {
 			prefix := key[:len(key)-len(suffix)]
-			if len(prefix) > 0 {
+			if len(prefix) > 0 && isValidPrefix(prefix) {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+// isValidPrefix checks that the prefix before a suffix is a valid identifier
+// (lowercase letters, digits, underscores for snake_case; no consecutive underscores).
+func isValidPrefix(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	hasUnderscore := false
+	for i, r := range s {
+		if r == '_' {
+			if hasUnderscore {
+				return false
+			}
+			hasUnderscore = true
+		} else {
+			hasUnderscore = false
+			if !unicode.IsLower(r) && !unicode.IsDigit(r) {
+				return false
+			}
+		}
+		if i == 0 && unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func isValidSnakeCase(s string) bool {
