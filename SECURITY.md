@@ -1,25 +1,25 @@
 # Security Policy
 
-## ⚠️ IMPORTANT: Security Configuration Warning
+## ⚠️ IMPORTANT: Security Configuration
 
-**By default, sensitive data filtering is DISABLED for maximum performance.**
+**Basic sensitive data filtering is ENABLED by default** in every preset
+(`DefaultConfig()`, `DevelopmentConfig()`, `JSONConfig()`). Passwords, API keys,
+credit cards, and other common sensitive data are redacted out of the box — no
+extra configuration is required.
 
-This means passwords, API keys, credit card numbers, and other sensitive data may appear in your logs unless you explicitly enable security filtering.
-
-### How to Enable Security Filtering
+### Choosing a Filtering Level
 
 ```go
-// Option 1: Basic filtering (recommended for most production systems)
+// Default — basic filtering is already on (DefaultSecurityConfig())
 cfg := dd.DefaultConfig()
-cfg.Security = dd.DefaultSecurityConfig()
 logger, _ := dd.New(cfg)
 
-// Option 2: Full filtering (maximum security for sensitive environments)
+// Option 1: Full filtering (emails, IPs, JWTs, ... — maximum coverage)
 cfg := dd.DefaultConfig()
 cfg.Security = dd.DefaultSecureConfig()
 logger, _ := dd.New(cfg)
 
-// Option 3: Industry-specific presets
+// Option 2: Industry-specific presets
 cfg := dd.DefaultConfig()
 cfg.Security = dd.HealthcareConfig()   // HIPAA compliance
 // OR
@@ -27,18 +27,23 @@ cfg.Security = dd.FinancialConfig()    // PCI-DSS compliance
 // OR
 cfg.Security = dd.GovernmentConfig()   // Government/defense systems
 logger, _ := dd.New(cfg)
+
+// Option 3: Explicitly DISABLE filtering (development only — max performance)
+cfg := dd.DefaultConfig()
+cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
+logger, _ := dd.New(cfg)
 ```
 
 ### Risk Assessment
 
 | Configuration | Risk Level | Use Case |
 |---------------|------------|----------|
-| No filtering (default) | **HIGH** | Development only |
-| `DefaultSecurityConfig()` | **MEDIUM** | General production |
+| `DefaultSecurityConfig()` (default) | **MEDIUM** | General production |
 | `DefaultSecureConfig()` | **LOW** | High-security environments |
 | Industry presets | **LOW** | Compliance requirements |
+| `SecurityLevelDevelopment` (no filtering) | **HIGH** | Local development only |
 
-**Never use the default (no filtering) configuration in production systems that handle sensitive data.**
+**Never disable filtering in production systems that handle sensitive data.**
 
 ---
 
@@ -54,24 +59,22 @@ DD provides built-in protection against accidental logging of sensitive informat
 
 #### Default Behavior
 
-**Sensitive data filtering is DISABLED by default** to maximize performance. Users must explicitly enable filtering when handling sensitive data.
+**Basic sensitive data filtering is ENABLED by default** (via `DefaultSecurityConfig()`) in every preset. Users can upgrade to full filtering or disable filtering entirely when needed.
 
 #### Filtering Levels
 
-**Basic Filtering** (recommended for most use cases):
+**Basic Filtering** (default; `DefaultSecurityConfig()`):
 - Credit card numbers (13-19 digits)
 - Social Security Numbers (SSN format: XXX-XX-XXXX)
 - Password fields (password/passwd/pwd with values)
-- API keys and tokens
-- OpenAI API keys (sk-* format)
+- API keys and tokens, including AWS access keys (AKIA/ASIA) and OpenAI keys (sk-*)
+- GitHub, Slack, Stripe, Azure, and GCP service-account tokens
 - Private key headers (PEM format)
 - Phone numbers (multiple formats)
 - Database connection strings
 
-**Full Filtering** (comprehensive protection):
-- All basic patterns plus:
+**Full Filtering** (`DefaultSecureConfig()` — all basic patterns, plus):
 - JWT tokens (eyJ* format)
-- AWS access keys (AKIA* format)
 - Google API keys (AIza* format)
 - Email addresses
 - IPv4 and IPv6 addresses
@@ -87,24 +90,20 @@ DD provides built-in protection against accidental logging of sensitive informat
 #### Usage Examples
 
 ```go
-// Enable basic filtering (recommended)
-config := dd.DefaultConfig().EnableBasicFiltering()
+// Basic filtering is enabled by default (DefaultSecurityConfig()).
+// For full filtering (emails, IPs, JWTs, ...):
+config := dd.DefaultConfig()
+config.Security = dd.DefaultSecureConfig()
 logger, _ := dd.New(config)
-
-// Enable full filtering
-config := dd.DefaultConfig().EnableFullFiltering()
-logger, _ := dd.New(config)
-
-// Using Options pattern
-logger, _ := dd.NewWithOptions(dd.Options{
-    FilterLevel: "basic", // "none", "basic", "full"
-})
 
 // Custom filtering patterns
 filter := dd.NewEmptySensitiveDataFilter()
 filter.AddPattern(`(?i)internal[_-]?token[:\s=]+[^\s]+`)
 filter.AddPattern(`\bSECRET_[A-Z0-9_]+\b`)
-config := dd.DefaultConfig().WithFilter(filter)
+config := dd.DefaultConfig()
+config.Security = &dd.SecurityConfig{
+    SensitiveFilter: filter,
+}
 logger, _ := dd.New(config)
 ```
 
@@ -169,9 +168,7 @@ logger.Info("User input: \nmalicious\nlog\nentry")
 **Message Size Limiting**: Prevents memory exhaustion attacks
 ```go
 config := dd.DefaultConfig()
-config.SecurityConfig = &dd.SecurityConfig{
-    MaxMessageSize: 5 * 1024 * 1024, // Default: 5MB
-}
+config.Security.MaxMessageSize = 5 * 1024 * 1024 // Default: 5MB
 ```
 
 Messages exceeding the limit are truncated with `... [TRUNCATED]` suffix.
@@ -193,12 +190,10 @@ If a regex operation exceeds the timeout, it returns `[REDACTED]`.
 
 #### Input Length Limiting
 
-Filters enforce maximum input lengths to prevent catastrophic backtracking:
-- Default filter: 256KB max input
-- Basic filter: 64KB max input
-- Empty filter: 1MB max input
+Filters enforce a maximum input length to prevent catastrophic backtracking:
+- All filters (default, basic, and empty): 256KB max input
 
-Inputs exceeding limits are truncated with `... [TRUNCATED FOR SECURITY]` suffix.
+Inputs exceeding the limit are truncated with `... [TRUNCATED FOR SECURITY]` suffix.
 
 #### Pattern Validation
 
@@ -227,9 +222,7 @@ The filter includes panic recovery to handle regex engine crashes:
 Prevents resource exhaustion by limiting the number of output writers:
 ```go
 config := dd.DefaultConfig()
-config.SecurityConfig = &dd.SecurityConfig{
-    MaxWriters: 100, // Default: 100
-}
+config.Security.MaxWriters = 100 // Default: 100
 logger, _ := dd.New(config)
 
 // Attempting to exceed limit returns error
@@ -238,17 +231,23 @@ err := logger.AddWriter(newWriter) // Returns error if limit exceeded
 
 #### Field Key Validation
 
-Automatically sanitizes field keys to prevent injection:
+Field key validation is **opt-in** (disabled by default). When enabled via
+`Config.FieldValidation`, keys are checked for injection risks and naming
+convention; invalid keys produce a validation error that is **logged** — keys
+are not silently rewritten.
+
 - Maximum key length: 256 characters
 - Allowed characters: a-z, A-Z, 0-9, _, -, .
-- Invalid keys replaced with `invalid_key`
+- Cannot start with a digit
+- Blocks path traversal (`..`), null bytes, Log4Shell, overlong UTF-8, and
+  homograph (mixed-script) attacks
 
 ```go
-logger.InfoWith("Test",
-    dd.String("valid_key-123", "value"),     // → valid_key-123=value
-    dd.String("invalid key!", "value"),      // → invalidkey=value
-    dd.String("", "value"),                  // → invalid_key=value
-)
+cfg := dd.DefaultConfig()
+cfg.FieldValidation = dd.StrictSnakeCaseConfig() // enable strict validation
+
+// With validation on, an invalid key is reported (not rewritten):
+//   dd.String("invalid key!", "value")  // → validation error logged
 ```
 
 #### Concurrency Limits
@@ -263,10 +262,10 @@ const maxConcurrentFilters = 100
 File writers automatically validate paths to prevent directory traversal attacks:
 ```go
 // Safe: Creates file in logs directory
-fileWriter, _ := dd.NewFileWriter("logs/app.log")
+fileWriter, _ := dd.NewFileWriter("logs/app.log", dd.FileWriterConfig{})
 
 // Protected: Path traversal attempts are blocked
-fileWriter, _ := dd.NewFileWriter("../../../etc/passwd") // Returns error
+fileWriter, _ := dd.NewFileWriter("../../../etc/passwd", dd.FileWriterConfig{}) // Returns error
 ```
 
 #### Symlink and Hardlink Protection
@@ -289,28 +288,17 @@ The library detects UTF-8 overlong encoding attacks, which can be used to bypass
 
 ### 6. Secure Memory Handling
 
-DD implements secure memory handling to prevent sensitive data from remaining in memory:
+The library implements secure memory handling internally to prevent sensitive
+data from lingering in memory. These types live in the unexported `internal`
+package and are **not** part of the public API — callers benefit automatically
+and do not (and cannot) use them directly:
 
-#### SecureBuffer
+- `SecureBuffer`: a byte buffer that zeros its contents before returning to the pool.
+- `SecureString`: a string wrapper with constant-time comparison.
+- `SecureBytes` / `WipeBytes()`: zero byte slices.
 
-A byte buffer that zeros its contents when released:
-```go
-buf := internal.NewSecureBuffer()
-buf.WriteString("sensitive data")
-// ... use buffer ...
-buf.Release() // Zeros contents before returning to pool
-```
-
-#### SecureString
-
-A string wrapper with constant-time comparison:
-```go
-ss := internal.NewSecureString("secret")
-if ss.Equals(userInput) {
-    // Constant-time comparison prevents timing attacks
-}
-ss.Clear() // Zeros and releases the data
-```
+As a user you get this for free: all pooled buffers (JSON encoder, text builder,
+field builder, sanitize buffer) are zeroed before being returned to their pools.
 
 #### Pool Buffer Zeroing
 
@@ -371,15 +359,15 @@ DD provides comprehensive audit logging for security monitoring:
 #### Usage
 
 ```go
-// Create audit logger
+// Configure audit logging
 auditConfig := dd.DefaultAuditConfig()
-auditConfig.Output = auditFile
+auditConfig.Output = auditFile // *os.File; nil = events only via the Events channel
 auditConfig.JSONFormat = true
-auditLogger := dd.NewAuditLogger(auditConfig)
 
-// Attach to main logger
+// Attach to the main logger via Config.Audit (*AuditConfig).
+// The Logger builds and manages the AuditLogger internally.
 config := dd.DefaultConfig()
-config.AuditLogger = auditLogger
+config.Audit = &auditConfig
 logger, _ := dd.New(config)
 ```
 
@@ -427,21 +415,20 @@ if entry, ok := f.cache[inputHash]; ok && len(entry.input) == inputLen && entry.
 
 ### 1. Enable Filtering for Sensitive Data
 
-Always enable filtering when logging user input or potentially sensitive data:
+Basic filtering is enabled by default. Upgrade to full filtering when logging
+user input or potentially sensitive data:
 
 ```go
-// Production configuration with security
-logger, _ := dd.NewWithOptions(dd.Options{
-    Level:       dd.LevelInfo,
-    Format:      dd.FormatJSON,
-    FilterLevel: "basic",
-    File:        "logs/app.log",
-    FileConfig: dd.FileWriterConfig{
-        MaxSizeMB:  100,
-        MaxBackups: 30,
-        Compress:   true,
-    },
-})
+cfg := dd.DefaultConfig()
+cfg.Level = dd.LevelInfo
+cfg.Format = dd.FormatJSON
+cfg.Security = dd.DefaultSecureConfig() // full filtering
+target := dd.FileOutput("logs/app.log")
+target.MaxSizeMB = 100
+target.MaxBackups = 30
+target.Compress = true
+cfg.Targets = []dd.OutputTarget{target}
+logger, _ := dd.New(cfg)
 defer logger.Close()
 ```
 
@@ -485,10 +472,8 @@ Set message size limits based on your application's needs:
 
 ```go
 config := dd.DefaultConfig()
-config.SecurityConfig = &dd.SecurityConfig{
-    MaxMessageSize: 1 * 1024 * 1024, // 1MB for high-security environments
-    MaxWriters:     50,
-}
+config.Security.MaxMessageSize = 1 * 1024 * 1024 // 1MB for high-security environments
+config.Security.MaxWriters = 50
 ```
 
 ### 5. Secure File Permissions
@@ -508,15 +493,14 @@ fileWriter, _ := dd.NewFileWriter("logs/app.log", dd.FileWriterConfig{
 Enable log rotation and compression to prevent disk exhaustion:
 
 ```go
-logger, _ := dd.NewWithOptions(dd.Options{
-    File: "logs/app.log",
-    FileConfig: dd.FileWriterConfig{
-        MaxSizeMB:  100,                 // Rotate at 100MB
-        MaxBackups: 10,                  // Keep only 10 backups
-        MaxAge:     7 * 24 * time.Hour,  // Delete after 7 days
-        Compress:   true,                // Compress old logs
-    },
-})
+target := dd.FileOutput("logs/app.log")
+target.MaxSizeMB = 100                 // Rotate at 100MB
+target.MaxBackups = 10                 // Keep only 10 backups
+target.MaxAge = 7 * 24 * time.Hour     // Delete after 7 days
+target.Compress = true                 // Compress old logs
+cfg := dd.DefaultConfig()
+cfg.Targets = []dd.OutputTarget{target}
+logger, _ := dd.New(cfg)
 ```
 
 ### 7. Handle Fatal Logs Carefully
@@ -543,9 +527,9 @@ logger.Fatal("Critical system failure")
 Always close loggers to flush buffers and release resources:
 
 ```go
-logger, _ := dd.NewWithOptions(dd.Options{
-    File: "logs/app.log",
-})
+cfg := dd.DefaultConfig()
+cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/app.log")}
+logger, _ := dd.New(cfg)
 defer logger.Close() // Ensures proper cleanup
 
 // Or use explicit close with error handling
@@ -569,27 +553,36 @@ defer func() {
 
 ### 9. Monitor Hook Errors
 
-Use the HookErrorRecorder to monitor hook health in production:
+Provide an error handler to monitor hook health in production. Hook errors are
+delivered to a `HookErrorHandler` instead of panicking the logger:
 
 ```go
-recorder := dd.NewHookErrorRecorder()
+var hookErrors []error
+var mu sync.Mutex
 
-// Create registry with error handler
-registry := dd.NewHookRegistryWithErrorHandler(recorder.Handler())
+registry := dd.NewHooksFromConfig(dd.HooksConfig{
+    ErrorHandler: func(event dd.HookEvent, hookCtx *dd.HookContext, err error) {
+        mu.Lock()
+        hookErrors = append(hookErrors, err)
+        mu.Unlock()
+    },
+})
 
 // Add hooks that may fail
 registry.Add(dd.HookAfterLog, myUnreliableHook)
 
-// Attach to logger
-logger.SetHooks(registry)
+// Attach to logger via Config.Hooks
+cfg := dd.DefaultConfig()
+cfg.Hooks = registry
+logger, _ := dd.New(cfg)
 
-// Periodically check for errors
-if recorder.HasErrors() {
-    for _, err := range recorder.Errors() {
-        fmt.Fprintf(os.Stderr, "Hook error: %v\n", err)
-    }
-    recorder.Clear()
+// Periodically drain and report errors
+mu.Lock()
+for _, err := range hookErrors {
+    fmt.Fprintf(os.Stderr, "Hook error: %v\n", err)
 }
+hookErrors = hookErrors[:0]
+mu.Unlock()
 ```
 
 ---
@@ -600,28 +593,28 @@ if recorder.HasErrors() {
 
 ```go
 config := dd.DefaultConfig()
-// Injection protection is always enabled
-// No sensitive data filtering (best performance)
+// Injection protection + basic sensitive-data filtering are always enabled.
+// To disable filtering entirely for maximum performance:
+config.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
 ```
 
 ### Recommended Security Configuration
 
 ```go
 config := dd.DefaultConfig()
-config.EnableBasicFiltering()
-config.SecurityConfig.MaxMessageSize = 5 * 1024 * 1024 // 5MB
-config.SecurityConfig.MaxWriters = 100
+// Basic filtering is already enabled by default (DefaultSecurityConfig())
+config.Security.MaxMessageSize = 5 * 1024 * 1024 // 5MB
+config.Security.MaxWriters = 100
 ```
 
 ### Maximum Security Configuration
 
 ```go
 config := dd.DefaultConfig()
-config.EnableFullFiltering()
-config.SecurityConfig = &dd.SecurityConfig{
+config.Security = &dd.SecurityConfig{
     MaxMessageSize:  1 * 1024 * 1024, // 1MB
     MaxWriters:      50,
-    SensitiveFilter: dd.NewSensitiveDataFilter(),
+    SensitiveFilter: dd.NewSensitiveDataFilter(), // full filtering
 }
 ```
 
@@ -634,7 +627,7 @@ filter.AddPattern(`(?i)internal[_-]?token[:\s=]+[^\s]+`)
 filter.AddPattern(`\bCUSTOM_SECRET_[A-Z0-9]+\b`)
 
 config := dd.DefaultConfig()
-config.SecurityConfig = &dd.SecurityConfig{
+config.Security = &dd.SecurityConfig{
     MaxMessageSize:  2 * 1024 * 1024,
     MaxWriters:      75,
     SensitiveFilter: filter,

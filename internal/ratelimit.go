@@ -15,6 +15,10 @@ const (
 	// RateLimitStrategySample samples messages when rate limit is exceeded (1 in N).
 	RateLimitStrategySample
 	// RateLimitStrategyThrottle throttles messages to the configured rate.
+	// NOTE: in this non-blocking implementation it behaves like
+	// RateLimitStrategyDrop — over-limit messages are dropped rather than
+	// delayed. Retained for API completeness and future non-blocking throttle
+	// strategies; do not rely on it for true backpressure today.
 	RateLimitStrategyThrottle
 )
 
@@ -71,7 +75,6 @@ type RateLimiter struct {
 	// Token bucket state (atomic)
 	tokens           atomic.Int64 // Current number of tokens
 	byteTokens       atomic.Int64 // Current byte tokens
-	lastRefill       atomic.Int64 // Last refill time (Unix nanoseconds)
 	messageCount     atomic.Int64 // Messages in current second
 	byteCount        atomic.Int64 // Bytes in current second
 	currentSecond    atomic.Int64 // Current second (Unix timestamp)
@@ -95,84 +98,111 @@ func NewRateLimiter(config *RateLimitConfig) *RateLimiter {
 	// Initialize token buckets
 	rl.tokens.Store(int64(config.BurstSize))
 	rl.byteTokens.Store(config.MaxBytesPerSecond)
-	rl.lastRefill.Store(time.Now().UnixNano())
 	rl.currentSecond.Store(time.Now().Unix())
 
 	return rl
 }
 
-// ShouldRateLimit checks if a message of the given size should be rate limited.
-// Returns true if the message should be dropped/throttled, false if it should be processed.
-// This method uses a mutex for second boundary transitions to prevent TOCTOU races,
-// but uses atomic operations for the hot path within each second.
+// maybeResetSecond advances the per-second accounting window when the wall-clock
+// second changes. It uses a mutex with double-checked locking so that
+// second-boundary resets are safe under concurrency (preventing TOCTOU races on
+// the per-second counters and token buckets). Within a second it is a lock-free
+// atomic load, keeping the hot path cheap.
+func (rl *RateLimiter) maybeResetSecond(now time.Time) {
+	nowSec := now.Unix()
+	if nowSec == rl.currentSecond.Load() {
+		return
+	}
+	rl.secondMu.Lock()
+	defer rl.secondMu.Unlock()
+	// Double-check after acquiring the lock: another goroutine may have
+	// already advanced the window while we were waiting.
+	if nowSec == rl.currentSecond.Load() {
+		return
+	}
+	rl.currentSecond.Store(nowSec)
+	rl.messageCount.Store(0)
+	rl.byteCount.Store(0)
+	if rl.config.MaxMessagesPerSecond > 0 {
+		rl.tokens.Store(int64(rl.config.BurstSize))
+	}
+	if rl.config.MaxBytesPerSecond > 0 {
+		rl.byteTokens.Store(rl.config.MaxBytesPerSecond)
+	}
+}
+
+// AllowMessage applies only the per-message rate limit (message count plus the
+// burst token bucket). It is the cheap pre-format gate on the logger hot path,
+// where the formatted message size is not yet known.
+//
+// Returns true if the message is allowed to proceed, false if it should be
+// dropped or sampled per the configured Strategy.
+func (rl *RateLimiter) AllowMessage() bool {
+	if rl == nil || rl.config == nil || rl.config.MaxMessagesPerSecond <= 0 {
+		return true
+	}
+	rl.maybeResetSecond(time.Now())
+	if rl.messageCount.Add(1) <= int64(rl.config.MaxMessagesPerSecond) {
+		return true
+	}
+	// Over the per-second budget: try to spend a burst token.
+	if rl.tokens.Add(-1) < 0 {
+		rl.tokens.Add(1) // restore: no burst budget left
+		return !rl.handleRateLimited()
+	}
+	return true
+}
+
+// AllowBytes applies only the byte rate limit (byte count plus the byte token
+// bucket) for a message of the given size. It is the post-format gate, where
+// the formatted message length is known.
+//
+// Returns true if the message is allowed to proceed, false if it should be
+// dropped or sampled per the configured Strategy.
+func (rl *RateLimiter) AllowBytes(msgSize int) bool {
+	if rl == nil || rl.config == nil || rl.config.MaxBytesPerSecond <= 0 || msgSize <= 0 {
+		return true
+	}
+	rl.maybeResetSecond(time.Now())
+	if rl.byteCount.Add(int64(msgSize)) <= rl.config.MaxBytesPerSecond {
+		return true
+	}
+	// Over the per-second byte budget: try to spend byte tokens.
+	if rl.byteTokens.Add(-int64(msgSize)) < 0 {
+		rl.byteTokens.Add(int64(msgSize)) // restore tokens
+		rl.byteCount.Add(-int64(msgSize)) // don't count rejected bytes
+		// The message already passed AllowMessage, which incremented
+		// messageCount; since it is now rejected by the byte gate, roll back
+		// that count so the per-message budget isn't consumed by dropped
+		// messages. AllowMessage is a no-op (no increment) when
+		// MaxMessagesPerSecond <= 0, so only roll back when it is active.
+		if rl.config.MaxMessagesPerSecond > 0 {
+			rl.messageCount.Add(-1)
+		}
+		return !rl.handleRateLimited()
+	}
+	return true
+}
+
+// ShouldRateLimit checks whether a message of the given size should be rate
+// limited, applying both the message-count and byte limits in a single call.
+// Returns true if the message should be dropped/throttled, false if it should
+// be processed.
+//
+// This convenience is for callers that already know the message size. The
+// logger hot path instead calls AllowMessage (pre-format, cheap) and AllowBytes
+// (post-format, once the size is known) separately, so that byte limiting
+// actually takes effect — calling ShouldRateLimit(0) leaves the byte limit inert.
 func (rl *RateLimiter) ShouldRateLimit(msgSize int) bool {
 	if rl == nil || rl.config == nil {
 		return false
 	}
-
-	// Quick check: if both limits are disabled, never rate limit
 	if rl.config.MaxMessagesPerSecond <= 0 && rl.config.MaxBytesPerSecond <= 0 {
 		return false
 	}
-
-	now := time.Now()
-	nowNano := now.UnixNano()
-	nowSec := now.Unix()
-
-	// Check if we've moved to a new second (with mutex to prevent TOCTOU race)
-	currentSec := rl.currentSecond.Load()
-	if nowSec != currentSec {
-		rl.secondMu.Lock()
-		// Double-check after acquiring lock (another goroutine may have updated)
-		currentSec = rl.currentSecond.Load()
-		if nowSec != currentSec {
-			// Reset counters for new second
-			rl.currentSecond.Store(nowSec)
-			rl.messageCount.Store(0)
-			rl.byteCount.Store(0)
-
-			// Refill token buckets
-			if rl.config.MaxMessagesPerSecond > 0 {
-				rl.tokens.Store(int64(rl.config.BurstSize))
-			}
-			if rl.config.MaxBytesPerSecond > 0 {
-				rl.byteTokens.Store(rl.config.MaxBytesPerSecond)
-			}
-		}
-		rl.secondMu.Unlock()
-	}
-
-	// Check message rate limit
-	if rl.config.MaxMessagesPerSecond > 0 {
-		msgCount := rl.messageCount.Add(1)
-		if msgCount > int64(rl.config.MaxMessagesPerSecond) {
-			// Check burst capacity
-			tokens := rl.tokens.Add(-1)
-			if tokens < 0 {
-				rl.tokens.Add(1) // Restore token
-				return rl.handleRateLimited()
-			}
-		}
-	}
-
-	// Check byte rate limit
-	if rl.config.MaxBytesPerSecond > 0 {
-		byteCount := rl.byteCount.Add(int64(msgSize))
-		if byteCount > rl.config.MaxBytesPerSecond {
-			// Check byte token bucket
-			byteTokens := rl.byteTokens.Add(-int64(msgSize))
-			if byteTokens < 0 {
-				rl.byteTokens.Add(int64(msgSize))           // Restore tokens
-				rl.byteCount.Add(-int64(msgSize))            // Don't count rejected bytes
-				return rl.handleRateLimited()
-			}
-		}
-	}
-
-	// Update last refill time
-	rl.lastRefill.Store(nowNano)
-
-	return false
+	// Message gate first; if it drops the message, short-circuit before the
+	// byte gate (matching the original implementation's ordering).
+	return !rl.AllowMessage() || !rl.AllowBytes(msgSize)
 }
 
 // handleRateLimited handles the rate limit strategy.
@@ -242,7 +272,6 @@ func (rl *RateLimiter) Reset() {
 	rl.byteCount.Store(0)
 	rl.rateLimitedCount.Store(0)
 	rl.sampleCounter.Store(0)
-	rl.lastRefill.Store(time.Now().UnixNano())
 	rl.currentSecond.Store(time.Now().Unix())
 }
 

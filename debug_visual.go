@@ -43,6 +43,17 @@ func Printf(format string, args ...any) {
 	Default().Printf(format, args...)
 }
 
+// NOTE: The direct-output JSON helpers below (JSON/JSONF) are deliberately
+// duplicated between this package-level form and the (*Logger) methods in
+// logger.go — they must NOT delegate to each other. They resolve the caller at a
+// FIXED depth (debugVisualizationDepth = 2): the package-level dd.JSON() skips
+// [GetCaller -> dd.JSON] to reach user code, while (*Logger).JSON() skips
+// [GetCaller -> (*Logger).JSON]. Delegating one layer to the other would insert
+// an extra frame and report the internal wrapper instead of the real caller.
+//
+// Text/Textf do NOT resolve the caller, so they delegate normally to the
+// default logger (see below) and are not duplicated.
+
 // JSON outputs data as compact JSON to stdout with caller info for debugging.
 func JSON(data ...any) {
 	internal.OutputJSON(os.Stdout, internal.GetCaller(debugVisualizationDepth, false), data...)
@@ -55,15 +66,26 @@ func JSONF(format string, args ...any) {
 }
 
 // Text outputs data as pretty-printed format to stdout for debugging.
+//
+// Unlike the JSON helpers above, Text does not resolve the caller, so it safely
+// delegates to the default logger's Text (which writes to os.Stdout without
+// sensitive-data filtering), keeping a single implementation rather than
+// duplicating it at both layers.
 func Text(data ...any) {
-	internal.OutputTextData(os.Stdout, data...)
+	Default().Text(data...)
 }
 
 // Textf outputs formatted data as pretty-printed format to stdout for debugging.
+// Delegates to the default logger's Textf (see Text above).
 func Textf(format string, args ...any) {
-	formatted := fmt.Sprintf(format, args...)
-	_, _ = fmt.Fprintln(os.Stdout, formatted)
+	Default().Textf(format, args...)
 }
+
+// Exit/Exitf are package-level-only debug conveniences with no (*Logger)
+// counterpart, by design: they write directly to stdout (ignoring the logger's
+// configured writers) and call os.Exit(0). Adding them as Logger methods would
+// widen the debug-only API surface without benefit; production code should use
+// logger.Info/Error plus explicit shutdown instead.
 
 // Exit outputs data as pretty-printed JSON to stdout and exits with code 0.
 func Exit(data ...any) {

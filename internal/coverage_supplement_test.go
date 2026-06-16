@@ -83,59 +83,6 @@ func TestWriteJSONValueFast_Slice(t *testing.T) {
 // SANITIZE EDGE CASES
 // ============================================================================
 
-func TestAppendRune_AllPaths(t *testing.T) {
-	tests := []struct {
-		name  string
-		r     rune
-		check func([]byte) bool
-	}{
-		{"ASCII", 'A', func(b []byte) bool { return len(b) == 1 && b[0] == 'A' }},
-		{"2-byte", 'é', func(b []byte) bool { return len(b) == 2 }},
-		{"3-byte", '日', func(b []byte) bool { return len(b) == 3 }},
-		{"4-byte", '🎉', func(b []byte) bool { return len(b) == 4 }},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := appendRune(nil, tt.r)
-			if !tt.check(result) {
-				t.Errorf("appendRune(%U) = %x (len=%d)", tt.r, result, len(result))
-			}
-		})
-	}
-}
-
-func TestIsUnicodeControlRune_Extended(t *testing.T) {
-	tests := []struct {
-		name     string
-		r        rune
-		expected bool
-	}{
-		{"C1 control", '', true},
-		{"ZWSP", '​', true},
-		{"LRM", '‎', true},
-		{"RLM", '‏', true},
-		{"LRE", '‪', true},
-		{"RLE", '‫', true},
-		{"PDF", '‬', true},
-		{"LRO", '‭', true},
-		{"RLO", '‮', true},
-		{"WJ", '⁠', true},
-		{"normal char", 'A', false},
-		{"digit", '0', false},
-		{"space", ' ', false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isUnicodeControlRune(tt.r)
-			if result != tt.expected {
-				t.Errorf("isUnicodeControlRune(%U) = %v, want %v", tt.r, result, tt.expected)
-			}
-		})
-	}
-}
-
 // ============================================================================
 // FORMAT JSON DIRECT WITH COMPLEX FIELDS
 // ============================================================================

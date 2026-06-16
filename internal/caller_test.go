@@ -27,10 +27,10 @@ func TestGetCallerComprehensive(t *testing.T) {
 			wantContain: "caller_test.go",
 		},
 		{
-			name:        "invalid high depth",
-			depth:       1000,
-			fullPath:    false,
-			wantEmpty:   true,
+			name:      "invalid high depth",
+			depth:     1000,
+			fullPath:  false,
+			wantEmpty: true,
 		},
 	}
 

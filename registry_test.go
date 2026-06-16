@@ -237,10 +237,7 @@ func TestHookRegistry_ClearFor(t *testing.T) {
 }
 
 func TestHookEvent_String(t *testing.T) {
-	tests := []struct {
-		event    HookEvent
-		expected string
-	}{
+	assertEnumStringer(t, "HookEvent", []stringerCase[HookEvent]{
 		{HookBeforeLog, "BeforeLog"},
 		{HookAfterLog, "AfterLog"},
 		{HookOnFilter, "OnFilter"},
@@ -248,15 +245,7 @@ func TestHookEvent_String(t *testing.T) {
 		{HookOnClose, "OnClose"},
 		{HookOnError, "OnError"},
 		{HookEvent(999), "Unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			if got := tt.event.String(); got != tt.expected {
-				t.Errorf("HookEvent(%d).String() = %q, want %q", tt.event, got, tt.expected)
-			}
-		})
-	}
+	}, HookEvent.String)
 }
 
 func TestHookContext(t *testing.T) {
@@ -626,86 +615,6 @@ func TestExtractorRegistry_Clear(t *testing.T) {
 	registry.clear()
 	if registry.count() != 0 {
 		t.Errorf("expected 0 extractors after clear, got %d", registry.count())
-	}
-}
-
-func TestDefaultContextExtractorRegistry(t *testing.T) {
-	registry := defaultContextExtractorRegistry()
-	if registry == nil {
-		t.Fatal("expected non-nil registry")
-	}
-	if registry.count() != 3 {
-		t.Errorf("expected 3 default extractors, got %d", registry.count())
-	}
-
-	t.Run("extracts trace_id", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "trace_id", "abc123")
-		fields := registry.Extract(ctx)
-
-		found := false
-		for _, f := range fields {
-			if f.Key == "trace_id" && f.Value == "abc123" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected trace_id field to be extracted")
-		}
-	})
-
-	t.Run("extracts span_id", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "span_id", "def456")
-		fields := registry.Extract(ctx)
-
-		found := false
-		for _, f := range fields {
-			if f.Key == "span_id" && f.Value == "def456" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected span_id field to be extracted")
-		}
-	})
-
-	t.Run("extracts request_id", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), "request_id", "req789")
-		fields := registry.Extract(ctx)
-
-		found := false
-		for _, f := range fields {
-			if f.Key == "request_id" && f.Value == "req789" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("expected request_id field to be extracted")
-		}
-	})
-}
-
-func TestStringValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    any
-		expected string
-	}{
-		{"nil", nil, ""},
-		{"string", "hello", "hello"},
-		{"int", 42, "42"},
-		{"bool", true, "true"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := stringValue(tt.input)
-			if result != tt.expected {
-				t.Errorf("stringValue(%v) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
 	}
 }
 

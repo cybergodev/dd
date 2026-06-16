@@ -126,7 +126,10 @@ type Logger struct {
 
 	// rateLimiter provides rate limiting to prevent log flooding.
 	// Initialized from SecurityConfig.RateLimitConfig when set.
-	rateLimiter *internal.RateLimiter
+	// Stored in an atomic pointer because SetSecurityConfig can replace it at
+	// runtime concurrently with the hot-path reads in shouldLog/logCoreWithDepth;
+	// a bare pointer field would be a data race under those concurrent accesses.
+	rateLimiter atomic.Pointer[internal.RateLimiter]
 
 	// auditLogger records security events for audit trail.
 	// Initialized from Config.Audit when set.
@@ -218,7 +221,7 @@ func newFromInternalConfig(config *internalConfig) (*Logger, error) {
 		l.securityConfig.Store(config.securityConfig.Clone())
 		// Initialize rate limiter from security config
 		if config.securityConfig.RateLimitConfig != nil {
-			l.rateLimiter = internal.NewRateLimiter(config.securityConfig.RateLimitConfig)
+			l.rateLimiter.Store(internal.NewRateLimiter(config.securityConfig.RateLimitConfig))
 		}
 	} else {
 		l.securityConfig.Store(DefaultSecurityConfig())
@@ -338,13 +341,21 @@ func (l *Logger) shouldLog(level LogLevel) bool {
 	if l.closed.Load() {
 		return false
 	}
-	// Check rate limiter before sampling
-	if l.rateLimiter != nil && l.rateLimiter.ShouldRateLimit(0) {
-		// Emit audit event for rate limit
-		if l.auditLogger != nil {
-			l.auditLogger.LogRateLimitExceeded("log message rate limited", nil)
+	// Message-count rate gate (pre-format). Fatal bypasses rate limiting so a
+	// fatal message is never silently dropped (the program must still exit).
+	// Byte limiting is applied post-format in logCoreWithDepth, where the
+	// message size is known — applying it here with size 0 would leave
+	// MaxBytesPerSecond inert.
+	if level != LevelFatal {
+		// Load the rate limiter once; it may be replaced concurrently by
+		// SetSecurityConfig, so the bare field must not be read directly.
+		if rl := l.rateLimiter.Load(); rl != nil && !rl.AllowMessage() {
+			// Emit audit event for rate limit
+			if l.auditLogger != nil {
+				l.auditLogger.LogRateLimitExceeded("log message rate limited", nil)
+			}
+			return false
 		}
-		return false
 	}
 	return l.shouldSample()
 }
@@ -706,11 +717,12 @@ func (l *Logger) SetSecurityConfig(config *SecurityConfig) {
 	if config == nil {
 		config = DefaultSecurityConfig()
 	}
-	// Update rate limiter when security config changes
+	// Update rate limiter when security config changes.
+	// Store atomically: the hot path reads rateLimiter without a lock.
 	if config.RateLimitConfig != nil {
-		l.rateLimiter = internal.NewRateLimiter(config.RateLimitConfig)
+		l.rateLimiter.Store(internal.NewRateLimiter(config.RateLimitConfig))
 	} else {
-		l.rateLimiter = nil
+		l.rateLimiter.Store(nil)
 	}
 	l.securityConfig.Store(config)
 }
@@ -785,22 +797,49 @@ func (l *Logger) processFields(fields []Field) []Field {
 		return fields
 	}
 
-	// Pre-allocate result slice to exact size needed
-	result := make([]Field, 0, len(fields))
-
-	for _, field := range fields {
+	// Filter each field using copy-on-write: allocate the result slice only when a
+	// value is actually redacted. The common case (no sensitive data present)
+	// returns the original slice with zero allocations.
+	var result []Field
+	for i, field := range fields {
 		filtered := secConfig.SensitiveFilter.FilterValueRecursive(field.Key, field.Value)
-		result = append(result, Field{
-			Key:   field.Key,
-			Value: filtered,
-		})
+		if filtered == field.Value {
+			continue // unchanged — defer allocation until a real redaction occurs
+		}
+		// First redaction: lazily allocate result and seed it with the originals.
+		if result == nil {
+			result = make([]Field, len(fields))
+			copy(result, fields)
+		}
+		result[i].Value = filtered
+		// Notify HookOnFilter subscribers (key only — never the value).
+		l.fireFilterHook(field.Key)
 		// Emit audit event for sensitive data redaction
-		if l.auditLogger != nil && filtered != field.Value {
+		if l.auditLogger != nil {
 			l.auditLogger.LogSensitiveDataRedaction("", field.Key, "field value redacted during processing")
 		}
 	}
 
+	if result == nil {
+		return fields
+	}
 	return result
+}
+
+// fireFilterHook notifies HookOnFilter subscribers that sensitive data was
+// redacted. key is the redacted field's key, or empty for message-level
+// redaction. It carries only the key (never the redacted value, to avoid
+// re-leaking the very data the filter removed). It is a no-op — and
+// allocation-free — when no hooks are registered.
+func (l *Logger) fireFilterHook(key string) {
+	if l.loadHooks() == nil {
+		return
+	}
+	hookCtx := &HookContext{Event: HookOnFilter}
+	if key != "" {
+		hookCtx.Metadata = map[string]any{"field": key}
+	}
+	_ = l.triggerHooks(context.Background(), hookCtx)
 }
 
 // applyMessageSecurity applies sensitive data filtering to the raw message (before formatting)
@@ -811,7 +850,11 @@ func (l *Logger) applyMessageSecurity(message string) string {
 	}
 
 	if secConfig.SensitiveFilter != nil && secConfig.SensitiveFilter.IsEnabled() {
-		message = secConfig.SensitiveFilter.Filter(message)
+		filtered := secConfig.SensitiveFilter.Filter(message)
+		if filtered != message {
+			l.fireFilterHook("")
+			message = filtered
+		}
 	}
 
 	return internal.SanitizeControlChars(message)
@@ -825,12 +868,24 @@ func (l *Logger) applySizeLimit(message string) string {
 	}
 
 	if secConfig.MaxMessageSize > 0 && len(message) > secConfig.MaxMessageSize {
+		const ellipsis = "..."
+		// Reserve room for the ellipsis so the result never exceeds MaxMessageSize.
+		// When the limit is too small to hold the ellipsis, hard-truncate instead.
+		limit := secConfig.MaxMessageSize
+		useEllipsis := limit >= len(ellipsis)
+		if useEllipsis {
+			limit -= len(ellipsis)
+		}
 		// Truncate at a valid UTF-8 rune boundary to avoid corrupting multi-byte characters
-		truncIdx := secConfig.MaxMessageSize
+		truncIdx := limit
 		for truncIdx > 0 && !utf8.RuneStart(message[truncIdx]) {
 			truncIdx--
 		}
-		message = message[:truncIdx] + "..."
+		if useEllipsis {
+			message = message[:truncIdx] + ellipsis
+		} else {
+			message = message[:truncIdx]
+		}
 	}
 
 	return message
@@ -959,7 +1014,7 @@ func (l *Logger) RemoveWriter(writer io.Writer) error {
 	}
 
 	writerCount := len(*currentWriters)
-	for i := 0; i < writerCount; i++ {
+	for i := range writerCount {
 		if (*currentWriters)[i] == writer {
 			// Create new slice without the removed writer
 			newWriters := make([]io.Writer, writerCount-1)
@@ -1032,8 +1087,12 @@ func (l *Logger) writeMessage(message string) {
 		if _, err := l.safeWrite(w, msgBytes); err != nil {
 			l.handleWriteError(w, err)
 		}
-		// Write newline separately to avoid allocating a combined buffer
-		if _, err := w.Write(newlineBytes); err != nil {
+		// Write newline separately to avoid allocating a combined buffer.
+		// Use safeWrite (not a raw Write) so a panicking writer is recovered
+		// here rather than unwinding into logCoreWithDepth's deferred recover —
+		// which would skip the AfterLog hook and, for Fatal, skip handleFatal()
+		// (the process would not exit on a Fatal log).
+		if _, err := l.safeWrite(w, newlineBytes); err != nil {
 			l.handleWriteError(w, err)
 		}
 		return
@@ -1269,7 +1328,7 @@ func (l *Logger) handleFatal() {
 	case <-done:
 		// Close completed successfully
 	case <-time.After(defaultFatalFlushTimeout):
-		fmt.Fprintln(os.Stderr, "[dd] Warning: logger close timed out after 5 seconds")
+		fmt.Fprintf(os.Stderr, "[dd] Warning: logger close timed out after %s\n", defaultFatalFlushTimeout)
 	}
 
 	if l.fatalHandler != nil {
@@ -1389,6 +1448,21 @@ func (l *Logger) logCoreWithDepth(level LogLevel, entry logEntry, extraDepth int
 
 	callerDepth := l.callerDepth + extraDepth
 	message := l.formatter.FormatWithMessage(level, callerDepth, entry.msg, allFields)
+
+	// Post-format byte rate gate (Fatal is exempt: it must always be written
+	// before the process exits). This is the only point where the formatted
+	// message size is known, so byte limiting (MaxBytesPerSecond) is enforced
+	// here rather than in the pre-format shouldLog gate.
+	if level != LevelFatal {
+		// Load once: rateLimiter may be swapped concurrently by SetSecurityConfig.
+		if rl := l.rateLimiter.Load(); rl != nil && !rl.AllowBytes(len(message)) {
+			if l.auditLogger != nil {
+				l.auditLogger.LogRateLimitExceeded("log message byte-limited", nil)
+			}
+			return
+		}
+	}
+
 	l.writeMessage(l.applySizeLimit(message))
 
 	// Trigger AfterLog hook (only if hooks exist)
@@ -1502,14 +1576,17 @@ func (l *Logger) ErrorWith(msg string, fields ...Field) { l.LogWith(LevelError, 
 // WARNING: defer statements will NOT execute. For graceful shutdown, use ErrorWith() with custom logic.
 func (l *Logger) FatalWith(msg string, fields ...Field) { l.LogWith(LevelFatal, msg, fields...) }
 
-// fmt package replacement methods - output via logger's writers with caller info
+// fmt package replacement methods — output via the logger's configured writers
+// with caller info, using LevelInfo for filtering and applying sensitive-data
+// filtering based on SecurityConfig.
 //
-// IMPORTANT: These Logger methods are DIFFERENT from the package-level dd.Print functions!
+// The package-level dd.Print / dd.Println / dd.Printf functions delegate to these
+// methods (Default().Print() etc.), so the two layers share identical behavior:
+// both write through the configured writers and apply security filtering.
 //
-//	logger.Print()  -> writes to configured writers with security filtering
-//	dd.Print()      -> writes directly to stdout WITHOUT security filtering (debug only)
-//
-// Always use logger.Print/Printf/Println for production logging.
+// NOTE: These methods are NOT the debug-visualization helpers logger.Text /
+// logger.JSON (and dd.Text / dd.JSON), which write directly to stdout WITHOUT
+// security filtering and must never be used with sensitive data.
 //
 // DESIGN NOTE: Print() and Println() behave identically in this library.
 // Unlike the standard fmt package where Println adds spaces and newline while Print does not,
@@ -1540,6 +1617,15 @@ func (l *Logger) Printf(format string, args ...any) {
 }
 
 // Debug utilities - Text and JSON output for debugging
+//
+// The JSON helpers below are deliberately duplicated (not delegated) from the
+// package-level dd.JSON/dd.JSONF in debug_visual.go: they resolve the caller at a
+// FIXED depth (debugVisualizationDepth = 2), so each layer must call internal.Output*
+// directly. Delegating would add a stack frame and report the wrapper, not the
+// caller. See debug_visual.go for the full rationale.
+//
+// Text/Textf do not resolve the caller; the package-level dd.Text/dd.Textf
+// delegate to these methods (see debug_visual.go), so they are not duplicated.
 
 // Text outputs data as pretty-printed format to stdout for debugging.
 //
@@ -1579,9 +1665,9 @@ var errNoInit = errors.New("")
 
 // Global logger state variables
 var (
-	defaultLogger       atomic.Pointer[Logger]
-	defaultOnce         sync.Once
-	defaultInitErr      atomic.Value // stores error from initialization (errNoInit means no error)
+	defaultLogger  atomic.Pointer[Logger]
+	defaultOnce    sync.Once
+	defaultInitErr atomic.Value // stores error from initialization (errNoInit means no error)
 
 	// backgroundCloseWg tracks goroutines spawned by SetDefault/InitDefault
 	// to close old loggers. This prevents goroutine leaks during rapid replacement.
@@ -1655,22 +1741,13 @@ func Default() *Logger {
 				fmt.Fprintf(os.Stderr, "[dd] WARNING: Default logger initialization failed: %v\n", err)
 				fmt.Fprintln(os.Stderr, "[dd] WARNING: Using fallback logger with stderr output")
 
-				// Create fallback logger using standard initialization path
-				// This ensures all future initialization logic is included
-				fallbackCfg := defaultConfig()
-				fallbackInternalCfg := &internalConfig{
-					level:          fallbackCfg.Level,
-					format:         fallbackCfg.Format,
-					timeFormat:     fallbackCfg.TimeFormat,
-					includeTime:    fallbackCfg.IncludeTime,
-					includeLevel:   fallbackCfg.IncludeLevel,
-					fullPath:       fallbackCfg.FullPath,
-					dynamicCaller:  fallbackCfg.DynamicCaller,
-					writers:        []io.Writer{os.Stderr},
-					json:           fallbackCfg.JSON,
-					securityConfig: fallbackCfg.Security,
-					fatalHandler:   fallbackCfg.FatalHandler,
-				}
+				// Create fallback logger using the same Config→internalConfig
+				// mapping as the normal build() path (toInternalConfig), then
+				// force stderr output. This guarantees the fallback carries
+				// every Config field in lock-step with the primary path rather
+				// than hand-rolling a partial internalConfig.
+				fallbackInternalCfg := defaultConfig().toInternalConfig()
+				fallbackInternalCfg.writers = []io.Writer{os.Stderr}
 				// newFromInternalConfig always returns nil error, so we can safely ignore it
 				logger, _ = newFromInternalConfig(fallbackInternalCfg)
 			}
@@ -1689,16 +1766,7 @@ func SetDefault(logger *Logger) {
 		return
 	}
 
-	oldLogger := defaultLogger.Swap(logger)
-
-	if oldLogger != nil {
-		backgroundCloseWg.Add(1)
-		go func() {
-			defer backgroundCloseWg.Done()
-			time.Sleep(defaultLoggerCloseDelay)
-			_ = oldLogger.Close()
-		}()
-	}
+	closePreviousDefault(defaultLogger.Swap(logger))
 }
 
 // InitDefault initializes the default logger with the provided configuration.
@@ -1725,14 +1793,7 @@ func InitDefault(cfg ...Config) error {
 	}
 
 	oldLogger := defaultLogger.Swap(logger)
-	if oldLogger != nil {
-		backgroundCloseWg.Add(1)
-		go func() {
-			defer backgroundCloseWg.Done()
-			time.Sleep(defaultLoggerCloseDelay)
-			_ = oldLogger.Close()
-		}()
-	}
+	closePreviousDefault(oldLogger)
 
 	// Clear any previous initialization error
 	defaultInitErr.Store(errNoInit)
@@ -1740,24 +1801,18 @@ func InitDefault(cfg ...Config) error {
 	return nil
 }
 
-// waitForBackgroundCloses waits for all background goroutines spawned by
-// SetDefault and InitDefault to close old loggers. This is used internally
-// for graceful shutdown to ensure no goroutines are leaked.
-//
-// Returns true if all goroutines completed, false if the timeout was reached.
-func waitForBackgroundCloses(timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		backgroundCloseWg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return true
-	case <-time.After(timeout):
-		return false
+// closePreviousDefault closes a previously-installed default logger after a short
+// delay on a tracked background goroutine, so in-flight writes to the old logger
+// can drain before it is torn down. A nil oldLogger is a no-op. Shared by
+// SetDefault and InitDefault.
+func closePreviousDefault(oldLogger *Logger) {
+	if oldLogger == nil {
+		return
 	}
+	backgroundCloseWg.Go(func() {
+		time.Sleep(defaultLoggerCloseDelay)
+		_ = oldLogger.Close()
+	})
 }
 
 // ============================================================================

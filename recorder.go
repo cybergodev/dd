@@ -27,7 +27,6 @@ type LoggerRecorder struct {
 	mu      sync.Mutex
 	entries []LogEntry
 	format  LogFormat
-	buf     bytes.Buffer
 }
 
 // Pre-compiled regex patterns for text log entry parsing.
@@ -303,7 +302,6 @@ func (r *LoggerRecorder) Clear() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.entries = make([]LogEntry, 0)
-	r.buf.Reset()
 }
 
 // HasEntries returns true if at least one entry has been captured.

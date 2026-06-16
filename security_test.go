@@ -516,6 +516,49 @@ func TestFilterMaxInputLength(t *testing.T) {
 	}
 }
 
+// TestFilterLargeInputBoundaryRedaction guards against the historical chunked
+// reassembly bug: when redaction changes a chunk's length ([REDACTED] differs
+// from the matched text), slicing a redacted chunk by a fixed byte offset
+// corrupted output around chunk boundaries for inputs beyond the direct-process
+// threshold. The matcher must redact every occurrence exactly once and leave no
+// fragment behind.
+func TestFilterLargeInputBoundaryRedaction(t *testing.T) {
+	filter := NewSensitiveDataFilter()
+	if err := filter.AddPattern(`LEAK-\d{12}`); err != nil {
+		t.Fatalf("AddPattern: %v", err)
+	}
+
+	secret := "LEAK-123456789012"
+
+	// Establish how a single occurrence is redacted, without assuming how many
+	// [REDACTED] markers it yields (built-in patterns may contribute).
+	single := filter.Filter(secret)
+	markersPerOccurrence := strings.Count(single, "[REDACTED]")
+	if markersPerOccurrence == 0 {
+		t.Fatalf("pattern did not redact the secret in isolation: %q -> %q", secret, single)
+	}
+
+	// ~64 KB with the secret every 4000 bytes, so it repeatedly straddles the
+	// former 4 KB chunk boundary and lives deep in the >32 KB region.
+	var sb strings.Builder
+	for sb.Len() < 64*1024 {
+		sb.WriteString(strings.Repeat("x", 4000))
+		sb.WriteString(secret)
+	}
+	large := sb.String()
+	occurrences := strings.Count(large, secret)
+
+	result := filter.Filter(large)
+
+	want := occurrences * markersPerOccurrence
+	if got := strings.Count(result, "[REDACTED]"); got != want {
+		t.Fatalf("redaction markers = %d, want %d — boundary reassembly corrupted the output", got, want)
+	}
+	if strings.Contains(result, secret) {
+		t.Error("an unredacted secret survived in the large input")
+	}
+}
+
 // ============================================================================
 // CONCURRENT ACCESS TESTS
 // ============================================================================
@@ -1380,201 +1423,106 @@ func TestTruncationWithNoSensitiveDataAtBoundary(t *testing.T) {
 // SECURITY PRESET CONFIGURATION TESTS
 // ============================================================================
 
-func TestHealthcareConfig(t *testing.T) {
-	config := HealthcareConfig()
-
-	if config == nil {
-		t.Fatal("HealthcareConfig() should not return nil")
-	}
-
-	if config.SensitiveFilter == nil {
-		t.Fatal("HealthcareConfig should have a sensitive filter")
-	}
-
-	if !config.SensitiveFilter.IsEnabled() {
-		t.Error("HealthcareConfig filter should be enabled")
-	}
-
-	// Test healthcare-specific pattern detection
-	tests := []struct {
+func TestSecurityPresetConfigs(t *testing.T) {
+	// One table-driven test replacing TestHealthcareConfig / TestFinancialConfig
+	// / TestGovernmentConfig, which each duplicated the same "assert preset
+	// non-nil + filter enabled, then range inputs and assert redaction" shape.
+	type filterCase struct {
 		name             string
 		input            string
 		shouldNotContain string
-	}{
-		// NPI with context
-		{
-			name:             "NPI with context",
-			input:            "provider_id=1234567890",
-			shouldNotContain: "1234567890",
-		},
-		// Medical Record Number with context
-		{
-			name:             "MRN with context",
-			input:            "mrn=PATIENT123456",
-			shouldNotContain: "PATIENT123456",
-		},
-		// Patient ID with context
-		{
-			name:             "Patient ID with context",
-			input:            "patient_id=AB12345678",
-			shouldNotContain: "AB12345678",
-		},
-		// Standard sensitive data should also be filtered
-		{
-			name:             "password in healthcare",
-			input:            "password=healthsecret123",
-			shouldNotContain: "healthsecret123",
-		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := config.SensitiveFilter.Filter(tt.input)
-			if strings.Contains(result, tt.shouldNotContain) {
-				t.Errorf("HealthcareConfig should filter %q, got: %s", tt.shouldNotContain, result)
+	presets := []struct {
+		name   string
+		config *SecurityConfig
+		cases  []filterCase
+	}{
+		{"HealthcareConfig", HealthcareConfig(), []filterCase{
+			{"NPI with context", "provider_id=1234567890", "1234567890"},
+			{"MRN with context", "mrn=PATIENT123456", "PATIENT123456"},
+			{"Patient ID with context", "patient_id=AB12345678", "AB12345678"},
+			{"password in healthcare", "password=healthsecret123", "healthsecret123"},
+		}},
+		{"FinancialConfig", FinancialConfig(), []filterCase{
+			{"CVV with context", "cvv=123", "123"},
+			{"account number with context", "account_number=12345678901", "12345678901"},
+			{"bank account with context", "bank_account=98765432100", "98765432100"},
+			{"credit card in financial", "card=4532-0151-1283-0366", "4532-0151-1283-0366"},
+			{"password in financial", "password=financesecret", "financesecret"},
+		}},
+		{"GovernmentConfig", GovernmentConfig(), []filterCase{
+			{"passport with context", "passport_number=123456789", "123456789"},
+			{"driver license with context", "driver_license=AB1234567", "AB1234567"},
+			{"case number with context", "case_number=CASE12345", "CASE12345"},
+			{"password in government", "password=govsecret", "govsecret"},
+		}},
+	}
+
+	for _, p := range presets {
+		t.Run(p.name, func(t *testing.T) {
+			if p.config == nil {
+				t.Fatalf("%s should not return nil", p.name)
+			}
+			if p.config.SensitiveFilter == nil {
+				t.Fatalf("%s should have a sensitive filter", p.name)
+			}
+			if !p.config.SensitiveFilter.IsEnabled() {
+				t.Errorf("%s filter should be enabled", p.name)
+			}
+
+			for _, c := range p.cases {
+				t.Run(c.name, func(t *testing.T) {
+					result := p.config.SensitiveFilter.Filter(c.input)
+					if strings.Contains(result, c.shouldNotContain) {
+						t.Errorf("%s should filter %q, got: %s", p.name, c.shouldNotContain, result)
+					}
+				})
 			}
 		})
 	}
 }
 
-func TestFinancialConfig(t *testing.T) {
-	config := FinancialConfig()
-
-	if config == nil {
-		t.Fatal("FinancialConfig() should not return nil")
-	}
-
-	if config.SensitiveFilter == nil {
-		t.Fatal("FinancialConfig should have a sensitive filter")
-	}
-
-	if !config.SensitiveFilter.IsEnabled() {
-		t.Error("FinancialConfig filter should be enabled")
-	}
-
-	// Test financial-specific pattern detection
-	tests := []struct {
-		name             string
-		input            string
-		shouldNotContain string
+func TestSecurityConfigClone(t *testing.T) {
+	// Merges the former boundary_test.go TestSecurityConfigClone (scalar-field
+	// independence on DefaultSecurityConfig) and the former
+	// TestSecurityConfigCloning (filter independence on HealthcareConfig) into
+	// one parameterized check across every preset: Clone() must deep-copy both
+	// the scalar fields and the SensitiveFilter.
+	presets := []struct {
+		name   string
+		config *SecurityConfig
 	}{
-		// CVV with context
-		{
-			name:             "CVV with context",
-			input:            "cvv=123",
-			shouldNotContain: "123",
-		},
-		// Account number with context
-		{
-			name:             "account number with context",
-			input:            "account_number=12345678901",
-			shouldNotContain: "12345678901",
-		},
-		// Bank account with context
-		{
-			name:             "bank account with context",
-			input:            "bank_account=98765432100",
-			shouldNotContain: "98765432100",
-		},
-		// Standard credit card
-		{
-			name:             "credit card in financial",
-			input:            "card=4532-0151-1283-0366",
-			shouldNotContain: "4532-0151-1283-0366",
-		},
-		// Standard sensitive data should also be filtered
-		{
-			name:             "password in financial",
-			input:            "password=financesecret",
-			shouldNotContain: "financesecret",
-		},
+		{"DefaultSecurityConfig", DefaultSecurityConfig()},
+		{"HealthcareConfig", HealthcareConfig()},
+		{"FinancialConfig", FinancialConfig()},
+		{"GovernmentConfig", GovernmentConfig()},
 	}
+	for _, p := range presets {
+		t.Run(p.name, func(t *testing.T) {
+			clone := p.config.Clone()
+			if clone == nil {
+				t.Fatal("Clone should not return nil")
+			}
+			if clone.SensitiveFilter == nil {
+				t.Fatal("Clone should preserve the sensitive filter")
+			}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := config.SensitiveFilter.Filter(tt.input)
-			if strings.Contains(result, tt.shouldNotContain) {
-				t.Errorf("FinancialConfig should filter %q, got: %s", tt.shouldNotContain, result)
+			// Scalar-field independence.
+			originalMax := p.config.MaxMessageSize
+			clone.MaxMessageSize = 999
+			if p.config.MaxMessageSize != originalMax {
+				t.Error("Modifying clone's scalar field should not affect original")
+			}
+
+			// Filter independence: adding a pattern to the clone must not change
+			// the original's pattern count.
+			originalCount := p.config.SensitiveFilter.PatternCount()
+			clone.SensitiveFilter.AddPattern(`test_pattern_clone=\w+`)
+			if p.config.SensitiveFilter.PatternCount() != originalCount {
+				t.Error("Modifying clone's filter should not affect original")
 			}
 		})
-	}
-}
-
-func TestGovernmentConfig(t *testing.T) {
-	config := GovernmentConfig()
-
-	if config == nil {
-		t.Fatal("GovernmentConfig() should not return nil")
-	}
-
-	if config.SensitiveFilter == nil {
-		t.Fatal("GovernmentConfig should have a sensitive filter")
-	}
-
-	if !config.SensitiveFilter.IsEnabled() {
-		t.Error("GovernmentConfig filter should be enabled")
-	}
-
-	// Test government-specific pattern detection
-	tests := []struct {
-		name             string
-		input            string
-		shouldNotContain string
-	}{
-		// Passport number with context
-		{
-			name:             "passport with context",
-			input:            "passport_number=123456789",
-			shouldNotContain: "123456789",
-		},
-		// Driver's license with context
-		{
-			name:             "driver license with context",
-			input:            "driver_license=AB1234567",
-			shouldNotContain: "AB1234567",
-		},
-		// Case number with context
-		{
-			name:             "case number with context",
-			input:            "case_number=CASE12345",
-			shouldNotContain: "CASE12345",
-		},
-		// Standard sensitive data should also be filtered
-		{
-			name:             "password in government",
-			input:            "password=govsecret",
-			shouldNotContain: "govsecret",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := config.SensitiveFilter.Filter(tt.input)
-			if strings.Contains(result, tt.shouldNotContain) {
-				t.Errorf("GovernmentConfig should filter %q, got: %s", tt.shouldNotContain, result)
-			}
-		})
-	}
-}
-
-func TestSecurityConfigCloning(t *testing.T) {
-	original := HealthcareConfig()
-	clone := original.Clone()
-
-	if clone == nil {
-		t.Fatal("Clone should not return nil")
-	}
-
-	if clone.SensitiveFilter == nil {
-		t.Fatal("Cloned config should have a sensitive filter")
-	}
-
-	// Modify clone
-	clone.SensitiveFilter.AddPattern(`test_pattern=\w+`)
-
-	// Original should not be affected
-	if original.SensitiveFilter.PatternCount() == clone.SensitiveFilter.PatternCount() {
-		t.Error("Modifying clone should not affect original")
 	}
 }
 

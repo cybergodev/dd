@@ -92,7 +92,7 @@ const (
 	// DefaultMaxBackups is the default maximum number of rotated backup files to retain.
 	DefaultMaxBackups = 10
 	// DefaultMaxAge is the default maximum age for backup files before cleanup.
-	DefaultMaxAge = 30 * 24 * time.Hour
+	DefaultMaxAge       = 30 * 24 * time.Hour
 	defaultBufferSizeKB = 1
 	maxBufferSizeKB     = 10 * 1024
 	autoFlushThreshold  = 2
@@ -128,11 +128,8 @@ const (
 	filterMediumInputThreshold = 100 * fastPathThreshold // 10KB
 
 	// filterDirectProcessThreshold is the maximum input size for direct processing
-	// without chunking during timeout-protected filtering.
+	// without match-walking during timeout-protected filtering.
 	filterDirectProcessThreshold = 32 * 1024 // 32KB
-
-	// filterChunkSize is the size of chunks for processing large inputs.
-	filterChunkSize = 4096 // 4KB
 )
 
 const (
@@ -165,11 +162,6 @@ const (
 	// are still detected and redacted.
 	// Set to 512 to cover most sensitive data patterns (credit cards, SSNs, API keys, etc.)
 	boundaryCheckSize = 512
-
-	// chunkOverlapSize is the overlap size between chunks during chunked filtering.
-	// This ensures sensitive data patterns that span chunk boundaries are still detected.
-	// Must be >= maximum expected sensitive pattern length.
-	chunkOverlapSize = 512
 )
 
 const (

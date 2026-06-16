@@ -617,10 +617,10 @@ func TestFieldConstructorBoundaryValues(t *testing.T) {
 	logger, _ := New(cfg)
 
 	tests := []struct {
-		name   string
-		field  Field
-		log    func()
-		check  func(output string) bool
+		name  string
+		field Field
+		log   func()
+		check func(output string) bool
 	}{
 		{
 			name:  "zero int",
@@ -710,9 +710,9 @@ func TestNewLoggerVariations(t *testing.T) {
 
 func TestErrorIsAllSentinels(t *testing.T) {
 	sentinels := []struct {
-		name  string
-		err   error
-		code  string
+		name string
+		err  error
+		code string
 	}{
 		{"ErrNilConfig", ErrNilConfig, errCodeNilConfig},
 		{"ErrNilWriter", ErrNilWriter, errCodeNilWriter},
@@ -858,11 +858,11 @@ func TestTimeFormatValidation(t *testing.T) {
 
 func TestApplyFileWriterDefaults(t *testing.T) {
 	tests := []struct {
-		name              string
-		config            FileWriterConfig
-		wantMaxSizeMB     int
-		wantMaxBackups    int
-		wantMaxAge        time.Duration
+		name           string
+		config         FileWriterConfig
+		wantMaxSizeMB  int
+		wantMaxBackups int
+		wantMaxAge     time.Duration
 	}{
 		{
 			name:           "zero values use full defaults",
@@ -1015,24 +1015,5 @@ func TestConfigCloneNilReceiver(t *testing.T) {
 	cloned := nilCfg.Clone()
 	if cloned.Level != 0 {
 		t.Error("Clone of nil *Config should return zero-value Config")
-	}
-}
-
-// ============================================================================
-// BOUNDARY: SECURITYCONFIG CLONE
-// ============================================================================
-
-func TestSecurityConfigClone(t *testing.T) {
-	original := DefaultSecurityConfig()
-	cloned := original.Clone()
-
-	if cloned.MaxMessageSize != original.MaxMessageSize {
-		t.Error("Clone should preserve MaxMessageSize")
-	}
-
-	// Modify clone should not affect original
-	cloned.MaxMessageSize = 999
-	if original.MaxMessageSize == 999 {
-		t.Error("Modifying clone should not affect original")
 	}
 }

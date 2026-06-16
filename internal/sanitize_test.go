@@ -101,7 +101,7 @@ func TestSanitizeANSIEscapePreservesContent(t *testing.T) {
 	}
 }
 
-func TestSanitizeUnicodeControlChars(t *testing.T) {
+func TestSanitizeControlChars_Unicode(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -139,63 +139,6 @@ func TestSanitizeUnicodeControlChars(t *testing.T) {
 			result := SanitizeControlChars(tt.input)
 			if result != tt.expected {
 				t.Errorf("SanitizeControlChars(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestSanitizeUnicodeControlCharsFunction(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{"ZWSP removed", "hello\u200Bworld", "helloworld"},
-		{"BOM removed", "\uFEFFhello", "hello"},
-		{"mixed normal", "hello\u200Bworld\uFEFF", "helloworld"},
-		{"no control chars", "normal text", "normal text"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := SanitizeUnicodeControlChars(tt.input)
-			if result != tt.expected {
-				t.Errorf("SanitizeUnicodeControlChars(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestIsUnicodeControlRune(t *testing.T) {
-	tests := []struct {
-		name     string
-		r        rune
-		expected bool
-	}{
-		{"ZWSP", '\u200B', true},
-		{"ZWNJ", '\u200C', true},
-		{"ZWJ", '\u200D', true},
-		{"LRM", '\u200E', true},
-		{"RLM", '\u200F', true},
-		{"LineSep", '\u2028', true},
-		{"ParaSep", '\u2029', true},
-		{"LRE", '\u202A', true},
-		{"RLE", '\u202B', true},
-		{"PDF", '\u202C', true},
-		{"LRO", '\u202D', true},
-		{"RLO", '\u202E', true},
-		{"BOM", '\uFEFF', true},
-		{"normal letter", 'a', false},
-		{"normal space", ' ', false},
-		{"japanese", '日', false},
-		{"emoji", '😀', false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isUnicodeControlRune(tt.r)
-			if result != tt.expected {
-				t.Errorf("isUnicodeControlRune(%U) = %v, want %v", tt.r, result, tt.expected)
 			}
 		})
 	}

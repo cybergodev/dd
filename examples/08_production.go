@@ -287,37 +287,39 @@ func section5Performance() {
 	fmt.Println()
 }
 
-// Section 6: Caller detection
+// Section 6: Caller detection configuration
+//
+// DynamicCaller reports the user's call site by skipping dd-internal frames;
+// FullPath reports the absolute file path instead of the base name. The exact
+// frame reported depends on the call stack and build-time inlining.
 func section6CallerDetection() {
 	fmt.Println("6. Caller Detection")
 	fmt.Println("--------------------")
 
-	// No caller (default)
+	// Default caller behavior
 	logger1, _ := dd.New()
 	defer logger1.Close()
-	logger1.Info("No caller info")
+	logger1.Info("Default caller configuration")
 
-	// Dynamic caller (skips wrapper functions)
+	// DynamicCaller: skip internal frames toward the user call site
 	cfg := dd.DefaultConfig()
 	cfg.DynamicCaller = true
 
 	logger2, _ := dd.New(cfg)
 	defer logger2.Close()
+	logger2.Info("DynamicCaller enabled")
 
-	// Direct call
-	logger2.Info("Dynamic caller: shows this line")
-
-	// Through wrapper
+	// Through a wrapper function
 	wrapperLog := func(msg string) {
 		logger2.Info(msg)
 	}
-	wrapperLog("Dynamic caller: shows wrapper call site, not internal")
+	wrapperLog("DynamicCaller through a wrapper")
 
-	// Full path
+	// FullPath: absolute path instead of base name
 	cfg.FullPath = true
 	logger3, _ := dd.New(cfg)
 	defer logger3.Close()
-	logger3.Info("Full path in caller info")
+	logger3.Info("FullPath enabled")
 
 	fmt.Println()
 }

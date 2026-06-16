@@ -904,24 +904,12 @@ func TestFieldValidation(t *testing.T) {
 // ============================================================================
 
 func TestFieldValidationMode_String(t *testing.T) {
-	tests := []struct {
-		mode     FieldValidationMode
-		expected string
-	}{
+	assertEnumStringer(t, "FieldValidationMode", []stringerCase[FieldValidationMode]{
 		{FieldValidationNone, "none"},
 		{FieldValidationWarn, "warn"},
 		{FieldValidationStrict, "strict"},
 		{FieldValidationMode(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := tt.mode.String()
-			if result != tt.expected {
-				t.Errorf("FieldValidationMode(%d).String() = %q, want %q", tt.mode, result, tt.expected)
-			}
-		})
-	}
+	}, FieldValidationMode.String)
 }
 
 // ============================================================================
@@ -929,26 +917,14 @@ func TestFieldValidationMode_String(t *testing.T) {
 // ============================================================================
 
 func TestFieldNamingConvention_String(t *testing.T) {
-	tests := []struct {
-		convention FieldNamingConvention
-		expected   string
-	}{
+	assertEnumStringer(t, "FieldNamingConvention", []stringerCase[FieldNamingConvention]{
 		{NamingConventionAny, "any"},
 		{NamingConventionSnakeCase, "snake_case"},
 		{NamingConventionCamelCase, "camelCase"},
 		{NamingConventionPascalCase, "PascalCase"},
 		{NamingConventionKebabCase, "kebab-case"},
 		{FieldNamingConvention(99), "unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			result := tt.convention.String()
-			if result != tt.expected {
-				t.Errorf("FieldNamingConvention(%d).String() = %q, want %q", tt.convention, result, tt.expected)
-			}
-		})
-	}
+	}, FieldNamingConvention.String)
 }
 
 // ============================================================================
@@ -1032,140 +1008,91 @@ func TestValidateFieldKey(t *testing.T) {
 	})
 }
 
-func TestValidateFieldKey_SnakeCase(t *testing.T) {
-	cfg := StrictSnakeCaseConfig()
-
-	tests := []struct {
+func TestValidateFieldKey_Conventions(t *testing.T) {
+	// One table-driven test replacing the four per-convention tests that each
+	// duplicated the same "build cfg, range keys, call ValidateFieldKey, assert"
+	// loop. Each convention keeps its original config and key/expectation rows.
+	type keyCase struct {
 		key       string
 		shouldErr bool
+	}
+
+	cases := []struct {
+		name string
+		cfg  *FieldValidationConfig
+		keys []keyCase
 	}{
-		{"user_id", false},
-		{"first_name", false},
-		{"created_at", false},
-		{"user_id_123", false},
-		{"UserID", true},    // uppercase not allowed
-		{"userId", true},    // camelCase not allowed
-		{"user-id", true},   // hyphen not allowed
-		{"_user_id", false}, // allowed due to _id suffix being a common abbreviation
-		{"user_id_", true},  // trailing underscore not allowed
-		{"user__id", false}, // allowed due to _id suffix being a common abbreviation
-		{"123_user", true},  // leading digit not allowed
-		{"", true},          // empty not allowed
+		{"snake_case", StrictSnakeCaseConfig(), []keyCase{
+			{"user_id", false},
+			{"first_name", false},
+			{"created_at", false},
+			{"user_id_123", false},
+			{"UserID", true},    // uppercase not allowed
+			{"userId", true},    // camelCase not allowed
+			{"user-id", true},   // hyphen not allowed
+			{"_user_id", false}, // allowed due to _id suffix being a common abbreviation
+			{"user_id_", true},  // trailing underscore not allowed
+			{"user__id", false}, // allowed due to _id suffix being a common abbreviation
+			{"123_user", true},  // leading digit not allowed
+			{"", true},          // empty not allowed
+		}},
+		{"camelCase", StrictCamelCaseConfig(), []keyCase{
+			{"userId", false},
+			{"firstName", false},
+			{"createdAt", false},
+			{"userID123", false},
+			{"user_id", false}, // allowed due to _id suffix being a common abbreviation
+			{"UserId", true},   // PascalCase not allowed (must start lowercase)
+			{"user-id", true},  // hyphen not allowed
+			{"123user", true},  // leading digit not allowed in camelCase
+			{"", true},         // empty not allowed
+		}},
+		{"PascalCase", &FieldValidationConfig{
+			Mode:                     FieldValidationStrict,
+			Convention:               NamingConventionPascalCase,
+			AllowCommonAbbreviations: false,
+			EnableSecurityValidation: false,
+		}, []keyCase{
+			{"UserId", false},
+			{"FirstName", false},
+			{"CreatedAt", false},
+			{"UserID123", false},
+			{"userId", true},  // must start uppercase
+			{"user_id", true}, // underscore not allowed
+			{"User-Id", true}, // hyphen not allowed
+			{"", true},        // empty not allowed
+		}},
+		{"kebab-case", &FieldValidationConfig{
+			Mode:                     FieldValidationStrict,
+			Convention:               NamingConventionKebabCase,
+			AllowCommonAbbreviations: false,
+			EnableSecurityValidation: false,
+		}, []keyCase{
+			{"user-id", false},
+			{"first-name", false},
+			{"created-at", false},
+			{"user-id-123", false},
+			{"UserID", true},   // uppercase not allowed
+			{"userId", true},   // camelCase not allowed
+			{"user_id", true},  // underscore not allowed
+			{"-user-id", true}, // leading hyphen not allowed
+			{"user-id-", true}, // trailing hyphen not allowed
+			{"user--id", true}, // consecutive hyphens not allowed
+			{"123-user", true}, // leading digit not allowed
+			{"", true},         // empty not allowed
+		}},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			err := cfg.ValidateFieldKey(tt.key)
-			if tt.shouldErr && err == nil {
-				t.Errorf("Expected error for key %q", tt.key)
-			}
-			if !tt.shouldErr && err != nil {
-				t.Errorf("Unexpected error for key %q: %v", tt.key, err)
-			}
-		})
-	}
-}
-
-func TestValidateFieldKey_CamelCase(t *testing.T) {
-	cfg := StrictCamelCaseConfig()
-
-	tests := []struct {
-		key       string
-		shouldErr bool
-	}{
-		{"userId", false},
-		{"firstName", false},
-		{"createdAt", false},
-		{"userID123", false},
-		{"user_id", false}, // allowed due to _id suffix being a common abbreviation
-		{"UserId", true},   // PascalCase not allowed (must start lowercase)
-		{"user-id", true},  // hyphen not allowed
-		{"123user", true},  // leading digit allowed in camelCase but starts with digit
-		{"", true},         // empty not allowed
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			err := cfg.ValidateFieldKey(tt.key)
-			if tt.shouldErr && err == nil {
-				t.Errorf("Expected error for key %q", tt.key)
-			}
-			if !tt.shouldErr && err != nil {
-				t.Errorf("Unexpected error for key %q: %v", tt.key, err)
-			}
-		})
-	}
-}
-
-func TestValidateFieldKey_PascalCase(t *testing.T) {
-	cfg := &FieldValidationConfig{
-		Mode:                     FieldValidationStrict,
-		Convention:               NamingConventionPascalCase,
-		AllowCommonAbbreviations: false,
-		EnableSecurityValidation: false,
-	}
-
-	tests := []struct {
-		key       string
-		shouldErr bool
-	}{
-		{"UserId", false},
-		{"FirstName", false},
-		{"CreatedAt", false},
-		{"UserID123", false},
-		{"userId", true},  // must start uppercase
-		{"user_id", true}, // underscore not allowed
-		{"User-Id", true}, // hyphen not allowed
-		{"", true},        // empty not allowed
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			err := cfg.ValidateFieldKey(tt.key)
-			if tt.shouldErr && err == nil {
-				t.Errorf("Expected error for key %q", tt.key)
-			}
-			if !tt.shouldErr && err != nil {
-				t.Errorf("Unexpected error for key %q: %v", tt.key, err)
-			}
-		})
-	}
-}
-
-func TestValidateFieldKey_KebabCase(t *testing.T) {
-	cfg := &FieldValidationConfig{
-		Mode:                     FieldValidationStrict,
-		Convention:               NamingConventionKebabCase,
-		AllowCommonAbbreviations: false,
-		EnableSecurityValidation: false,
-	}
-
-	tests := []struct {
-		key       string
-		shouldErr bool
-	}{
-		{"user-id", false},
-		{"first-name", false},
-		{"created-at", false},
-		{"user-id-123", false},
-		{"UserID", true},   // uppercase not allowed
-		{"userId", true},   // camelCase not allowed
-		{"user_id", true},  // underscore not allowed
-		{"-user-id", true}, // leading hyphen not allowed
-		{"user-id-", true}, // trailing hyphen not allowed
-		{"user--id", true}, // consecutive hyphens not allowed
-		{"123-user", true}, // leading digit not allowed
-		{"", true},         // empty not allowed
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.key, func(t *testing.T) {
-			err := cfg.ValidateFieldKey(tt.key)
-			if tt.shouldErr && err == nil {
-				t.Errorf("Expected error for key %q", tt.key)
-			}
-			if !tt.shouldErr && err != nil {
-				t.Errorf("Unexpected error for key %q: %v", tt.key, err)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range c.keys {
+				err := c.cfg.ValidateFieldKey(k.key)
+				switch {
+				case k.shouldErr && err == nil:
+					t.Errorf("Expected error for key %q", k.key)
+				case !k.shouldErr && err != nil:
+					t.Errorf("Unexpected error for key %q: %v", k.key, err)
+				}
 			}
 		})
 	}

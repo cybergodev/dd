@@ -396,8 +396,8 @@ func writeJSONString(buf *bytes.Buffer, s string) {
 		default:
 			if c < 0x20 {
 				buf.WriteString(`\u00`)
-				buf.WriteByte(hexChars[c>>4])
-				buf.WriteByte(hexChars[c&0xf])
+				buf.WriteByte(HexChars[c>>4])
+				buf.WriteByte(HexChars[c&0xf])
 			} else {
 				buf.WriteByte(c)
 			}
@@ -405,9 +405,6 @@ func writeJSONString(buf *bytes.Buffer, s string) {
 	}
 	buf.WriteByte('"')
 }
-
-// hexChars lookup table for hex encoding
-var hexChars = []byte("0123456789abcdef")
 
 // formatJSONStandard uses the standard library encoder.
 func formatJSONStandard(entry map[string]any, opts *JSONOptions) string {

@@ -11,10 +11,7 @@ import (
 )
 
 func TestAuditEventType_String(t *testing.T) {
-	tests := []struct {
-		eventType AuditEventType
-		expected  string
-	}{
+	assertEnumStringer(t, "AuditEventType", []stringerCase[AuditEventType]{
 		{AuditEventSensitiveDataRedacted, "SENSITIVE_DATA_REDACTED"},
 		{AuditEventRateLimitExceeded, "RATE_LIMIT_EXCEEDED"},
 		{AuditEventReDoSAttempt, "REDOS_ATTEMPT"},
@@ -27,36 +24,17 @@ func TestAuditEventType_String(t *testing.T) {
 		{AuditEventOverlongEncoding, "OVERLONG_ENCODING"},
 		{AuditEventHomographAttack, "HOMOGRAPH_ATTACK"},
 		{AuditEventType(999), "UNKNOWN"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			if got := tt.eventType.String(); got != tt.expected {
-				t.Errorf("String() = %q, want %q", got, tt.expected)
-			}
-		})
-	}
+	}, AuditEventType.String)
 }
 
 func TestAuditSeverity_String(t *testing.T) {
-	tests := []struct {
-		severity AuditSeverity
-		expected string
-	}{
+	assertEnumStringer(t, "AuditSeverity", []stringerCase[AuditSeverity]{
 		{AuditSeverityInfo, "INFO"},
 		{AuditSeverityWarning, "WARNING"},
 		{AuditSeverityError, "ERROR"},
 		{AuditSeverityCritical, "CRITICAL"},
 		{AuditSeverity(999), "UNKNOWN"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			if got := tt.severity.String(); got != tt.expected {
-				t.Errorf("String() = %q, want %q", got, tt.expected)
-			}
-		})
-	}
+	}, AuditSeverity.String)
 }
 
 func TestAuditSeverity_MarshalJSON(t *testing.T) {

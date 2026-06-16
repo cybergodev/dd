@@ -4,6 +4,44 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.3.2 - Hot-Path Performance & Redaction Safety (2026-06-16)
+
+### Fixed
+- Sensitive-data filter cache was dead in production — `SensitiveDataFilter.clone()` never initialized it, so every flagged message re-ran all 67 patterns; caching is now restored with no security boundary weakened
+- Byte rate limiting (`MaxBytesPerSecond`) now actually takes effect — the hot path previously skipped the byte gate
+- Fatal-level messages now bypass rate limiting so a fatal log is never silently dropped and the process always exits
+- Large-input (>32 KB) sensitive-data redaction no longer corrupts output at chunk boundaries (single-scan `filterWithContext`)
+- Data race on the rate limiter under concurrent `SetSecurityConfig` — the field is now an `atomic.Pointer`
+- `sync.WaitGroup` Add-after-Wait race in `FileWriter.Close` during concurrent rotation
+- `HookOnFilter` hooks now fire (previously registerable but silent no-ops); they carry only the field key, never the redacted value
+- `FileWriter.SetOnRotateCallback` no longer races active rotations (callback read/written under the lock)
+- `BufferedWriter.Write` returns `os.ErrClosed` after `Close()`, matching `FileWriter`
+- Single-writer newline write routed through `safeWrite`, preserving the Fatal-exit and `AfterLog` hook guarantees
+- `applySizeLimit` output no longer exceeds `MaxMessageSize`
+- `SecureBuffer.Grow` no longer panics when `len < cap`
+- `IntegrityConfig.MarshalJSON` handles a nil receiver without panicking
+- Rate-limit byte gate rolls back the message-count slot on rejection (dropped messages no longer leak the quota)
+- ReDoS detection no longer mis-flags bounded `{n,m}` quantifier ranges
+- Multi-byte leading-rune handling in camelCase/PascalCase field-key validation
+
+### Performance
+- Caller resolution captures the stack once per log line: `SimpleLogging` −59%, `EndToEndText/Simple` −63%, `JSONFormat` −43% ns/op; allocations unchanged on the fieldless path
+- Filter cache restored + `MatchString` gate before `ReplaceAllString`: digit-bearing messages −95% B/op and −97% allocs/op; filtered JSON −85% B/op, −97% allocs/op
+- `processFields` is copy-on-write — no field-slice allocation when nothing is redacted (the common case)
+
+### Changed
+- `Config.Clone()` delegates the Audit copy to `AuditConfig.Clone()` (removes drift risk if `AuditConfig` gains a field)
+- Package-level `dd.Text`/`dd.Textf` delegate to `Default()` — byte-identical behavior, removes the only unjustified duplication in the two-layer API
+- Corrected Print-family and Text/JSON doc comments to distinguish filtered vs. raw-stdout behavior
+- doc.go graceful-shutdown example now compiles; README perf-table corrected (Structured logging 5→4 allocs/op)
+- Internal cleanup: consolidated field-validation case helpers, shared `callerForPC`, unified hex lookup table, removed a dead rate-limiter field
+
+### Removed
+- Unused `SanitizeUnicodeControlChars` and its helpers (`internal/` package — not a public-API change)
+- Dead `LoggerRecorder.buf` field and other unused internal symbols / test-only helpers
+
+---
+
 ## v1.3.1 - Production Safety & Quality Fixes (2026-05-07)
 
 ### Fixed
@@ -299,7 +337,7 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
-## v1.1.1 - Critical Bug Fixes & API Refinement (2025-01-22)
+## v1.1.1 - Critical Bug Fixes & API Refinement (2026-01-22)
 
 ### Fixed
 - **Race Condition**: Fixed concurrent initialization issue in Default() logger using sync.Once pattern

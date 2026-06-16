@@ -4,7 +4,6 @@ package main
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/cybergodev/dd"
 )
@@ -121,23 +120,19 @@ func section4FilterStats() {
 	fmt.Println("4. Filter Statistics")
 	fmt.Println("---------------------")
 
-	// Create filter and get stats
+	// A SensitiveDataFilter tracks how many messages it filtered and how many
+	// values it redacted. When a filter is attached via SecurityConfig, the
+	// logger clones it (defensive copy), so the logger's internal counters are
+	// not visible on this instance. To observe statistics, drive the filter
+	// directly with Filter().
 	filter := dd.NewSensitiveDataFilter()
 
-	cfg := dd.DefaultConfig()
-	cfg.Security = &dd.SecurityConfig{
-		SensitiveFilter: filter,
-	}
-
-	logger, _ := dd.New(cfg)
-	defer logger.Close()
-
-	// Generate some filtered logs
+	// Apply filtering directly to accumulate real statistics
 	for i := 0; i < 10; i++ {
-		logger.Infof("password=secret%d", i)
+		_ = filter.Filter(fmt.Sprintf("password=secret%d", i)) // redacted in place
 	}
 
-	// Get filter statistics
+	// Read accumulated statistics
 	stats := filter.GetFilterStats()
 	fmt.Printf("  Pattern count: %d\n", stats.PatternCount)
 	fmt.Printf("  Total filtered: %d\n", stats.TotalFiltered)
@@ -145,21 +140,15 @@ func section4FilterStats() {
 	fmt.Printf("  Average latency: %v\n", stats.AverageLatency)
 	fmt.Printf("  Enabled: %v\n", stats.Enabled)
 
-	// Disable filtering temporarily
+	// Temporarily disable filtering (input passes through unchanged)
 	filter.Disable()
-	logger.Info("password=visible_now") // Not filtered
+	fmt.Printf("  While disabled: %q\n", filter.Filter("password=visible_now"))
 
-	// Re-enable
+	// Re-enable filtering
 	filter.Enable()
 
-	// Monitor active goroutines (for high-concurrency scenarios)
-	activeGoroutines := filter.ActiveGoroutineCount()
-	fmt.Printf("  Active filter goroutines: %d\n", activeGoroutines)
-
-	// Message size limit
-	fmt.Println("\n  Message size limit (default 5MB):")
-	largeMsg := strings.Repeat("A", 100)
-	logger.Info(largeMsg[:50] + "... (truncated in output)")
+	// Monitor active background goroutines (relevant in high-concurrency scenarios)
+	fmt.Printf("  Active filter goroutines: %d\n", filter.ActiveGoroutineCount())
 
 	fmt.Println()
 }
@@ -183,11 +172,9 @@ func section5DisableFiltering() {
 	// - dd.FinancialConfig()    — PCI-DSS: SWIFT/BIC, IBAN, CVV, account numbers
 	// - dd.GovernmentConfig()   — PII: passport numbers, driver's license, SSN variants
 
-	healthcareLogger, _ := func() (*dd.Logger, error) {
-		c := dd.DefaultConfig()
-		c.Security = dd.HealthcareConfig()
-		return dd.New(c)
-	}()
+	healthcareCfg := dd.DefaultConfig()
+	healthcareCfg.Security = dd.HealthcareConfig()
+	healthcareLogger, _ := dd.New(healthcareCfg)
 	if healthcareLogger != nil {
 		defer healthcareLogger.Close()
 		healthcareLogger.Info("patient_id=MRN-123456") // Filtered by healthcare patterns

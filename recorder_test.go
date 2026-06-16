@@ -4,36 +4,6 @@ import (
 	"testing"
 )
 
-func TestLoggerRecorder_NewLoggerRecorder(t *testing.T) {
-	recorder := NewLoggerRecorder()
-	if recorder == nil {
-		t.Fatal("NewLoggerRecorder returned nil")
-	}
-	if recorder.Count() != 0 {
-		t.Errorf("Expected 0 entries, got %d", recorder.Count())
-	}
-}
-
-func TestLoggerRecorder_NewLogger(t *testing.T) {
-	recorder := NewLoggerRecorder()
-	logger, _ := recorder.NewLogger()
-
-	logger.Info("test message")
-
-	if !recorder.HasEntries() {
-		t.Error("Expected at least one entry")
-	}
-
-	entries := recorder.Entries()
-	if len(entries) != 1 {
-		t.Errorf("Expected 1 entry, got %d", len(entries))
-	}
-
-	if entries[0].Level != LevelInfo {
-		t.Errorf("Expected level %v, got %v", LevelInfo, entries[0].Level)
-	}
-}
-
 func TestLoggerRecorder_Levels(t *testing.T) {
 	recorder := NewLoggerRecorder()
 

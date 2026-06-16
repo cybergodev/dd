@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/cybergodev/dd/internal"
 )
@@ -98,7 +99,10 @@ type FieldValidationConfig struct {
 
 	// EnableSecurityValidation enables strict security validation including
 	// Log4Shell detection, homograph attack detection, and overlong UTF-8 checks.
-	// Default: true when Mode is not FieldValidationNone
+	// It only takes effect when Mode is not FieldValidationNone, since None
+	// short-circuits before security checks run. Note: the zero value is false,
+	// so a literal FieldValidationConfig{} silently disables security validation;
+	// prefer DefaultFieldValidationConfig() (which sets this true).
 	EnableSecurityValidation bool
 }
 
@@ -248,26 +252,30 @@ func isValidPrefix(s string) bool {
 	return true
 }
 
-func isValidSnakeCase(s string) bool {
+// isValidDelimitedCase validates a lowercase identifier using sep as the word
+// separator ('_' for snake_case, '-' for kebab-case). The separator may not
+// appear at the start, end, or consecutively; every other rune must be a
+// lowercase letter or digit, and the first rune must be a letter.
+func isValidDelimitedCase(s string, sep rune) bool {
 	if len(s) == 0 {
 		return false
 	}
 
-	// Must not start or end with underscore
-	if s[0] == '_' || s[len(s)-1] == '_' {
+	// Must not start or end with the separator (sep is always a single ASCII byte)
+	if s[0] == byte(sep) || s[len(s)-1] == byte(sep) {
 		return false
 	}
 
-	// Must not have consecutive underscores
-	hasUnderscore := false
+	// Must not have consecutive separators
+	hasSep := false
 	for i, r := range s {
-		if r == '_' {
-			if hasUnderscore {
-				return false // Consecutive underscores
+		if r == sep {
+			if hasSep {
+				return false // Consecutive separators
 			}
-			hasUnderscore = true
+			hasSep = true
 		} else {
-			hasUnderscore = false
+			hasSep = false
 			// Must be lowercase letter or digit
 			if !unicode.IsLower(r) && !unicode.IsDigit(r) {
 				return false
@@ -282,15 +290,28 @@ func isValidSnakeCase(s string) bool {
 	return true
 }
 
-func isValidCamelCase(s string) bool {
+func isValidSnakeCase(s string) bool { return isValidDelimitedCase(s, '_') }
+
+// isValidCamelOrPascal validates a mixed-case identifier of letters and digits
+// whose first rune is lowercase (firstLower true → camelCase) or uppercase
+// (firstLower false → PascalCase).
+func isValidCamelOrPascal(s string, firstLower bool) bool {
 	if len(s) == 0 {
 		return false
 	}
 
-	// First character must be lowercase letter
-	firstRune := rune(s[0])
-	if !unicode.IsLower(firstRune) {
-		return false
+	// First character must be a letter of the required case.
+	// Decode the full first rune (not just s[0]) so a multi-byte leading rune
+	// is classified correctly; len(s) == 0 is already rejected above.
+	firstRune, _ := utf8.DecodeRuneInString(s)
+	if firstLower {
+		if !unicode.IsLower(firstRune) {
+			return false
+		}
+	} else {
+		if !unicode.IsUpper(firstRune) {
+			return false
+		}
 	}
 
 	// Must contain only letters and digits
@@ -303,57 +324,7 @@ func isValidCamelCase(s string) bool {
 	return true
 }
 
-func isValidPascalCase(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
+func isValidCamelCase(s string) bool  { return isValidCamelOrPascal(s, true) }
+func isValidPascalCase(s string) bool { return isValidCamelOrPascal(s, false) }
 
-	// First character must be uppercase letter
-	firstRune := rune(s[0])
-	if !unicode.IsUpper(firstRune) {
-		return false
-	}
-
-	// Must contain only letters and digits
-	for _, r := range s {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func isValidKebabCase(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	// Must not start or end with hyphen
-	if s[0] == '-' || s[len(s)-1] == '-' {
-		return false
-	}
-
-	// Must not have consecutive hyphens
-	hasHyphen := false
-	for i, r := range s {
-		if r == '-' {
-			if hasHyphen {
-				return false // Consecutive hyphens
-			}
-			hasHyphen = true
-		} else {
-			hasHyphen = false
-			// Must be lowercase letter or digit
-			if !unicode.IsLower(r) && !unicode.IsDigit(r) {
-				return false
-			}
-		}
-		// First character must be a letter
-		if i == 0 && unicode.IsDigit(r) {
-			return false
-		}
-	}
-
-	return true
-}
+func isValidKebabCase(s string) bool { return isValidDelimitedCase(s, '-') }
