@@ -7,12 +7,12 @@ import (
 )
 
 var (
-	errEmptyPath       = errors.New("empty path")
-	errNullByte        = errors.New("null byte")
-	errPathTooLong     = errors.New("path too long")
-	errPathTraversal   = errors.New("path traversal")
-	errInvalidPath     = errors.New("invalid path")
-	errOverlong        = errors.New("UTF-8 overlong encoding detected")
+	errEmptyPath     = errors.New("empty path")
+	errNullByte      = errors.New("null byte")
+	errPathTooLong   = errors.New("path too long")
+	errPathTraversal = errors.New("path traversal")
+	errInvalidPath   = errors.New("invalid path")
+	errOverlong      = errors.New("UTF-8 overlong encoding detected")
 )
 
 func TestValidateAndSecurePath(t *testing.T) {

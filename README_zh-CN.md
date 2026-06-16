@@ -16,7 +16,7 @@
 
 | 特性 | 说明 |
 |------|------|
-| **高性能** | 简单日志 310 万/秒，针对高吞吐场景优化 |
+| **高性能** | 极低分配（简单日志 1 次/操作），缓冲池复用，无锁读取 |
 | **线程安全** | 原子操作 + 无锁设计，完全并发安全 |
 | **内置安全** | 敏感数据过滤、注入攻击防护 |
 | **结构化日志** | 类型安全字段、JSON/文本格式，可自定义字段名 |
@@ -212,11 +212,11 @@ if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
 }
 
-// 自动过滤
+// 自动过滤（基础 — DefaultSecurityConfig）
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
-logger.Info("email=user@example.com")       // -> email=[REDACTED]
+// 邮箱地址需要完整过滤：cfg.Security = dd.DefaultSecureConfig()
 ```
 
 | 安全级别 | 过滤类型 | 覆盖范围 |
@@ -613,11 +613,15 @@ logger.JSON(myStruct)
 
 | 操作 | 吞吐量 | 内存/操作 | 分配次数 |
 |------|--------|-----------|----------|
-| 简单日志 | **310 万/秒** | 200 B | 7 |
-| 结构化日志（3 字段） | **190 万/秒** | 417 B | 12 |
-| JSON 格式 | **60 万/秒** | 800 B | 20 |
-| 级别检查 | **25 亿/秒** | 0 B | 0 |
-| 并发（22 goroutines） | **6800 万/秒** | 200 B | 7 |
+| 简单日志 | ~49 万/秒 | 64 B | 1 |
+| 结构化日志（3 字段） | ~27 万/秒 | 241 B | 4 |
+| JSON 格式 | ~29.5 万/秒 | 225 B | 3 |
+| 级别检查 | ~3.6 亿/秒 | 0 B | 0 |
+| 并发（22 goroutines） | ~430 万/秒 | 80 B | 1 |
+
+> 基准使用默认配置（启用安全过滤）写入 `io.Discard`；在 Intel Core Ultra 9 上测得。  
+> `内存/操作` 与 `分配次数` 为确定性数值；吞吐量随硬件变化。可用  
+> `go test -bench=. -benchmem` 复现。
 
 **优化建议:**
 - 在执行昂贵操作前使用 `IsLevelEnabled()` 检查：`if logger.IsDebugEnabled() { ... }`

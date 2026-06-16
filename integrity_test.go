@@ -338,19 +338,8 @@ func TestDefaultIntegrityConfigSafe_UniqueKeys(t *testing.T) {
 }
 
 func TestHashAlgorithm_String(t *testing.T) {
-	tests := []struct {
-		algorithm HashAlgorithm
-		expected  string
-	}{
+	assertEnumStringer(t, "HashAlgorithm", []stringerCase[HashAlgorithm]{
 		{HashAlgorithmSHA256, "SHA256"},
 		{HashAlgorithm(999), "Unknown"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			if got := tt.algorithm.String(); got != tt.expected {
-				t.Errorf("String() = %q, want %q", got, tt.expected)
-			}
-		})
-	}
+	}, HashAlgorithm.String)
 }

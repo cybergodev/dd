@@ -284,10 +284,18 @@ func (fw *FileWriter) Close() error {
 	}
 
 	fw.cancel()
-	fw.wg.Wait()
 
+	// Hold mu across wg.Wait() so that no concurrent Write can enter rotate()
+	// (which calls wg.Add to launch a compress goroutine) after Wait returns.
+	// Without this, a Write that raced past the unlocked closed.Load() check
+	// could wg.Add after Wait — an Add-after-Wait, which the sync docs define
+	// as incorrect — and leave a compress goroutine running past Close.
+	// This is deadlock-free: every goroutine that calls wg.Done() (compressBackup,
+	// cleanupRoutine) does so without acquiring fw.mu.
 	fw.mu.Lock()
 	defer fw.mu.Unlock()
+
+	fw.wg.Wait()
 
 	if fw.file != nil {
 		err := fw.file.Close()
@@ -299,7 +307,11 @@ func (fw *FileWriter) Close() error {
 
 // SetOnRotateCallback sets a callback that is called after successful file rotation.
 // This is used internally by Logger to trigger HookOnRotate events.
+// The callback is stored under the writer mutex because rotate() reads it while
+// holding the same mutex; setting it without the lock would race active rotations.
 func (fw *FileWriter) SetOnRotateCallback(fn func(path string)) {
+	fw.mu.Lock()
+	defer fw.mu.Unlock()
 	fw.onRotate = fn
 }
 
@@ -465,6 +477,9 @@ func newBufferedWriterWithConfig(w io.Writer, cfg BufferedWriterConfig) (*Buffer
 }
 
 func (bw *BufferedWriter) Write(p []byte) (int, error) {
+	if bw.closed.Load() {
+		return 0, os.ErrClosed
+	}
 	pLen := len(p)
 	if pLen == 0 {
 		return 0, nil

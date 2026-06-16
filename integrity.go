@@ -48,8 +48,10 @@ type IntegrityConfig struct {
 	// IncludeTimestamp determines if timestamps are included in signatures.
 	IncludeTimestamp bool
 
-	// IncludeSequence determines if sequence numbers are included.
-	// This provides replay attack protection.
+	// IncludeSequence determines if monotonic sequence numbers are included
+	// in the signed payload. This enables replay-attack detection during
+	// verification (consumers must track observed sequence numbers to reject
+	// duplicates); it does not by itself prevent replay.
 	IncludeSequence bool
 
 	// SignaturePrefix is the prefix for signatures in log output.
@@ -522,6 +524,9 @@ func (c *IntegrityConfig) Clone() IntegrityConfig {
 // MarshalJSON implements json.Marshaler for IntegrityConfig.
 // Note: SecretKey is intentionally not marshaled for security reasons.
 func (c *IntegrityConfig) MarshalJSON() ([]byte, error) {
+	if c == nil {
+		return []byte("null"), nil
+	}
 	return json.Marshal(map[string]any{
 		"hashAlgorithm":    c.HashAlgorithm.String(),
 		"includeTimestamp": c.IncludeTimestamp,

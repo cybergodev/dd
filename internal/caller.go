@@ -53,21 +53,30 @@ func GetCaller(callerDepth int, fullPath bool) string {
 		return ""
 	}
 
-	pc := pcs[0]
+	return callerForPC(pcs[0], fullPath)
+}
 
+// callerForPC returns the formatted caller string for a single return program
+// counter, resolving file:line through callerCache. On a cache hit it is a single
+// map lookup plus an allocation-free format (line numbers < 100 use smallInts).
+// On a miss it resolves the frame via runtime.CallersFrames and caches the result.
+//
+// Shared by GetCaller and the formatter's resolveDynamicCaller so both reuse one
+// cache with identical formatting, and so the dynamic-caller fast path can resolve
+// the user frame from a single stack capture without a second runtime.Callers.
+func callerForPC(pc uintptr, fullPath bool) string {
 	// Check cache first (fast path - no allocation needed)
 	if cached, ok := callerCache.Load(pc); ok {
 		entry := cached.(*callerCacheEntry)
 		if fullPath {
-			// Return full path (re-format from cached full path)
+			// Re-format from cached full path
 			return formatCallerDirect(entry.file, entry.line)
 		}
-		// Return pre-formatted short path
 		return entry.formatted
 	}
 
-	// Cache miss - get caller info
-	frames := runtime.CallersFrames(pcs[:n])
+	// Cache miss - resolve the single frame for this PC.
+	frames := runtime.CallersFrames([]uintptr{pc})
 	frame, _ := frames.Next()
 	if frame.PC == 0 {
 		return ""

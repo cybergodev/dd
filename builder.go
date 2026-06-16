@@ -37,35 +37,9 @@ func (c Config) build() (*Logger, error) {
 		return nil, err
 	}
 
-	// Build internal config
-	loggerConfig := &internalConfig{
-		level:             c.Level,
-		format:            c.Format,
-		timeFormat:        c.TimeFormat,
-		includeTime:       c.IncludeTime,
-		includeLevel:      c.IncludeLevel,
-		fullPath:          c.FullPath,
-		dynamicCaller:     c.DynamicCaller,
-		securityConfig:    c.Security,
-		fieldValidation:   c.FieldValidation,
-		fatalHandler:      c.FatalHandler,
-		writeErrorHandler: c.WriteErrorHandler,
-		contextExtractors: c.ContextExtractors,
-		hooks:             c.Hooks,
-		sampling:          c.Sampling,
-		auditConfig:       c.Audit,
-	}
-
-	// Handle JSON options
-	if c.Format == FormatJSON && c.JSON != nil {
-		loggerConfig.json = c.JSON
-	} else if c.Format == FormatJSON {
-		loggerConfig.json = &internal.JSONOptions{
-			PrettyPrint: false,
-			Indent:      defaultJSONIndent,
-			FieldNames:  internal.DefaultJSONFieldNames(),
-		}
-	}
+	// Build internal config from the shared mapping so that every Config field
+	// is carried over in lock-step with Default()'s fallback path.
+	loggerConfig := c.toInternalConfig()
 
 	// Collect writers from Targets
 	var writers []io.Writer
@@ -89,6 +63,48 @@ func (c Config) build() (*Logger, error) {
 	loggerConfig.writers = writers
 
 	return newFromInternalConfig(loggerConfig)
+}
+
+// toInternalConfig maps the public Config onto the internalConfig struct used by
+// newFromInternalConfig. It performs only the non-failing field copy and JSON
+// option normalization; validation and writer resolution stay in build().
+//
+// Centralizing this mapping in one place ensures Default()'s fallback logger is
+// built from exactly the same field set as the normal path, so a newly added
+// internalConfig field can never be silently dropped by one path and not the
+// other. Callers that need a specific writer set (e.g. the stderr fallback)
+// override .writers after calling this.
+func (c Config) toInternalConfig() *internalConfig {
+	ic := &internalConfig{
+		level:             c.Level,
+		format:            c.Format,
+		timeFormat:        c.TimeFormat,
+		includeTime:       c.IncludeTime,
+		includeLevel:      c.IncludeLevel,
+		fullPath:          c.FullPath,
+		dynamicCaller:     c.DynamicCaller,
+		securityConfig:    c.Security,
+		fieldValidation:   c.FieldValidation,
+		fatalHandler:      c.FatalHandler,
+		writeErrorHandler: c.WriteErrorHandler,
+		contextExtractors: c.ContextExtractors,
+		hooks:             c.Hooks,
+		sampling:          c.Sampling,
+		auditConfig:       c.Audit,
+	}
+
+	// Handle JSON options
+	if c.Format == FormatJSON && c.JSON != nil {
+		ic.json = c.JSON
+	} else if c.Format == FormatJSON {
+		ic.json = &internal.JSONOptions{
+			PrettyPrint: false,
+			Indent:      defaultJSONIndent,
+			FieldNames:  internal.DefaultJSONFieldNames(),
+		}
+	}
+
+	return ic
 }
 
 // resolve converts an OutputTarget to an io.Writer.

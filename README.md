@@ -16,7 +16,7 @@ A production-grade high-performance Go logging library with zero external depend
 
 | Feature | Description |
 |---------|-------------|
-| **High Performance** | 3M+ ops/sec simple logging, optimized for high-throughput |
+| **High Performance** | Minimal allocations (1/op simple logging), buffer pooling, lock-free reads |
 | **Thread-Safe** | Atomic operations + lock-free design, fully concurrent-safe |
 | **Built-in Security** | Sensitive data filtering, injection attack prevention |
 | **Structured Logging** | Type-safe fields, JSON/text formats, customizable field names |
@@ -212,11 +212,11 @@ if err != nil {
     log.Fatalf("failed to create logger: %v", err)
 }
 
-// Automatic filtering
+// Automatic filtering (basic — DefaultSecurityConfig)
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
-logger.Info("email=user@example.com")       // -> email=[REDACTED]
+// Email addresses require full filtering: cfg.Security = dd.DefaultSecureConfig()
 ```
 
 | Security Level | Filter Type | Coverage |
@@ -613,11 +613,16 @@ logger.JSON(myStruct)
 
 | Operation | Throughput | Memory/Op | Allocs/Op |
 |-----------|------------|-----------|-----------|
-| Simple Logging | **3.1M ops/sec** | 200 B | 7 |
-| Structured (3 fields) | **1.9M ops/sec** | 417 B | 12 |
-| JSON Format | **600K ops/sec** | 800 B | 20 |
-| Level Check | **2.5B ops/sec** | 0 B | 0 |
-| Concurrent (22 goroutines) | **68M ops/sec** | 200 B | 7 |
+| Simple Logging | ~490K ops/sec | 64 B | 1 |
+| Structured (3 fields) | ~270K ops/sec | 241 B | 4 |
+| JSON Format | ~295K ops/sec | 225 B | 3 |
+| Level Check | ~360M ops/sec | 0 B | 0 |
+| Concurrent (22 goroutines) | ~4.3M ops/sec | 80 B | 1 |
+
+> Benchmarks use default config (security filtering enabled) writing to
+> `io.Discard`; measured on Intel Core Ultra 9. `Memory/Op` and
+> `Allocs/Op` are deterministic; throughput varies by hardware. Run
+> `go test -bench=. -benchmem` to reproduce.
 
 **Optimization Tips:**
 - Use `IsLevelEnabled()` before expensive operations: `if logger.IsDebugEnabled() { ... }`

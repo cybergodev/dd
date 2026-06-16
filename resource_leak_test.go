@@ -12,6 +12,23 @@ import (
 // Resource Leak Verification Tests
 // ============================================================================
 
+// waitForBackgroundCloses waits for all SetDefault/InitDefault background close
+// goroutines (tracked by backgroundCloseWg) to finish, or returns false when the
+// timeout elapses. Used by leak tests to assert goroutines are not leaked.
+func waitForBackgroundCloses(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		backgroundCloseWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 // TestLeakCloseWaitsForFilterGoroutines verifies that Logger.Close() waits for
 // in-flight security filter goroutines to complete before closing writers.
 // This prevents the LEAK-1 scenario where filter goroutines outlive the logger.

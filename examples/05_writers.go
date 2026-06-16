@@ -168,7 +168,9 @@ func section5WriterErrors() {
 	fmt.Println("5. Writer Error Handling")
 	fmt.Println("-------------------------")
 
+	// A failing writer guarantees the handler is invoked on every write.
 	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(failingWriter{})}
 	cfg.WriteErrorHandler = func(writer io.Writer, err error) {
 		fmt.Printf("  [Config Handler] %T: %v\n", writer, err)
 	}
@@ -176,15 +178,24 @@ func section5WriterErrors() {
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
 
-	// Set handler at runtime
+	// Override the handler at runtime
 	logger.SetWriteErrorHandler(func(w io.Writer, err error) {
 		fmt.Printf("  [Runtime Handler] Error: %v\n", err)
 	})
 
-	logger.Info("Normal logging works fine")
+	// This write fails -> the runtime handler is invoked
+	logger.Info("This write fails and triggers the handler")
 
 	// Flush to ensure all data is written
 	_ = logger.Flush() // best-effort flush in demo
 
 	fmt.Println("  Errors captured by handler")
+}
+
+// failingWriter is an io.Writer that always returns an error, used to
+// demonstrate WriteErrorHandler invocation.
+type failingWriter struct{}
+
+func (failingWriter) Write(p []byte) (int, error) {
+	return 0, fmt.Errorf("simulated write failure (disk full)")
 }

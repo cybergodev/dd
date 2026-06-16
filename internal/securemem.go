@@ -131,11 +131,15 @@ func (sb *SecureBuffer) Grow(n int) {
 		}
 		newData := make([]byte, len(sb.data), newCap)
 		copy(newData, sb.data)
-		// SECURITY: Zero ALL old data including capacity portion
-		// This ensures no sensitive data remains in the old slice.
-		// Use slice expression to access full capacity for zeroing.
-		for i := range sb.data[:cap(sb.data)] {
-			sb.data[i] = 0
+		// SECURITY: Zero ALL old data including the capacity portion,
+		// so no sensitive data remains in the old backing array.
+		//
+		// old spans the full backing array (len == cap). Range over old and
+		// write through it — NOT through sb.data, whose len may be < cap: an
+		// index >= len(sb.data) used to panic here.
+		old := sb.data[:cap(sb.data)]
+		for i := range old {
+			old[i] = 0
 		}
 		sb.data = newData
 	}

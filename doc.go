@@ -183,12 +183,13 @@
 // For Fatal logs, use custom fatal handler:
 //
 //	cfg := dd.DefaultConfig()
+//	var logger *dd.Logger
 //	cfg.FatalHandler = func() {
 //	    // Custom cleanup
 //	    logger.Close()
 //	    os.Exit(1)
 //	}
-//	logger, _ := dd.New(cfg)
+//	logger, _ = dd.New(cfg)
 package dd
 
 import (

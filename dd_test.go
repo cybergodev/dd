@@ -617,6 +617,48 @@ func TestMessageSizeLimit(t *testing.T) {
 	}
 }
 
+// TestHookOnFilterFiresOnRedaction verifies that the previously-never-triggered
+// HookOnFilter event now fires when sensitive data is redacted, carrying the
+// redacted field's key (never its value).
+func TestHookOnFilterFiresOnRedaction(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.Level = LevelInfo
+	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+	cfg.Security = DefaultSecurityConfig()
+
+	var fired int
+	var seenKey string
+
+	logger, _ := New(cfg)
+	logger.AddHook(HookOnFilter, func(ctx context.Context, h *HookContext) error {
+		fired++
+		if h.Metadata != nil {
+			if k, ok := h.Metadata["field"].(string); ok {
+				seenKey = k
+			}
+		}
+		return nil
+	})
+
+	// "password" is a sensitive key → its value is redacted → HookOnFilter fires.
+	logger.InfoWith("login attempt", String("password", "secret123"))
+	// Non-sensitive content → no redaction → hook must not fire.
+	logger.InfoWith("plain message", String("user", "alice"))
+	logger.Close()
+
+	if fired != 1 {
+		t.Fatalf("HookOnFilter fired %d time(s), want 1 (once for the redacted field)", fired)
+	}
+	if seenKey != "password" {
+		t.Errorf("HookOnFilter metadata field = %q, want %q", seenKey, "password")
+	}
+	// The sensitive value must never reach the output.
+	if strings.Contains(buf.String(), "secret123") {
+		t.Error("redacted value leaked to the output")
+	}
+}
+
 // ============================================================================
 // EDGE CASES AND ERROR HANDLING TESTS
 // ============================================================================

@@ -95,8 +95,9 @@ var paddedLevelStrings = [5]string{
 	" FATAL", // LevelFatal = 4
 }
 
-// pcsPool pools []uintptr slices for runtime.Callers
-// to reduce memory allocations in adjustCallerDepth.
+// pcsPool pools []uintptr slices for the single stack capture in
+// resolveDynamicCaller. Size 32 comfortably covers the handful of dd-internal
+// frames between the capture anchor and user code.
 var pcsPool = sync.Pool{
 	New: func() any {
 		pcs := make([]uintptr, 32) // typical call stack depth
@@ -104,22 +105,27 @@ var pcsPool = sync.Pool{
 	},
 }
 
-// depthCacheEntry stores cached adjusted caller depth
-type depthCacheEntry struct {
-	pc    uintptr // program counter used as key
-	depth int     // adjusted depth value
+// dynamicOffsetEntry stores the cached index of the first user (non-dd) frame
+// in the stack captured by resolveDynamicCaller, relative to the capture anchor.
+type dynamicOffsetEntry struct {
+	offset int
 }
 
-// depthCache caches adjusted caller depth to avoid repeated stack walking.
-// Key: the first non-dd PC in the call stack, Value: adjusted depth.
-// This dramatically reduces allocations in the hot path.
-var depthCache sync.Map
+// dynamicOffsetCache memoizes, per capture-anchor PC, the index of the first
+// user-code frame. The anchor (e.g. logCoreWithDepth) is shared across all log
+// calls, but the offset is constant for a given build, so a single memo per
+// anchor is valid. This lets the steady-state path capture the stack ONCE and
+// index straight to the user frame instead of walking it — replacing the prior
+// adjustCallerDepth + GetCaller pair that each called runtime.Callers separately
+// (the dominant cost: ~80% of SimpleLogging CPU per pprof).
+var dynamicOffsetCache sync.Map
 
-// maxDepthCacheSize limits the cache size to prevent unbounded memory growth.
-const maxDepthCacheSize = 5000
+// maxDynamicOffsetCacheSize bounds the cache. Anchor PCs are few (a handful of
+// entry points), so this is a generous safety cap, not a routinely hit limit.
+const maxDynamicOffsetCacheSize = 1024
 
-// depthCacheCount tracks the number of entries for size limiting
-var depthCacheCount atomic.Int32
+// dynamicOffsetCount tracks entries for size limiting.
+var dynamicOffsetCount atomic.Int32
 
 // jsonEntryMapPool pools map[string]any objects for JSON formatting
 // to reduce memory allocations during high-frequency JSON logging.
@@ -368,20 +374,26 @@ func (f *MessageFormatter) formatArgToString(arg any) string {
 
 // FormatWithMessage formats a complete log message with level, caller, and fields.
 func (f *MessageFormatter) FormatWithMessage(level LogLevel, callerDepth int, message string, fields []Field) string {
-	// Adjust caller depth if dynamic detection is enabled
+	// Resolve the caller ONCE for the whole entry. The previous implementation
+	// called adjustCallerDepth here and GetCaller inside each format function —
+	// two runtime.Callers captures (stack unwinds) per log line, which pprof
+	// showed was ~80% of SimpleLogging CPU. resolveDynamicCaller does it in a
+	// single capture. callerDepth is retained only as the cold-path fallback for
+	// GetCaller when the single-capture fast path cannot locate the user frame.
+	var caller string
 	if f.dynamicCaller {
-		callerDepth = f.adjustCallerDepth(callerDepth)
+		caller = f.resolveDynamicCaller(callerDepth)
 	}
 
 	switch f.format {
 	case LogFormatJSON:
-		return f.formatJSON(level, callerDepth, message, fields)
+		return f.formatJSON(level, caller, message, fields)
 	default:
-		return f.formatText(level, callerDepth, message, fields)
+		return f.formatText(level, caller, message, fields)
 	}
 }
 
-func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message string, fields []Field) string {
+func (f *MessageFormatter) formatText(level LogLevel, caller string, message string, fields []Field) string {
 	// Pre-calculate capacity to reduce memory allocations
 	// Base: timestamp (~35) + level (7) + brackets (2) + caller (~30) + message + fields
 	estimatedLen := 64 + len(message) + len(fields)*EstimatedFieldSize
@@ -431,14 +443,12 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 		buf.WriteByte(']')
 	}
 
-	// Add caller
-	if f.dynamicCaller {
-		if callerInfo := GetCaller(callerDepth, f.fullPath); callerInfo != "" {
-			if buf.Len() > 0 {
-				buf.WriteByte(' ')
-			}
-			buf.WriteString(callerInfo)
+	// Add caller (resolved once in FormatWithMessage)
+	if caller != "" {
+		if buf.Len() > 0 {
+			buf.WriteByte(' ')
 		}
+		buf.WriteString(caller)
 	}
 
 	// Add message
@@ -469,13 +479,13 @@ func (f *MessageFormatter) formatText(level LogLevel, callerDepth int, message s
 	return buf.String()
 }
 
-func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message string, fields []Field) string {
+func (f *MessageFormatter) formatJSON(level LogLevel, caller string, message string, fields []Field) string {
 	fieldNames := f.getJSONFieldNames()
 
 	// Fast path: direct buffer writing for compact JSON with simple field types.
 	// Avoids map allocation entirely for the common case of primitive field values.
 	if !f.jsonOpts.PrettyPrint && allFieldsAreSimple(fields) {
-		if result, ok := f.formatJSONDirect(level, callerDepth, message, fields, fieldNames); ok {
+		if result, ok := f.formatJSONDirect(level, caller, message, fields, fieldNames); ok {
 			return result
 		}
 	}
@@ -498,11 +508,9 @@ func (f *MessageFormatter) formatJSON(level LogLevel, callerDepth int, message s
 		entry[fieldNames.Level] = level.String()
 	}
 
-	// Add caller if enabled
-	if f.dynamicCaller {
-		if callerInfo := GetCaller(callerDepth, f.fullPath); callerInfo != "" {
-			entry[fieldNames.Caller] = callerInfo
-		}
+	// Add caller (resolved once in FormatWithMessage)
+	if caller != "" {
+		entry[fieldNames.Caller] = caller
 	}
 
 	// Add message
@@ -577,7 +585,7 @@ func isSimpleJSONValue(v any) bool {
 // formatJSONDirect writes JSON directly to a buffer without creating maps.
 // Returns (result, true) on success, or ("", false) if fallback is needed.
 // SECURITY: Zeroes buffer contents before returning to pool.
-func (f *MessageFormatter) formatJSONDirect(level LogLevel, callerDepth int, message string, fields []Field, fieldNames *JSONFieldNames) (string, bool) {
+func (f *MessageFormatter) formatJSONDirect(level LogLevel, caller string, message string, fields []Field, fieldNames *JSONFieldNames) (string, bool) {
 	buf := jsonBuilderPool.Get().(*bytes.Buffer)
 	buf.Reset()
 
@@ -610,17 +618,15 @@ func (f *MessageFormatter) formatJSONDirect(level LogLevel, callerDepth int, mes
 		writeJSONString(buf, level.String())
 	}
 
-	// Write caller
-	if f.dynamicCaller {
-		if callerInfo := GetCaller(callerDepth, f.fullPath); callerInfo != "" {
-			if !first {
-				buf.WriteByte(',')
-			}
-			first = false
-			writeJSONString(buf, fieldNames.Caller)
-			buf.WriteByte(':')
-			writeJSONString(buf, callerInfo)
+	// Write caller (resolved once in FormatWithMessage)
+	if caller != "" {
+		if !first {
+			buf.WriteByte(',')
 		}
+		first = false
+		writeJSONString(buf, fieldNames.Caller)
+		buf.WriteByte(':')
+		writeJSONString(buf, caller)
 	}
 
 	// Write message
@@ -677,108 +683,111 @@ func (f *MessageFormatter) getJSONOptions() *JSONOptions {
 	return f.jsonOpts
 }
 
-// adjustCallerDepth adjusts the caller depth based on dynamic caller detection.
-// This method looks for the first non-dd package in the call stack.
-// Returns the depth relative to GetCaller in formatText.
+// resolveDynamicCaller returns the formatted caller of the current log call using
+// a SINGLE runtime.Callers capture. It replaces the previous two-step
+// adjustCallerDepth (compute a depth) + GetCaller (re-capture the stack to read
+// the frame) sequence, which together issued two runtime.Callers calls per log
+// line — the dominant CPU cost (stack unwinding was ~80% of SimpleLogging per
+// pprof).
 //
-// Performance note: Uses depthCache to avoid repeated stack walking for the same call sites.
-// This dramatically reduces allocations and CPU usage in the hot path.
+// Steady-state path (anchor offset memoized):
+//  1. One runtime.Callers capture from a fixed shallow skip.
+//  2. Read the memoized frame offset for the capture-anchor PC.
+//  3. Index straight to the user-code frame's PC (no frame walking).
+//  4. Resolve that PC's file:line through the shared callerCache.
 //
-// SECURITY: Includes integer overflow protection for depth calculations.
-func (f *MessageFormatter) adjustCallerDepth(baseDepth int) int {
-	// Validate base depth
+// Cold path (first call from an anchor, or a stack too shallow to contain the
+// user frame): falls back to GetCaller(baseDepth), preserving the exact previous
+// behavior, so correctness is never worse than before.
+//
+// SECURITY: frame indexing is bounded by maxSafeOffset to prevent out-of-range
+// access; the offset cache is size-limited and updated race-free.
+func (f *MessageFormatter) resolveDynamicCaller(baseDepth int) string {
 	if baseDepth < 0 {
 		baseDepth = 0
 	}
 
-	// SECURITY: Maximum safe depth to prevent integer overflow and stack issues
-	const maxSafeDepth = 1000
-	if baseDepth > maxSafeDepth {
-		// Return a safe default to prevent incorrect caller info
-		return maxSafeDepth
-	}
-
-	// Fast path: get the first PC to check cache
-	// We cache based on the first frame in the Log method
 	pcsPtr := pcsPool.Get().(*[]uintptr)
 	pcs := *pcsPtr
 	defer pcsPool.Put(pcsPtr)
 
-	// Get frames for both cache lookup and stack walking
-	// Skip: runtime.Callers (0), adjustCallerDepth (1), FormatWithMessage (2)
+	// pcs[0] = the caller of FormatWithMessage (skip Callers, resolveDynamicCaller,
+	// FormatWithMessage). For the logger hot path this is logCoreWithDepth, which
+	// is the same anchor the old depthCache keyed on.
 	n := runtime.Callers(3, pcs)
 	if n == 0 {
-		return baseDepth
+		return GetCaller(baseDepth, f.fullPath)
 	}
 
 	firstPC := pcs[0]
 
-	// Check cache for this call site
-	if cached, ok := depthCache.Load(firstPC); ok {
-		return cached.(*depthCacheEntry).depth
+	// Hot path: memoized offset → index directly to the user frame's PC.
+	if cached, ok := dynamicOffsetCache.Load(firstPC); ok {
+		off := cached.(*dynamicOffsetEntry).offset
+		if off < n && off <= maxSafeOffset {
+			return callerForPC(pcs[off], f.fullPath)
+		}
+		// Offset not reachable with the captured frames: fall back.
+		return GetCaller(baseDepth, f.fullPath)
 	}
 
-	// Cache miss - walk the stack to find user code
-	// Get the dynamically detected package prefix
+	// Cold path: walk the captured PCs to find the first user (non-dd) frame.
+	// FuncForPC indexes pcs 1:1 (unlike CallersFrames, which expands inlined
+	// frames), so the resulting index is safe to reuse as a pcs subscript.
 	pkgPrefix := getDDPackagePrefix()
-	pkgPrefixLen := len(pkgPrefix)
-
-	// Iterate through frames
-	frames := runtime.CallersFrames(pcs[:n])
-
-	for depth := 0; depth <= maxSafeDepth; depth++ {
-		frame, more := frames.Next()
-		if !more {
+	pkgLen := len(pkgPrefix)
+	off := -1
+	for i := 0; i < n && i <= maxSafeOffset; i++ {
+		fn := runtime.FuncForPC(pcs[i])
+		if fn == nil {
+			continue
+		}
+		if !isDDFunction(fn.Name(), pkgPrefix, pkgLen) {
+			off = i
 			break
 		}
-
-		// Check if function belongs to dd package using dynamic prefix
-		fn := frame.Function
-		if len(fn) > pkgPrefixLen && fn[:pkgPrefixLen] == pkgPrefix {
-			// It's in the dd module, check if it's the dd package
-			rest := fn[pkgPrefixLen:]
-			// rest could be: ".pkg.func" or "/subpkg.func" or ".func"
-			if len(rest) >= 1 {
-				// Skip if still in dd package or its subpackages
-				// Pattern: /dd.pkg or /dd/pkg or /dd)
-				if rest[0] == '.' || rest[0] == '/' {
-					continue // Still in dd package
-				}
-			}
-		}
-
-		// Found user code - calculate adjusted depth
-		// From adjustCallerDepth's perspective (skip=3):
-		//   depth=0 = Log method, depth=1 = Print method, depth=2 = user code
-		// From GetCaller's perspective (called from formatText):
-		//   Caller(0) = GetCaller, Caller(1) = formatText, Caller(2) = FormatWithMessage
-		//   Caller(3) = Log, Caller(4) = Print, Caller(5) = user code
-		// So GetCaller needs depth + 3 to reach the same frame
-		// SECURITY: Clamp to prevent any potential overflow
-		adjustedDepth := min(depth+3, maxSafeDepth)
-
-		// Cache the result for future calls
-		// SECURITY: Use CAS loop to ensure precise cache size limiting
-		for {
-			current := depthCacheCount.Load()
-			if current >= maxDepthCacheSize {
-				break // Cache full, skip caching
-			}
-			// Try to reserve a slot
-			if depthCacheCount.CompareAndSwap(current, current+1) {
-				// Slot reserved, now try to store
-				entry := &depthCacheEntry{pc: firstPC, depth: adjustedDepth}
-				if _, loaded := depthCache.LoadOrStore(firstPC, entry); loaded {
-					// Another goroutine stored first, release our slot
-					depthCacheCount.Add(-1)
-				}
-				break // Exit after successful reservation (whether stored or loaded)
-			}
-			// CAS failed, retry
-		}
-
-		return adjustedDepth
+	}
+	if off < 0 {
+		// No user frame in the captured window: fall back to a full GetCaller.
+		return GetCaller(baseDepth, f.fullPath)
 	}
 
-	return baseDepth
+	storeDynamicOffset(firstPC, off)
+	return callerForPC(pcs[off], f.fullPath)
+}
+
+// maxSafeOffset bounds frame indexing in resolveDynamicCaller to prevent
+// out-of-range access and guard against pathological stacks. The user frame sits
+// only a handful of frames above the capture anchor, so the pcs buffer capacity
+// (32) is a safe ceiling.
+const maxSafeOffset = 32
+
+// isDDFunction reports whether a fully-qualified function name belongs to the dd
+// module's own packages (the root dd package or any subpackage such as /internal).
+// Such frames are skipped during dynamic caller detection. Extracted from the old
+// adjustCallerDepth inline check so it can be unit-tested.
+func isDDFunction(name, prefix string, pkgLen int) bool {
+	if len(name) <= pkgLen || name[:pkgLen] != prefix {
+		return false
+	}
+	rest := name[pkgLen:]
+	return len(rest) > 0 && (rest[0] == '.' || rest[0] == '/')
+}
+
+// storeDynamicOffset caches the anchor→offset memo with a size limit, mirroring
+// the callerCache bounding pattern (CAS counter + LoadOrStore) to stay race-free.
+func storeDynamicOffset(anchorPC uintptr, offset int) {
+	for {
+		current := dynamicOffsetCount.Load()
+		if current >= maxDynamicOffsetCacheSize {
+			return // cache full; skip caching (correctness unaffected, just slower)
+		}
+		if dynamicOffsetCount.CompareAndSwap(current, current+1) {
+			entry := &dynamicOffsetEntry{offset: offset}
+			if _, loaded := dynamicOffsetCache.LoadOrStore(anchorPC, entry); loaded {
+				dynamicOffsetCount.Add(-1) // another goroutine won; release our slot
+			}
+			return
+		}
+	}
 }

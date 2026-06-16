@@ -2,12 +2,11 @@ package internal
 
 import (
 	"bytes"
-	"strings"
 	"sync"
 )
 
-// HexChars is a package-level constant for hex digit conversion.
-// Avoids allocation in SanitizeControlChars hot path.
+// HexChars is the shared hex-digit lookup table used by JSON string escaping
+// (internal/json.go) and control-character sanitization (SanitizeControlChars).
 const HexChars = "0123456789abcdef"
 
 // zeroBuffer securely zeroes the contents of a bytes.Buffer.
@@ -191,95 +190,6 @@ func isUnicodeControlSequence(b2, b3 byte) bool {
 		}
 	}
 	return false
-}
-
-// SanitizeUnicodeControlChars removes dangerous Unicode control characters from a string.
-// This is a convenience function for cases where only Unicode control characters
-// need to be removed without other sanitization.
-func SanitizeUnicodeControlChars(s string) string {
-	// Check if the string contains any potential Unicode control characters
-	// This is a fast pre-check to avoid unnecessary work
-	if !strings.ContainsAny(s, "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008A\u008B\u008C\u008D\u008E\u008F\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009A\u009B\u009C\u009D\u009E\u009F\u034F\u115F\u1160\u2065\u200B\u200C\u200D\u200E\u200F\u2028\u2029\u202A\u202B\u202C\u202D\u202E\u2060\u2061\u2062\u2063\u2064\u2066\u2067\u2068\u2069\u206A\u206B\u206C\u206D\u206E\u206F\uFEFF") {
-		return s
-	}
-
-	// Use pooled buffer instead of allocating a fresh strings.Builder per call
-	bufPtr := sanitizeBufferPool.Get().(*[]byte)
-	buf := (*bufPtr)[:0]
-
-	for _, r := range s {
-		if !isUnicodeControlRune(r) {
-			buf = appendRune(buf, r)
-		}
-	}
-
-	result := string(buf)
-
-	// SECURITY: Zero buffer contents before returning to pool
-	zeroSlice(bufPtr)
-	sanitizeBufferPool.Put(bufPtr)
-
-	return result
-}
-
-// appendRune appends a rune to a byte slice, growing as needed.
-func appendRune(buf []byte, r rune) []byte {
-	if r < 0x80 {
-		return append(buf, byte(r))
-	}
-	if r < 0x800 {
-		return append(buf, byte(0xC0|(r>>6)), byte(0x80|(r&0x3F)))
-	}
-	if r >= 0x10000 {
-		return append(buf,
-			byte(0xF0|(r>>18)),
-			byte(0x80|((r>>12)&0x3F)),
-			byte(0x80|((r>>6)&0x3F)),
-			byte(0x80|(r&0x3F)),
-		)
-	}
-	return append(buf,
-		byte(0xE0|(r>>12)),
-		byte(0x80|((r>>6)&0x3F)),
-		byte(0x80|(r&0x3F)),
-	)
-}
-
-// isUnicodeControlRune checks if a rune is a dangerous Unicode control character.
-func isUnicodeControlRune(r rune) bool {
-	// C0 Control Characters (U+0000-U+001F) are handled separately in SanitizeControlChars
-
-	// C1 Control Characters (U+0080-U+009F)
-	// These are the Latin-1 Supplement control characters
-	if r >= 0x0080 && r <= 0x009F {
-		return true
-	}
-
-	// Additional invisible/formatting characters
-	switch r {
-	case '\u034F': // Combining Grapheme Joiner (invisible)
-		return true
-	case '\u115F', '\u1160': // Hangul Jamo fillers (invisible)
-		return true
-	case '\u2065': // Deleted but may appear in attacks
-		return true
-	case '\u200B', '\u200C', '\u200D', '\u200E', '\u200F': // Zero-width and directional marks
-		return true
-	case '\u2028', '\u2029': // Line and paragraph separators
-		return true
-	case '\u202A', '\u202B', '\u202C', '\u202D', '\u202E': // Bidirectional formatting
-		return true
-	case '\u2060', '\u2061', '\u2062', '\u2063', '\u2064': // Invisible operators
-		return true
-	case '\u2066', '\u2067', '\u2068', '\u2069': // Isolate formatting
-		return true
-	case '\u206A', '\u206B', '\u206C', '\u206D', '\u206E', '\u206F': // Deprecated formatting
-		return true
-	case '\uFEFF': // BOM / Zero Width No-Break Space
-		return true
-	default:
-		return false
-	}
 }
 
 // skipAnsiSequenceString skips an ANSI escape sequence in a string starting after the ESC character.

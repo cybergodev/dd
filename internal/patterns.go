@@ -225,13 +225,17 @@ func HasNestedQuantifiers(pattern string, maxQuantifierRange int) bool {
 						return true
 					}
 					if next == '{' {
-						// Check for {0,} or {1,} which are equivalent to * or +
+						// An open-ended range {n,} applied to a quantified group is
+						// equivalent to an unbounded quantifier (e.g. (a+){1,} ~ (a+)+),
+						// which causes catastrophic backtracking. ValidateQuantifierRange
+						// intentionally accepts {n,} (it only bounds the upper value), so
+						// detect it explicitly here. Bounded ranges {n,m} are acceptable;
+						// excessively large ones are caught separately when the '{' itself
+						// is processed below (the case '{' branch).
 						end := strings.Index(pattern[i+1:], "}")
 						if end != -1 {
 							rangeContent := pattern[i+2 : i+1+end]
-							if strings.HasSuffix(rangeContent, ",") ||
-								strings.Contains(rangeContent, ",") && !strings.Contains(rangeContent[len(strings.Split(rangeContent, ",")[0]):], "0") {
-								// Patterns like {1,} or {0,} can cause backtracking
+							if isOpenEndedRange(rangeContent) {
 								return true
 							}
 						}
@@ -322,6 +326,17 @@ func ValidateQuantifierRange(rangeStr string, maxQuantifierRange int) error {
 	}
 
 	return nil
+}
+
+// isOpenEndedRange reports whether a quantifier range body (the text between
+// '{' and '}') is open-ended, i.e. of the form {n,} with no upper bound. Such a
+// quantifier applied to a quantified group behaves like an unbounded repetition
+// and can trigger catastrophic backtracking. ValidateQuantifierRange accepts
+// {n,} (it only bounds the upper value), so callers that must reject unbounded
+// repetition use this helper instead.
+func isOpenEndedRange(rangeStr string) bool {
+	parts := strings.Split(rangeStr, ",")
+	return len(parts) == 2 && parts[1] == ""
 }
 
 // ParseInt safely parses an integer from a string.

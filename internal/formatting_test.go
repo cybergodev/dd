@@ -304,23 +304,63 @@ func TestTimeCache(t *testing.T) {
 	}
 }
 
-func TestAdjustCallerDepth(t *testing.T) {
+func TestResolveDynamicCaller(t *testing.T) {
 	formatter := NewMessageFormatter(&FormatterConfig{
 		Format:        LogFormatText,
 		TimeFormat:    time.RFC3339,
 		DynamicCaller: true,
 	})
 
-	// Test with negative depth (should be normalized to 0)
-	result := formatter.adjustCallerDepth(-1)
-	if result < 0 {
-		t.Errorf("adjustCallerDepth(-1) should return >= 0, got %d", result)
+	// resolveDynamicCaller must return a formatted "file:line" caller string for
+	// every depth, including the negative-depth case (normalized to 0). It must
+	// never return an empty value or panic.
+	for _, depth := range []int{-1, 0, 5, 10} {
+		result := formatter.resolveDynamicCaller(depth)
+		if result == "" {
+			t.Errorf("resolveDynamicCaller(%d) returned empty string", depth)
+		}
+		if !strings.Contains(result, ":") {
+			t.Errorf("resolveDynamicCaller(%d) = %q, expected a \"file:line\" string", depth, result)
+		}
 	}
 
-	// Test with normal depth
-	result = formatter.adjustCallerDepth(5)
-	if result < 0 {
-		t.Errorf("adjustCallerDepth(5) should return >= 0, got %d", result)
+	// Repeated calls exercise the memoized offset cache (hot path) and must stay
+	// consistent with the first resolution.
+	first := formatter.resolveDynamicCaller(0)
+	for i := 0; i < 20; i++ {
+		if got := formatter.resolveDynamicCaller(0); got != first {
+			t.Fatalf("resolveDynamicCaller returned inconsistent result after warming cache: %q vs %q", first, got)
+		}
+	}
+}
+
+func TestIsDDFunction(t *testing.T) {
+	prefix := getDDPackagePrefix()
+	pkgLen := len(prefix)
+
+	cases := []struct {
+		name string
+		want bool
+	}{
+		// dd-internal helper
+		{"github.com/cybergodev/dd/internal.resolveDynamicCaller", true},
+		// dd root package method (e.g. (*Logger).Info)
+		{"github.com/cybergodev/dd.(*Logger).Info", true},
+		// dd subpackage
+		{"github.com/cybergodev/dd/internal/caller.callerForPC", true},
+		// External packages and user code are NOT dd frames
+		{"github.com/someuser/theirapp.run", false},
+		{"main.serve", false},
+		{"example.com/foo/bar.Baz", false},
+		// A name that merely shares the prefix as a substring but is a different module
+		{"github.com/cybergodev/dd-fork/internal.x", false},
+	}
+
+	for _, tc := range cases {
+		got := isDDFunction(tc.name, prefix, pkgLen)
+		if got != tc.want {
+			t.Errorf("isDDFunction(%q) = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 

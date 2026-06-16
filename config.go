@@ -296,17 +296,10 @@ func (c *Config) Clone() Config {
 		}
 	}
 
-	// Copy Audit config
+	// Copy Audit config (reuse AuditConfig.Clone to avoid field-copy drift)
 	if c.Audit != nil {
-		clone.Audit = &AuditConfig{
-			Enabled:          c.Audit.Enabled,
-			Output:           c.Audit.Output,
-			BufferSize:       c.Audit.BufferSize,
-			IncludeTimestamp: c.Audit.IncludeTimestamp,
-			JSONFormat:       c.Audit.JSONFormat,
-			MinimumSeverity:  c.Audit.MinimumSeverity,
-			IntegritySigner:  c.Audit.IntegritySigner,
-		}
+		audit := c.Audit.Clone()
+		clone.Audit = &audit
 	}
 
 	return clone

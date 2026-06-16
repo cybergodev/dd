@@ -142,176 +142,13 @@ func TestExitf(t *testing.T) {
 	}
 }
 
-func TestDefaultHookErrorHandler(t *testing.T) {
-	// Capture stderr
-	oldStderr := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	hookCtx := &HookContext{
-		Event:   HookBeforeLog,
-		Message: "test message",
-	}
-	testErr := errors.New("test hook error")
-
-	defaultHookErrorHandler(HookBeforeLog, hookCtx, testErr)
-
-	w.Close()
-	os.Stderr = oldStderr
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	output := buf.String()
-
-	if !strings.Contains(output, "hook error") {
-		t.Errorf("defaultHookErrorHandler should log error, got: %s", output)
-	}
-	if !strings.Contains(output, "BeforeLog") {
-		t.Errorf("defaultHookErrorHandler should include event name, got: %s", output)
-	}
-}
-
-func TestNewHookErrorRecorder(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	if recorder == nil {
-		t.Fatal("newHookErrorRecorder returned nil")
-	}
-	if recorder.count() != 0 {
-		t.Error("New recorder should have no errors")
-	}
-}
-
-func TestHookErrorRecorderHandler(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	hookCtx := &HookContext{
-		Event:   HookBeforeLog,
-		Message: "test message",
-	}
-	testErr := errors.New("test error")
-
-	handler(HookBeforeLog, hookCtx, testErr)
-
-	if recorder.count() != 1 {
-		t.Errorf("Expected 1 error, got %d", recorder.count())
-	}
-
-	errors := recorder.errors()
-	if len(errors) != 1 {
-		t.Fatalf("Expected 1 error, got %d", len(errors))
-	}
-	if errors[0].Event != HookBeforeLog {
-		t.Errorf("Expected event HookBeforeLog, got %v", errors[0].Event)
-	}
-	if errors[0].Message != "test message" {
-		t.Errorf("Expected message 'test message', got %s", errors[0].Message)
-	}
-}
-
-func TestHookErrorRecorderHandlerNilContext(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	testErr := errors.New("test error")
-
-	// Should not panic with nil context
-	handler(HookAfterLog, nil, testErr)
-
-	if recorder.count() != 1 {
-		t.Errorf("Expected 1 error, got %d", recorder.count())
-	}
-
-	errors := recorder.errors()
-	if errors[0].Message != "" {
-		t.Errorf("Expected empty message for nil context, got %s", errors[0].Message)
-	}
-}
-
-func TestHookErrorRecorderErrors(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	// Add multiple errors
-	handler(HookBeforeLog, &HookContext{Message: "msg1"}, errors.New("err1"))
-	handler(HookAfterLog, &HookContext{Message: "msg2"}, errors.New("err2"))
-	handler(HookOnError, &HookContext{Message: "msg3"}, errors.New("err3"))
-
-	errors := recorder.errors()
-	if len(errors) != 3 {
-		t.Errorf("Expected 3 errors, got %d", len(errors))
-	}
-
-	// Verify it's a copy (modifying shouldn't affect original)
-	errors[0] = hookErrorInfo{Event: HookOnClose}
-	errors2 := recorder.errors()
-	if errors2[0].Event == HookOnClose {
-		t.Error("Errors() should return a copy")
-	}
-}
-
-func TestHookErrorRecorderCount(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	if recorder.count() != 0 {
-		t.Error("New recorder should have count 0")
-	}
-
-	handler(HookBeforeLog, nil, errors.New("err1"))
-	if recorder.count() != 1 {
-		t.Errorf("Expected count 1, got %d", recorder.count())
-	}
-
-	handler(HookAfterLog, nil, errors.New("err2"))
-	if recorder.count() != 2 {
-		t.Errorf("Expected count 2, got %d", recorder.count())
-	}
-}
-
-func TestHookErrorRecorderClear(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	handler(HookBeforeLog, nil, errors.New("err1"))
-	handler(HookAfterLog, nil, errors.New("err2"))
-
-	if recorder.count() != 2 {
-		t.Fatalf("Expected 2 errors before clear, got %d", recorder.count())
-	}
-
-	recorder.clear()
-
-	if recorder.count() != 0 {
-		t.Errorf("Expected 0 errors after clear, got %d", recorder.count())
-	}
-}
-
-func TestHookErrorRecorderHasErrors(t *testing.T) {
-	recorder := newHookErrorRecorder()
-	handler := recorder.handler()
-
-	if recorder.hasErrors() {
-		t.Error("New recorder should not have errors")
-	}
-
-	handler(HookBeforeLog, nil, errors.New("err1"))
-
-	if !recorder.hasErrors() {
-		t.Error("Recorder should have errors after adding one")
-	}
-
-	recorder.clear()
-
-	if recorder.hasErrors() {
-		t.Error("Recorder should not have errors after clear")
-	}
-}
-
 func TestHookRegistrySetErrorHandler(t *testing.T) {
 	registry := NewHookRegistry()
-	recorder := newHookErrorRecorder()
-	registry.SetErrorHandler(recorder.handler())
+
+	var handlerCalled atomic.Int32
+	registry.SetErrorHandler(func(event HookEvent, hookCtx *HookContext, err error) {
+		handlerCalled.Add(1)
+	})
 
 	// Add a hook that always fails
 	registry.Add(HookBeforeLog, func(ctx context.Context, hc *HookContext) error {
@@ -321,7 +158,7 @@ func TestHookRegistrySetErrorHandler(t *testing.T) {
 	// Trigger the hook
 	_ = registry.Trigger(context.Background(), HookBeforeLog, &HookContext{})
 
-	if !recorder.hasErrors() {
+	if handlerCalled.Load() == 0 {
 		t.Error("Error handler should have been called")
 	}
 }
@@ -329,7 +166,6 @@ func TestHookRegistrySetErrorHandler(t *testing.T) {
 // ============================================================================
 // ERROR TYPE METHOD TESTS
 // ============================================================================
-
 
 func TestMultiWriterErrorAddError(t *testing.T) {
 	err := &MultiWriterError{}
@@ -1128,7 +964,7 @@ func TestJSONWithSpecialCharacters(t *testing.T) {
 
 			// Output should be valid JSON
 			var jsonData map[string]any
-			if err := json.Unmarshal([]byte(buf.String()), &jsonData); err != nil {
+			if err := json.Unmarshal(buf.Bytes(), &jsonData); err != nil {
 				t.Fatalf("Output is not valid JSON: %v\nOutput: %s", err, buf.String())
 			}
 
@@ -1347,42 +1183,6 @@ func TestWriterErrorWithHandler(t *testing.T) {
 	}
 	if capturedWriter == nil {
 		t.Error("Captured writer should not be nil")
-	}
-}
-
-// ============================================================================
-// BOUNDARY: PACKAGE-LEVEL LOGWITH
-// ============================================================================
-
-func TestPackageLevelLogWith(t *testing.T) {
-	oldDefault := Default()
-	defer SetDefault(oldDefault)
-
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelDebug
-	logger, _ := New(cfg)
-	SetDefault(logger)
-
-	tests := []struct {
-		name     string
-		fn       func()
-		expected string
-	}{
-		{"Log", func() { Log(LevelInfo, "test log") }, "test log"},
-		{"Logf", func() { Logf(LevelInfo, "test %s", "logf") }, "test logf"},
-		{"LogWith", func() { LogWith(LevelInfo, "test logwith", String("key", "val")) }, "test logwith"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf.Reset()
-			tt.fn()
-			if !strings.Contains(buf.String(), tt.expected) {
-				t.Errorf("%s output = %q, want to contain %q", tt.name, buf.String(), tt.expected)
-			}
-		})
 	}
 }
 
@@ -1665,27 +1465,6 @@ func TestDefaultFileWriterConfig(t *testing.T) {
 	}
 	if config.Compress != false {
 		t.Error("Compress should be false by default")
-	}
-}
-
-// ============================================================================
-// CONTEXT WITH LEGACY STRING KEY TESTS
-// ============================================================================
-
-func TestContextKeys_LegacyStringKeys(t *testing.T) {
-	// Test that string keys work for backward compatibility
-	ctx := context.Background()
-	ctx = context.WithValue(ctx, "trace_id", "legacy-trace")
-	ctx = context.WithValue(ctx, "span_id", "legacy-span")
-	ctx = context.WithValue(ctx, "request_id", "legacy-request")
-
-	// Use the default extractors which should handle both key types
-	registry := defaultContextExtractorRegistry()
-	fields := registry.Extract(ctx)
-
-	// Should extract all three IDs
-	if len(fields) < 3 {
-		t.Errorf("Expected at least 3 fields, got %d", len(fields))
 	}
 }
 

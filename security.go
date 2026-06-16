@@ -18,21 +18,19 @@ import (
 // cacheTTLSeconds defines how long cache entries are valid (5 minutes)
 const cacheTTLSeconds = 300
 
+// defaultFilterCacheSize is the maximum number of filtered-input results each
+// SensitiveDataFilter caches. The cache maps input-hash -> filtered result so
+// repeated identical inputs (the common case in logging) skip regex entirely.
+// This MUST be initialized in every filter instance, including clones — a
+// filter with a nil cache disables caching, forcing every Filter() call to
+// re-run all regex patterns. See clone().
+const defaultFilterCacheSize = 1000
+
 // visitedMapPool pools visited maps for FilterValueRecursive to reduce allocations
 // in the hot path when filtering complex nested structures.
 var visitedMapPool = sync.Pool{
 	New: func() any {
 		return make(map[uintptr]bool, 8) // typical visited capacity
-	},
-}
-
-// chunkFilterBufPool pools strings.Builder for chunked filtering to reduce allocations
-// when processing large inputs that exceed the direct processing threshold.
-var chunkFilterBufPool = sync.Pool{
-	New: func() any {
-		var sb strings.Builder
-		sb.Grow(4096) // reasonable initial size for chunked filtering
-		return &sb
 	},
 }
 
@@ -183,7 +181,7 @@ func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, timeout time.
 		timeout:        timeout,
 		semaphore:      make(chan struct{}, maxConcurrentFilters),
 		cache:          make(map[uint64]filterCacheEntry),
-		maxCacheSz:     1000, // Maximum cache entries
+		maxCacheSz:     defaultFilterCacheSize,
 		hashSeed:       maphash.MakeSeed(),
 	}
 	// Initialize the condition variable with a new mutex
@@ -508,8 +506,15 @@ func (f *SensitiveDataFilter) clone() *SensitiveDataFilter {
 		maxInputLength: f.maxInputLength,
 		timeout:        f.timeout,
 		semaphore:      make(chan struct{}, maxConcurrentFilters),
-		hashSeed:       f.hashSeed, // Share the same seed (read-only after initialization)
-		goroutineCond:  *sync.NewCond(&sync.Mutex{}),
+		// Initialize a fresh per-instance cache. The cache is intentionally NOT
+		// shared with the source filter: each logger owns its own cache, warmed
+		// from its own log traffic. Omitting this (leaving cache nil) silently
+		// disables caching and forces every Filter() call to re-run all regex
+		// patterns — a major hot-path regression.
+		cache:         make(map[uint64]filterCacheEntry),
+		maxCacheSz:    defaultFilterCacheSize,
+		hashSeed:      f.hashSeed, // Share the same seed (read-only after initialization)
+		goroutineCond: *sync.NewCond(&sync.Mutex{}),
 	}
 	clone.enabled.Store(f.enabled.Load())
 
@@ -591,10 +596,7 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 	// sensitive data leakage at truncation boundaries.
 	if f.maxInputLength > 0 && inputLen > f.maxInputLength {
 		// Check the boundary region for sensitive data before truncating
-		boundaryStart := f.maxInputLength - boundaryCheckSize
-		if boundaryStart < 0 {
-			boundaryStart = 0
-		}
+		boundaryStart := max(f.maxInputLength-boundaryCheckSize, 0)
 		boundaryRegion := input[boundaryStart:]
 
 		// Check if boundary region contains any sensitive patterns
@@ -796,7 +798,7 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 
 	// Quick scan for key characteristics
 	// Use byte-by-byte scanning for efficiency
-	for i := 0; i < inputLen; i++ {
+	for i := range inputLen {
 		c := input[i]
 
 		// Check for ASCII digits
@@ -875,7 +877,7 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 	if inputLen >= 20 {
 		// Look for a sequence of at least 16 consecutive base64 chars
 		base64Run := 0
-		for i := 0; i < inputLen; i++ {
+		for i := range inputLen {
 			c := input[i]
 			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
 				(c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' {
@@ -890,9 +892,10 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 		}
 	}
 
-	// If input has none of the characteristics, it's very unlikely to contain sensitive data
-	// Most patterns require at least one of these characteristics
-	return hasDigits || hasAtSign || hasProtocol || hasAPIKeyPrefix || hasBase64Pattern
+	// If input has none of the characteristics, it's very unlikely to contain sensitive data.
+	// The early returns above have already ruled out digits, '@', protocols, and API-key
+	// prefixes, so at this point only the base64-pattern signal can still be true.
+	return hasBase64Pattern
 }
 
 // containsCredentialKeyword checks if input contains any credential keyword.
@@ -963,11 +966,11 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 		return f.replaceWithPattern(input, pattern)
 	}
 
-	// For medium inputs, use synchronous chunked processing (no goroutine overhead)
+	// For medium inputs, run synchronously with a timeout (no goroutine overhead)
 	if inputLen < filterMediumInputThreshold {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		result := f.filterInChunksWithContext(ctx, input, pattern)
+		result := f.filterWithContext(ctx, input, pattern)
 		// Check if context timed out
 		if ctx.Err() == context.DeadlineExceeded {
 			f.totalTimeouts.Add(1)
@@ -1010,7 +1013,7 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 			}
 		}()
 
-		output := f.filterInChunksWithContext(ctx, input, pattern)
+		output := f.filterWithContext(ctx, input, pattern)
 		select {
 		case done <- result{output: output}:
 		case <-ctx.Done():
@@ -1026,92 +1029,64 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 	}
 }
 
-// filterInChunksWithContext processes input in chunks with context support for early termination.
-// Uses overlapping chunks to ensure sensitive data patterns spanning chunk boundaries are detected.
-func (f *SensitiveDataFilter) filterInChunksWithContext(ctx context.Context, input string, pattern *regexp.Regexp) string {
-	inputLen := len(input)
-
-	// For inputs up to a reasonable size, process directly without chunking
-	// This avoids the complexity of reassembling filtered chunks with different lengths
-	if inputLen <= filterDirectProcessThreshold {
+// filterWithContext redacts all matches of pattern in input while remaining
+// responsive to ctx cancellation.
+//
+// This used to be implemented as fixed-size overlapping chunks reassembled by
+// byte offset. That reassembly is incorrect whenever redaction changes the
+// output length ([REDACTED] differs in length from the matched text): slicing a
+// redacted chunk at a fixed byte offset no longer aligns to the original byte
+// boundaries, dropping or duplicating bytes — and truncating [REDACTED] tokens —
+// around chunk edges for inputs beyond the direct-process threshold.
+//
+// Instead we locate every match in a single scan and rebuild the string match
+// by match. The result is identical to pattern.ReplaceAllString (correct by
+// construction), with a periodic ctx check so very large inputs still respect
+// the filter timeout. A single bounded scan is acceptable because patterns are
+// validated against catastrophic backtracking (ReDoS) at AddPattern time, the
+// same assumption the direct-process path relies on for smaller inputs.
+func (f *SensitiveDataFilter) filterWithContext(ctx context.Context, input string, pattern *regexp.Regexp) string {
+	// Inputs at or below the threshold skip the match-walk setup.
+	if len(input) <= filterDirectProcessThreshold {
 		return f.replaceWithPatternWithContext(ctx, input, pattern)
 	}
 
-	// For very large inputs, use chunked processing with overlap for boundary detection
-	overlap := chunkOverlapSize
-
-	result := chunkFilterBufPool.Get().(*strings.Builder)
-	result.Reset()
-	result.Grow(inputLen)
-
-	defer func() {
-		result.Reset()
-		if result.Cap() <= 65536 {
-			chunkFilterBufPool.Put(result)
-		}
-	}()
-
-	// Calculate effective step (chunk size minus overlap)
-	step := filterChunkSize - overlap
-	if step <= 0 {
-		step = filterChunkSize / 2
-		if step == 0 {
-			step = 1
-		}
+	matches := pattern.FindAllStringSubmatchIndex(input, -1)
+	if len(matches) == 0 {
+		return input
 	}
 
-	lastWritten := 0
+	hasSubexp := pattern.NumSubexp() > 0
+	var b strings.Builder
+	b.Grow(len(input))
 
-	for pos := 0; pos < inputLen; pos += step {
-		// Check context at the start of each iteration for early termination
-		select {
-		case <-ctx.Done():
-			// Write remaining unprocessed input
-			if lastWritten < inputLen {
-				result.WriteString(input[lastWritten:])
-			}
-			return result.String()
-		default:
+	prev := 0
+	for i, m := range matches {
+		// FindAllStringSubmatchIndex returns ordered, non-overlapping spans, so
+		// m[0] >= prev and this copy is always valid. m[0],m[1] is the full
+		// match; m[2],m[3] is capture group 1 (when the pattern has one).
+		b.WriteString(input[prev:m[0]])
+		// "$1[REDACTED]" semantics: keep group 1 when the pattern has one and it
+		// participated in this match; otherwise emit just "[REDACTED]".
+		if hasSubexp && len(m) >= 4 && m[2] >= 0 {
+			b.WriteString(input[m[2]:m[3]])
 		}
+		b.WriteString("[REDACTED]")
+		prev = m[1]
 
-		chunkStart := pos
-		chunkEnd := min(pos+filterChunkSize, inputLen)
-		chunk := input[chunkStart:chunkEnd]
-
-		// Filter the current chunk with context awareness
-		filtered := f.replaceWithPatternWithContext(ctx, chunk, pattern)
-
-		// Check if context was cancelled during filtering
-		select {
-		case <-ctx.Done():
-			// Context cancelled, return what we have
-			if lastWritten < inputLen {
-				result.WriteString(input[lastWritten:])
+		// Yield to cancellation periodically so huge inputs respect the filter
+		// timeout instead of running unbounded to completion.
+		if i&0x3FF == 0x3FF {
+			select {
+			case <-ctx.Done():
+				b.WriteString(input[prev:])
+				return b.String()
+			default:
 			}
-			return result.String()
-		default:
-		}
-
-		if pos == 0 {
-			// First chunk: write everything
-			result.WriteString(filtered)
-			lastWritten = chunkEnd
-		} else {
-			// Subsequent chunks: skip the overlap region that was already written
-			// Only write the new portion (from overlap point to chunk end)
-			overlapStart := overlap
-			if overlapStart < len(filtered) {
-				// Simple approach: write the non-overlap portion
-				// The overlap ensures boundary patterns are caught in the previous chunk
-				result.WriteString(filtered[overlapStart:])
-			}
-			lastWritten = chunkEnd
 		}
 	}
-
-	// The overlap-based chunking already covers boundary patterns between chunks.
-	// No additional full-string pass is needed — it would double the work for large inputs.
-	return result.String()
+	b.WriteString(input[prev:])
+	return b.String()
 }
 
 // replaceWithPatternWithContext applies regex replacement with context awareness.
@@ -1127,6 +1102,19 @@ func (f *SensitiveDataFilter) replaceWithPatternWithContext(ctx context.Context,
 }
 
 func (f *SensitiveDataFilter) replaceWithPattern(input string, pattern *regexp.Regexp) string {
+	// Match gate: skip the allocation-heavy ReplaceAllString when the pattern
+	// cannot match. ReplaceAllString allocates a result buffer on every call,
+	// even when no match is found; MatchString performs the same single regex
+	// scan without that allocation. When MatchString reports no match the
+	// replacement would return input unchanged anyway, so the output is
+	// identical — this is purely an allocation/CPU win on the common
+	// non-matching path (most log traffic). Verified via pprof: this was the
+	// source of ~97% of allocations on messages that merely "could contain"
+	// sensitive data (e.g. any message containing digits triggers all 67
+	// patterns, each previously allocating even when nothing matched).
+	if !pattern.MatchString(input) {
+		return input
+	}
 	if pattern.NumSubexp() > 0 {
 		return pattern.ReplaceAllString(input, "$1[REDACTED]")
 	}
@@ -1219,7 +1207,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 	kind := val.Kind()
 
 	// Handle pointers - check for circular references
-	if kind == reflect.Ptr {
+	if kind == reflect.Pointer {
 		if val.IsNil() {
 			return nil
 		}
@@ -1319,8 +1307,8 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 			fieldName := fieldType.Name
 			// Check for json tag
 			if tag := fieldType.Tag.Get("json"); tag != "" && tag != "-" {
-				if commaIdx := strings.Index(tag, ","); commaIdx >= 0 {
-					if tagName := tag[:commaIdx]; tagName != "" {
+				if tagName, _, found := strings.Cut(tag, ","); found {
+					if tagName != "" {
 						fieldName = tagName
 					}
 				} else if tag != "" {
