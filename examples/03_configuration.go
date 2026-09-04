@@ -200,9 +200,10 @@ func section6InitDefault() {
 	dd.Debug("No caller info - DynamicCaller=false")
 	dd.Info("Package-level function with custom config")
 
-	// Re-enable caller info
+	// Re-enable caller info (discard is safe: this config already passed
+	// validation on the first InitDefault call above)
 	cfg.DynamicCaller = true
-	dd.InitDefault(cfg)
+	_ = dd.InitDefault(cfg)
 
 	dd.Info("With caller info - DynamicCaller=true")
 

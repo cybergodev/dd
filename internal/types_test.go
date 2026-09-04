@@ -1,6 +1,8 @@
 package internal
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -123,6 +125,9 @@ func TestJSONFieldNamesIsComplete(t *testing.T) {
 }
 
 func TestIsComplexValueExtended(t *testing.T) {
+	var errIface error = errorStub("iface")
+	var stringerIface fmt.Stringer = stringerStub("iface")
+
 	tests := []struct {
 		name     string
 		value    any
@@ -160,6 +165,9 @@ func TestIsComplexValueExtended(t *testing.T) {
 		{"stringerStub", stringerStub("test"), false},
 		{"*error (nil)", (*errorStub)(nil), false},
 		{"*error (non-nil)", ptr(errorStub("test")), false}, // pointer to error implements error interface
+		{"*error interface (nil)", (*error)(nil), false},
+		{"*error interface (non-nil)", &errIface, false},
+		{"*fmt.Stringer interface (non-nil)", &stringerIface, false},
 
 		// Complex types
 		{"slice", []int{1, 2, 3}, true},
@@ -180,6 +188,46 @@ func TestIsComplexValueExtended(t *testing.T) {
 
 func ptr[T any](v T) *T {
 	return &v
+}
+
+// Kinds whose underlying type is complex128: they fall past the main switch
+// in ConvertValue and exercise the default branch's error/Stringer handling
+// and the final fmt fallback.
+type complexError complex128
+
+func (c complexError) Error() string { return "complex error" }
+
+type complexStringer complex128
+
+func (c complexStringer) String() string { return "stringer!" }
+
+// TestConvertValueDefaultBranch pins ConvertValue's fallback rendering for
+// kinds outside the main switch, plus interface unwrapping.
+func TestConvertValueDefaultBranch(t *testing.T) {
+	var nilErr error
+	var stringerIface fmt.Stringer = stringerStub("wrapped")
+
+	tests := []struct {
+		name  string
+		input any
+		want  any
+	}{
+		// json.Marshal cannot encode complex numbers, so the fmt fallback runs.
+		{"plain complex uses fmt fallback", complex(1, 2), "<complex128:(1+2i)>"},
+		{"Error() method wins over fmt fallback", complexError(1), "complex error"},
+		{"String() method wins over fmt fallback", complexStringer(2), "stringer!"},
+		// A non-nil interface stored in any unwraps to its dynamic value.
+		{"interface unwraps to dynamic value", stringerIface, stringerStub("wrapped")},
+		{"nil interface converts to nil", nilErr, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ConvertValue(tt.input); got != tt.want {
+				t.Errorf("ConvertValue(%T) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestConvertValue(t *testing.T) {
@@ -470,5 +518,72 @@ func TestDefaultJSONIndent(t *testing.T) {
 func TestMaxConvertDepth(t *testing.T) {
 	if MaxConvertDepth != 100 {
 		t.Errorf("MaxConvertDepth = %d, want 100", MaxConvertDepth)
+	}
+}
+
+// TestJSONFieldName pins the json-struct-tag name resolution shared by
+// ConvertValue and the root package's recursive sensitive-data filter, so the
+// two call sites cannot drift apart.
+func TestJSONFieldName(t *testing.T) {
+	type tagged struct {
+		NoTag      string
+		Custom     string `json:"custom_name"`
+		WithOpts   string `json:"opts_name,omitempty"`
+		OptsOnly   string `json:",omitempty"`
+		DropMarker string `json:"-"`
+	}
+
+	tests := []struct {
+		field string
+		want  string
+	}{
+		{"NoTag", "NoTag"},
+		{"Custom", "custom_name"},
+		{"WithOpts", "opts_name"},
+		{"OptsOnly", "OptsOnly"},
+		{"DropMarker", "DropMarker"},
+	}
+
+	typ := reflect.TypeFor[tagged]()
+	for _, tt := range tests {
+		field, ok := typ.FieldByName(tt.field)
+		if !ok {
+			t.Fatalf("field %s not found", tt.field)
+		}
+		if got := JSONFieldName(field); got != tt.want {
+			t.Errorf("JSONFieldName(%s) = %q, want %q", tt.field, got, tt.want)
+		}
+	}
+
+	// `json:","` (comma with empty name) keeps the Go field name. Built
+	// manually because declaring that tag on a struct field trips SA5008.
+	commaTag := reflect.StructField{Name: "EmptyName", Tag: `json:","`}
+	if got := JSONFieldName(commaTag); got != "EmptyName" {
+		t.Errorf("JSONFieldName(json comma tag) = %q, want %q", got, "EmptyName")
+	}
+}
+
+// TestMapKeyToString pins the map-key rendering used when converting
+// arbitrary maps to map[string]any for debug/JSON output.
+func TestMapKeyToString(t *testing.T) {
+	tests := []struct {
+		name string
+		key  reflect.Value
+		want string
+	}{
+		{"string", reflect.ValueOf("abc"), "abc"},
+		{"int", reflect.ValueOf(int(42)), "42"},
+		{"int64", reflect.ValueOf(int64(42)), "42"},
+		{"float64", reflect.ValueOf(3.5), "3.5"},
+		{"bool_true", reflect.ValueOf(true), "true"},
+		{"bool_false", reflect.ValueOf(false), "false"},
+		{"other", reflect.ValueOf(struct{ X int }{X: 1}), "{1}"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MapKeyToString(tt.key); got != tt.want {
+				t.Errorf("MapKeyToString() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

@@ -24,6 +24,7 @@ func main() {
 	section1AuditLogging()
 	section2IntegritySigning()
 	section3Verification()
+	section4AuditIntegration()
 
 	fmt.Println("\n✅ Audit & Integrity examples completed!")
 }
@@ -157,5 +158,41 @@ func section3Verification() {
 		fmt.Println("  ✓ Tampering detected correctly")
 	}
 
+	fmt.Println()
+}
+
+// Section 4: Audit integration — attach the audit logger to a regular Logger
+// via Config.Audit. Security events (e.g., sensitive-data redactions) are then
+// recorded automatically whenever the logger filters something.
+func section4AuditIntegration() {
+	fmt.Println("4. Audit Integration (Config.Audit)")
+	fmt.Println("------------------------------------")
+
+	audit := dd.DefaultAuditConfig()
+	audit.Output = os.Stdout // audit events to stdout for the demo (default: stderr)
+	audit.JSONFormat = true
+
+	cfg := dd.DefaultConfig()
+	cfg.Security = dd.DefaultSecurityConfig()
+	cfg.Audit = &audit
+
+	logger, err := dd.New(cfg)
+	if err != nil {
+		fmt.Printf("  Error creating logger: %v\n", err)
+		return
+	}
+	defer logger.Close() // also flushes and closes the internal audit logger
+
+	// This redaction produces a filtered log entry AND an
+	// AuditEventSensitiveDataRedacted audit record
+	logger.InfoWith("User login",
+		dd.String("user", "john"),
+		dd.String("password", "secret123"),
+	)
+
+	// Audit events are processed asynchronously; give the buffer a moment
+	time.Sleep(100 * time.Millisecond)
+
+	fmt.Println("✓ Redaction above also emitted an audit event")
 	fmt.Println()
 }

@@ -112,7 +112,14 @@ func newSensitiveDataFilterWithExtras(extras []*regexp.Regexp) *SensitiveDataFil
 	combined := make([]*regexp.Regexp, 0, len(base)+len(extras))
 	combined = append(combined, base...)
 	combined = append(combined, extras...)
-	return newSensitiveDataFilterWithPatterns(combined, defaultFilterTimeout)
+	// Gate slice mirrors the combined pattern slice: built-in gates first,
+	// zero gates ("always run") for the caller-supplied extras. The length
+	// MUST be len(base)+len(extras) — Filter only applies gating when the two
+	// slices are index-aligned, so a shorter slice silently disables gating
+	// for every pattern, not just the extras.
+	combinedGates := make([]internal.PatternGate, len(base)+len(extras))
+	copy(combinedGates, internal.FullPatternGates)
+	return newSensitiveDataFilterWithPatterns(combined, combinedGates, defaultFilterTimeout)
 }
 
 // SensitiveDataFilter filters sensitive data from log messages using configurable regex patterns.
@@ -121,7 +128,12 @@ type SensitiveDataFilter struct {
 	// patternsPtr stores an immutable slice of patterns using atomic pointer.
 	// This eliminates slice copying during filter operations (hot path).
 	// The slice is replaced atomically when patterns are added/removed.
-	patternsPtr    atomic.Pointer[[]*regexp.Regexp]
+	patternsPtr atomic.Pointer[[]*regexp.Regexp]
+	// gatesPtr stores a slice of per-pattern gates, index-aligned with the
+	// slice in patternsPtr (see internal.ScanMessageFeatures). Custom patterns
+	// added via AddPattern carry a zero gate ("always run"), so alignment is
+	// maintained by appending one gate per appended pattern.
+	gatesPtr       atomic.Pointer[[]internal.PatternGate]
 	mu             sync.RWMutex // protects pattern modifications
 	maxInputLength int
 	timeout        time.Duration
@@ -166,16 +178,18 @@ type filterCacheEntry struct {
 // hashString computes a hash of the input string using maphash.
 // This provides better collision resistance than FNV-1a while maintaining
 // good performance. Each filter instance uses a unique seed for security.
+// maphash.String is the zero-setup form of the Hash/SetSeed/WriteString/Sum64
+// sequence, which profiling showed paid measurable setup cost on every
+// cacheable filter call.
 func (f *SensitiveDataFilter) hashString(s string) uint64 {
-	var h maphash.Hash
-	h.SetSeed(f.hashSeed)
-	h.WriteString(s)
-	return h.Sum64()
+	return maphash.String(f.hashSeed, s)
 }
 
 // newSensitiveDataFilterWithPatterns is the internal constructor for SensitiveDataFilter.
 // It creates a filter with the specified patterns and timeout.
-func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, timeout time.Duration) *SensitiveDataFilter {
+// gates must be index-aligned with patterns (built-in lists) or nil/empty
+// (no gating — every pattern always runs).
+func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, gates []internal.PatternGate, timeout time.Duration) *SensitiveDataFilter {
 	filter := &SensitiveDataFilter{
 		maxInputLength: maxInputLength,
 		timeout:        timeout,
@@ -199,6 +213,15 @@ func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, timeout time.
 		filter.patternCount.Store(0)
 	}
 
+	if gates != nil {
+		copiedGates := make([]internal.PatternGate, len(gates))
+		copy(copiedGates, gates)
+		filter.gatesPtr.Store(&copiedGates)
+	} else {
+		emptyGates := make([]internal.PatternGate, 0)
+		filter.gatesPtr.Store(&emptyGates)
+	}
+
 	return filter
 }
 
@@ -206,13 +229,13 @@ func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, timeout time.
 // This includes patterns for passwords, API keys, credit cards, SSN, emails, and more.
 func NewSensitiveDataFilter() *SensitiveDataFilter {
 	internal.InitPatterns()
-	return newSensitiveDataFilterWithPatterns(internal.CompiledFullPatterns, defaultFilterTimeout)
+	return newSensitiveDataFilterWithPatterns(internal.CompiledFullPatterns, internal.FullPatternGates, defaultFilterTimeout)
 }
 
 // NewEmptySensitiveDataFilter creates a sensitive data filter with no patterns.
 // Use AddPattern() to add custom patterns.
 func NewEmptySensitiveDataFilter() *SensitiveDataFilter {
-	return newSensitiveDataFilterWithPatterns(nil, emptyFilterTimeout)
+	return newSensitiveDataFilterWithPatterns(nil, nil, emptyFilterTimeout)
 }
 
 // NewCustomSensitiveDataFilter creates a sensitive data filter with custom regex patterns.
@@ -259,6 +282,13 @@ func (f *SensitiveDataFilter) addPattern(pattern string) error {
 	f.patternsPtr.Store(&newPatterns)
 	f.patternCount.Store(int32(len(newPatterns)))
 
+	// Keep the gate slice index-aligned: custom patterns get a zero gate
+	// (always run), since gates are only derived for built-in patterns.
+	currentGates := f.gatesPtr.Load()
+	newGates := make([]internal.PatternGate, len(*currentGates)+1)
+	copy(newGates, *currentGates)
+	f.gatesPtr.Store(&newGates)
+
 	return nil
 }
 
@@ -300,6 +330,8 @@ func (f *SensitiveDataFilter) ClearPatterns() {
 	emptyPatterns := make([]*regexp.Regexp, 0)
 	f.patternsPtr.Store(&emptyPatterns)
 	f.patternCount.Store(0)
+	emptyGates := make([]internal.PatternGate, 0)
+	f.gatesPtr.Store(&emptyGates)
 }
 
 // PatternCount returns the number of registered patterns.
@@ -417,6 +449,9 @@ func (f *SensitiveDataFilter) GetFilterStats() FilterStats {
 //	// 3. Close the logger
 //	logger.Close()
 //
+// A timeout does NOT disable the filter: subsequent Filter calls continue to
+// redact as normal.
+//
 // Returns true if all goroutines completed, false if timeout was reached.
 func (f *SensitiveDataFilter) WaitForGoroutines(timeout time.Duration) bool {
 	if f == nil {
@@ -428,13 +463,19 @@ func (f *SensitiveDataFilter) WaitForGoroutines(timeout time.Duration) bool {
 		return true
 	}
 
+	// Per-call abort flag: a timed-out wait must abort only its OWN helper
+	// goroutine. A shared flag would let one caller's timeout prematurely wake
+	// another concurrent caller's helper, making that caller return true
+	// ("all completed") while filter goroutines are still running.
+	abort := &atomic.Bool{}
+
 	// Use a channel to implement timeout on Cond.Wait
 	done := make(chan struct{})
 
 	go func() {
 		f.goroutineCond.L.Lock()
 		defer f.goroutineCond.L.Unlock()
-		for f.activeGoroutines.Load() > 0 && !f.closed.Load() {
+		for f.activeGoroutines.Load() > 0 && !f.closed.Load() && !abort.Load() {
 			f.goroutineCond.Wait()
 		}
 		close(done)
@@ -444,10 +485,19 @@ func (f *SensitiveDataFilter) WaitForGoroutines(timeout time.Duration) bool {
 	case <-done:
 		return true
 	case <-time.After(timeout):
-		// Timeout reached: mark closed so the waiting goroutine exits its loop,
-		// then broadcast to wake it from Cond.Wait().
-		f.closed.Store(true)
+		// Timeout reached: wake the helper goroutine via the per-call abort
+		// flag — NOT via closed. Setting closed here would permanently disable
+		// filtering for every subsequent Filter call (a transient timeout must
+		// never turn into a security off-switch; WaitForGoroutines is
+		// documented for use BEFORE Close(), i.e. while logging is still
+		// active). Mutate abort under the cond's lock (same discipline as the
+		// goroutine-exit path): a helper between its condition check and
+		// Cond.Wait would otherwise miss the broadcast and sleep forever —
+		// a leaked goroutine, not just a delayed wakeup.
+		f.goroutineCond.L.Lock()
+		abort.Store(true)
 		f.goroutineCond.Broadcast()
+		f.goroutineCond.L.Unlock()
 		return f.activeGoroutines.Load() == 0
 	}
 }
@@ -466,7 +516,14 @@ func (f *SensitiveDataFilter) Close() bool {
 		return true
 	}
 
+	// Mutate closed under the cond's lock and broadcast: a WaitForGoroutines
+	// helper between its condition check and Cond.Wait must observe the flag
+	// and exit instead of sleeping until the wait timeout below.
+	f.goroutineCond.L.Lock()
 	f.closed.Store(true)
+	f.goroutineCond.Broadcast()
+	f.goroutineCond.L.Unlock()
+
 	result := f.WaitForGoroutines(defaultFilterTimeout * 2)
 
 	// Release cache memory
@@ -522,6 +579,8 @@ func (f *SensitiveDataFilter) clone() *SensitiveDataFilter {
 	// This avoids allocation when cloning
 	clone.patternsPtr.Store(f.patternsPtr.Load())
 	clone.patternCount.Store(f.patternCount.Load())
+	// Share the gates pointer the same way (immutable, index-aligned)
+	clone.gatesPtr.Store(f.gatesPtr.Load())
 
 	return clone
 }
@@ -544,19 +603,37 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 		return input
 	}
 
+	// Track if input was truncated for cache decision
+	// SECURITY: When input is truncated, the content changes so we must
+	// disable caching to prevent cache pollution with stale results
+	inputWasTruncated := false
+
 	// Pre-compute hash for cache operations (avoid redundant hash calculations)
 	// This hash is for the original input; will recompute if input is truncated
-	// SECURITY: Only cache inputs <= cacheInputMaxLen (128 bytes) to prevent
+	// SECURITY: Only cache inputs <= cacheInputMaxLen (64 bytes) to prevent
 	// hash collision attacks. See cacheResult for details.
 	var inputHash uint64
 	useCache := inputLen <= cacheInputMaxLen
 
 	// Check cache for repeated messages (only for small inputs to avoid memory bloat)
 	// Skip cache if not initialized (for filters created without using constructor)
+	//
+	// The lookup runs BEFORE the quick-rejection scan: repeated identical
+	// messages (the common case the cache exists for) return in one hash +
+	// RLock + probe, without re-scanning the input at all.
+	//
+	// cachePresent snapshots (under this read lock) whether a cache map exists.
+	// The post-scan cacheResult sites below consult the snapshot instead of
+	// re-reading f.cache: an unlocked read there would race with Close()'s
+	// f.cache = nil write (Close is the only nil-er and is one-way, so a
+	// stale-true snapshot merely routes into cacheResult, which re-checks nil
+	// under the write lock).
+	cachePresent := false
 	if useCache {
 		inputHash = f.hashString(input)
 		f.cacheMu.RLock()
 		if f.cache != nil {
+			cachePresent = true
 			// SECURITY: Verify both hash AND input length to add collision resistance.
 			// This provides defense-in-depth: even if hash collision occurs,
 			// different length inputs will be rejected.
@@ -579,11 +656,6 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 		f.cacheMiss.Add(1)
 	}
 
-	// Track if input was truncated for cache decision
-	// SECURITY: When input is truncated, the content changes so we must
-	// disable caching to prevent cache pollution with stale results
-	inputWasTruncated := false
-
 	startTime := time.Now()
 
 	patterns := *patternsPtr
@@ -595,9 +667,21 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 	// IMPORTANT: Boundary check must happen before early exit to prevent
 	// sensitive data leakage at truncation boundaries.
 	if f.maxInputLength > 0 && inputLen > f.maxInputLength {
-		// Check the boundary region for sensitive data before truncating
+		// Check the boundary region for sensitive data before truncating.
+		// The region starts boundaryCheckSize before the cut and extends at
+		// most boundaryLookahead past it — enough to see any built-in pattern
+		// straddling the cut (the longest, a PEM block, matches ~4KB) while
+		// keeping the scan bounded. Scanning input[boundaryStart:] to the end
+		// (the historical behavior) ran every pattern over the entire
+		// discarded tail — unbounded, timeout-free CPU on the logging hot
+		// path for oversized messages — and, when the tail matched, appended
+		// the whole filtered tail to the "truncated" output, defeating the
+		// size limit. Custom patterns able to match farther than
+		// boundaryLookahead past the cut are partially retained; keep the
+		// lookahead >= the longest registered pattern if that matters.
 		boundaryStart := max(f.maxInputLength-boundaryCheckSize, 0)
-		boundaryRegion := input[boundaryStart:]
+		boundaryEnd := min(inputLen, f.maxInputLength+boundaryLookahead)
+		boundaryRegion := input[boundaryStart:boundaryEnd]
 
 		// Check if boundary region contains any sensitive patterns
 		boundaryHasSensitive := false
@@ -649,16 +733,35 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 		f.totalFiltered.Add(1)
 		f.totalLatencyNs.Add(latencyNs)
 
-		// Cache the result for small inputs (use pre-computed hash)
-		if useCache && f.cache != nil {
-			f.cacheResult(inputHash, input, input)
+		// Cache the result for small inputs (use pre-computed hash) so repeated
+		// safe messages short-circuit at the cache lookup above.
+		if useCache && cachePresent {
+			f.cacheResult(inputHash, input, input, startTime)
 		}
 		return input
+	}
+
+	// Pattern gating: extract structural features once and skip patterns whose
+	// necessary conditions rule out a match, before running any regex.
+	// SECURITY: gates only skip patterns that provably cannot match
+	// (see internal.ScanMessageFeatures). The length check guards against a
+	// gate slice that is out of alignment with patterns; on mismatch no gate
+	// is applied and every pattern runs.
+	var gates []internal.PatternGate
+	if gatesPtr := f.gatesPtr.Load(); gatesPtr != nil && len(*gatesPtr) == len(patterns) {
+		gates = *gatesPtr
+	}
+	var features internal.MessageFeatures
+	if len(gates) > 0 {
+		features = internal.ScanMessageFeatures(input)
 	}
 
 	result := input
 	redactionCount := int64(0)
 	for i := range patterns {
+		if len(gates) > 0 && !gates[i].Allows(features) {
+			continue
+		}
 		beforeFilter := result
 		result = f.filterWithTimeout(result, patterns[i], timeout)
 		// Track redactions (result changed by this pattern)
@@ -681,8 +784,8 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 	f.totalLatencyNs.Add(latencyNs)
 
 	// Cache the result for small inputs (use pre-computed hash)
-	if useCache && f.cache != nil {
-		f.cacheResult(inputHash, input, result)
+	if useCache && cachePresent {
+		f.cacheResult(inputHash, input, result, startTime)
 	}
 
 	return result
@@ -696,13 +799,15 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 // good cache hit rate for typical short log messages.
 const cacheInputMaxLen = 64
 
-// cacheResult stores a filter result in the cache.
+// cacheResult stores a filter result in the cache, stamping the entry with
+// now (the filter call's start time — close enough for the TTL check and one
+// time.Now call cheaper than taking a fresh reading here).
 // For inputs longer than cacheInputMaxLen, the input string is not stored
 // to prevent memory bloat from caching large strings.
 //
 // SECURITY: For inputs longer than cacheInputMaxLen, we skip caching entirely
 // to prevent hash collision attacks that could bypass sensitive data filtering.
-func (f *SensitiveDataFilter) cacheResult(hash uint64, input, result string) {
+func (f *SensitiveDataFilter) cacheResult(hash uint64, input, result string, now time.Time) {
 	f.cacheMu.Lock()
 	defer f.cacheMu.Unlock()
 	if f.cache == nil {
@@ -724,7 +829,6 @@ func (f *SensitiveDataFilter) cacheResult(hash uint64, input, result string) {
 	// evict when 10% over capacity instead of at exact capacity.
 	if !exists && len(f.cache) >= f.maxCacheSz {
 		// Simple eviction: clear expired entries first
-		now := time.Now()
 		ttl := cacheTTLSeconds * time.Second
 		for k, entry := range f.cache {
 			if now.Sub(entry.created) >= ttl {
@@ -749,25 +853,74 @@ func (f *SensitiveDataFilter) cacheResult(hash uint64, input, result string) {
 	f.cache[hash] = filterCacheEntry{
 		input:   input, // Always store input for collision detection (already checked length)
 		result:  result,
-		created: time.Now(),
+		created: now,
 	}
 }
 
 // Pre-computed lowercase credential keywords for fast case-insensitive matching
-// These are the most common credential keywords that appear in sensitive data patterns
-var credentialKeywords = [][]byte{
-	[]byte("password"),
-	[]byte("passwd"),
-	[]byte("secret"),
-	[]byte("token"),
-	[]byte("api_key"),
-	[]byte("apikey"),
-	[]byte("bearer"),
-	[]byte("auth"),
-	[]byte("credential"),
-	[]byte("private_key"),
-	[]byte("session"),
+// These are the most common credential keywords that appear in sensitive data patterns.
+//
+// SECURITY: this list must stay a SUPERSET of every keyword that a built-in
+// keyword-gated pattern can require when the pattern's value shape contains
+// no other pre-gate signal (no digits, '@', "://", '+', API-key prefix, or
+// >=16-char base64 run). The password/token patterns match digit-less values
+// ("pwd: x"), and so do the swift/mrn/license/connection-string/biometric
+// context patterns ("swift: DEUTDEFF", "mrn: ABCDEF12") — for those inputs
+// this list is the ONLY way the couldContainSensitiveData hard pre-gate lets
+// the regex sweep run at all. A missing keyword here silently disables the
+// pattern's redaction (pinned by TestKeywordGatedPatternsReachableThroughPreGate).
+//
+// Keyword groups deliberately NOT added, because their patterns would then
+// false-positive on ordinary digit-free prose (e.g. "host the party",
+// "confidential information shared"): kwServerHost (server/host/data source/
+// oracle/tns/sid) and the strict/paranoid confidential|classified|private
+// extras. See the "known limitations" note on couldContainSensitiveData.
+var credentialKeywords = []string{
+	"password",
+	"passwd",
+	"pwd",
+	"secret",
+	"token",
+	"api_key",
+	"apikey",
+	"api-key",
+	"bearer",
+	"auth",
+	"credential",
+	"private_key",
+	"session",
+	// kwSwift (context SWIFT/BIC/IBAN patterns match letter-only values)
+	"swift",
+	"bic",
+	"iban",
+	"bank",
+	// kwMrn (medical record / patient identifiers can be letter-only)
+	"mrn",
+	"medical",
+	"patient",
+	"health",
+	// kwLicense (driver's license values can be letter-only)
+	"driver",
+	"license",
+	"dl",
+	// kwConn (azure connection-string values are letter-only secrets)
+	"connstr",
+	"connection",
+	"azure",
+	// kwBio (biometric template identifiers can be letter-only)
+	"fingerprint",
+	"fp",
+	"face",
+	"biometric",
+	"bio",
 }
+
+// credentialKeywordIndex indexes credentialKeywords for single-pass scanning
+// with two-byte pre-rejection (see internal.SecondByteIndex), so
+// containsCredentialKeyword compares only candidates whose first two bytes
+// can continue at the current position instead of re-scanning the whole
+// input once per keyword.
+var credentialKeywordIndex = internal.NewSecondByteIndex(credentialKeywords, true)
 
 // couldContainSensitiveData performs fast pre-checks to determine if input
 // could possibly contain sensitive data. This avoids expensive regex matching
@@ -780,11 +933,22 @@ var credentialKeywords = [][]byte{
 //   - Has @ symbol: required for email patterns
 //   - Has protocol indicators: required for connection strings
 //
-// SECURITY NOTE: This pre-check is an optimization, not a security boundary.
-// The actual regex patterns will still catch sensitive data even if this
-// function returns false. Attackers cannot bypass filtering by encoding
-// data (e.g., fullwidth digits, HTML entities) because the regex patterns
-// operate on the raw input.
+// SECURITY NOTE: This pre-check IS a hard gate, not merely an optimization:
+// when it returns false, Filter skips all regex patterns and returns the input
+// unchanged. Every pattern registered with AddPattern must therefore be
+// detectable through at least one characteristic checked here (ASCII or
+// fullwidth digits, '@', "://", a known API-key prefix, a credential keyword,
+// or a >=16-char base64 run). A custom pattern that can match input containing
+// none of these characteristics will NOT be redacted. The fullwidth-digit
+// check below exists precisely to keep this invariant from becoming a bypass.
+//
+// KNOWN LIMITATIONS (built-ins whose only trigger keyword is not in
+// credentialKeywords because their arbitrary-token values would false-positive
+// on ordinary digit-free prose): server/data source/host (and oracle/tns/sid)
+// connection patterns, and the strict/paranoid confidential|classified|private
+// extras. Letter-only values for those shapes pass through unredacted; the
+// patterns still redact any input that carries another signal (digits,
+// scheme, ...).
 //
 // Returns true if any sensitive data pattern could potentially match.
 func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
@@ -794,7 +958,6 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 	hasDigits := false
 	hasAtSign := false
 	hasProtocol := false
-	hasAPIKeyPrefix := false
 
 	// Quick scan for key characteristics
 	// Use byte-by-byte scanning for efficiency
@@ -816,8 +979,11 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 			hasProtocol = true
 		}
 
-		// Early exit if we found all characteristics
-		if hasDigits && hasAtSign && hasProtocol {
+		// Early exit on the first characteristic found: the result is an OR
+		// of the three, so one hit already decides the outcome and the rest
+		// of the scan is wasted work (relevant for long messages that start
+		// with a digit).
+		if hasDigits || hasAtSign || hasProtocol {
 			break
 		}
 	}
@@ -842,8 +1008,8 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 		return true
 	}
 
-	// Check for API key prefixes (case-sensitive for efficiency)
-	// These are the most common API key prefixes
+	// Check for API key prefixes (case-sensitive for efficiency).
+	// Fast return on a hit: the result is OR-ed, so no further checks are needed.
 	if strings.HasPrefix(input, "sk-") ||
 		strings.HasPrefix(input, "ghp_") ||
 		strings.HasPrefix(input, "gho_") ||
@@ -857,11 +1023,6 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 		strings.Contains(input, "AIza") ||
 		strings.Contains(input, "ya29.") ||
 		strings.Contains(input, "1//") {
-		hasAPIKeyPrefix = true
-	}
-
-	// Fast return: API key prefix found, no need for further checks.
-	if hasAPIKeyPrefix {
 		return true
 	}
 
@@ -899,38 +1060,28 @@ func (f *SensitiveDataFilter) couldContainSensitiveData(input string) bool {
 }
 
 // containsCredentialKeyword checks if input contains any credential keyword.
-// Uses first-byte filter to skip positions that cannot match, reducing comparisons.
+// Single pass over the input; at each position only keywords whose first two
+// bytes can continue there (via credentialKeywordIndex) are compared,
+// instead of scanning the whole input once per keyword.
 func containsCredentialKeyword(input string) bool {
 	inputLen := len(input)
 	if inputLen < 4 {
 		return false
 	}
 
-	// For each keyword, use first-byte filtering to quickly skip non-matching positions.
-	// This reduces the inner loop iterations from O(N*M) toward O(N) in practice,
-	// since most positions are skipped by the first-byte check.
-	for _, keyword := range credentialKeywords {
-		keywordLen := len(keyword)
-		if inputLen < keywordLen {
-			continue
-		}
-
-		// Get the first byte of keyword for quick filtering
-		firstByte := keyword[0]
-		firstByteUpper := firstByte - 32 // uppercase equivalent (keyword bytes are lowercase)
-
-		// Search for keyword in input using first-byte filter
-		endPos := inputLen - keywordLen
-		for i := 0; i <= endPos; i++ {
-			c := input[i]
-			// Quick first-byte filter: skip if first char can't match
-			if c != firstByte && c != firstByteUpper {
+	// Every keyword is at least two bytes, so the last byte can never start one.
+	for i := 0; i+1 < inputLen; i++ {
+		cands := credentialKeywordIndex.Candidates(input[i], input[i+1])
+		for _, ci := range cands {
+			keyword := credentialKeywords[ci]
+			end := i + len(keyword)
+			if end > inputLen {
 				continue
 			}
-
-			// First byte matches, check remaining bytes
+			// First two bytes already matched via the index; check the rest
+			// case-insensitively (keyword bytes are lowercase).
 			match := true
-			for j := 1; j < keywordLen; j++ {
+			for j := 2; j < len(keyword); j++ {
 				c := input[i+j]
 				if c >= 'A' && c <= 'Z' {
 					c += 32
@@ -948,16 +1099,56 @@ func containsCredentialKeyword(input string) bool {
 	return false
 }
 
+// Filter deadline scaling for large inputs.
+//
+// Rationale: Go's regexp engine is linear in input size, so scan time grows
+// with the message. A FIXED wall-clock budget disproportionately punishes
+// large-but-legitimate inputs: measured, one built-in pattern (the 10-keyword
+// database-URL alternation) takes ~13ms on a 68KB input in production — i.e.
+// ~50ms at the 256KB truncation cap, exactly the old base timeout — and ~250ms
+// under the race detector. A false-positive timeout silently replaces the
+// ENTIRE message with [REDACTED], destroying both the content and every prior
+// redaction, and makes Filter's output timing-dependent. Scaling the deadline
+// with input length keeps a hard ceiling for pathological inputs while
+// removing that cliff.
+const (
+	// filterTimeoutScaleBytes is the input-size increment that adds
+	// filterTimeoutScaleFactor base timeouts to the effective deadline.
+	filterTimeoutScaleBytes = filterDirectProcessThreshold // 32KB
+	// filterTimeoutScaleFactor multiplies the per-increment allowance. The 4x
+	// headroom absorbs detector/compiler/machine variance (race detector alone
+	// measured ~19x slowdown on the slowest pattern) while still bounding a
+	// single pattern's runtime.
+	filterTimeoutScaleFactor = 4
+)
+
+// scaledFilterTimeout returns the effective timeout for an input of the given
+// length: the base timeout for inputs within the direct-process threshold,
+// then filterTimeoutScaleFactor additional base timeouts per
+// filterTimeoutScaleBytes of input.
+func scaledFilterTimeout(base time.Duration, inputLen int) time.Duration {
+	if inputLen <= filterTimeoutScaleBytes {
+		return base
+	}
+	extra := base * filterTimeoutScaleFactor * time.Duration(inputLen/filterTimeoutScaleBytes)
+	return base + extra
+}
+
 // filterWithTimeout applies regex filtering with timeout protection for large inputs.
 //
 // The function uses a tiered approach based on input size:
-// - Small inputs (< fastPathThreshold): Direct synchronous processing
-// - Medium inputs (< filterMediumInputThreshold): Synchronous chunked processing with context
-// - Large inputs: Async processing with timeout and semaphore-based concurrency limiting
+//   - Small inputs (< fastPathThreshold): Direct synchronous processing
+//   - Medium inputs (< filterMediumInputThreshold): Synchronous processing with
+//     a cancellation-aware match walk
+//   - Large inputs: Async processing with timeout and semaphore-based concurrency limiting
 //
-// For large inputs, a goroutine is spawned for regex processing. The context is passed
-// to allow early termination on timeout. The semaphore limits concurrent goroutines
-// to prevent resource exhaustion.
+// For large inputs, a goroutine is spawned for regex processing. The context
+// bounds how long the CALLER waits: on deadline the caller abandons the scan
+// and returns "[REDACTED]", but the goroutine itself runs to completion — Go's
+// regexp engine cannot be interrupted mid-scan. Patterns are validated against
+// catastrophic backtracking (ReDoS) at AddPattern time, so an abandoned scan
+// is wasted CPU, not an unbounded one. The semaphore limits concurrent scan
+// goroutines to prevent resource exhaustion.
 func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Regexp, timeout time.Duration) string {
 	inputLen := len(input)
 
@@ -978,10 +1169,14 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 		return result
 	}
 
+	// Large inputs get a deadline scaled to their length (see
+	// scaledFilterTimeout): the regex scan is linear in input size, so the
+	// base timeout alone would false-positive on big legitimate messages.
+	timeout = scaledFilterTimeout(timeout, inputLen)
+
 	// Try to acquire semaphore with timeout to limit concurrent goroutines
 	select {
 	case f.semaphore <- struct{}{}:
-		defer func() { <-f.semaphore }()
 	case <-time.After(timeout / 2):
 		// Could not acquire semaphore within half the timeout, return [REDACTED] for safety
 		f.totalTimeouts.Add(1)
@@ -998,10 +1193,25 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 
 	f.activeGoroutines.Add(1)
 	go func() {
+		// SECURITY: the semaphore slot is released HERE, when the regex work
+		// actually finishes — not when filterWithTimeout returns. On timeout
+		// the caller abandons the wait, but this goroutine keeps scanning to
+		// completion (Go regexp cannot be interrupted); a caller-side release
+		// would hand the slot to a new worker while this one still burns CPU,
+		// letting the worker population grow unboundedly past
+		// maxConcurrentFilters under sustained slow inputs — exactly the
+		// resource exhaustion the semaphore exists to prevent.
+		defer func() { <-f.semaphore }()
 		defer func() {
 			if f.activeGoroutines.Add(-1) == 0 {
-				// Signal any waiting goroutines that count reached zero
+				// Signal any waiting goroutines that count reached zero.
+				// Broadcast under the cond's lock: without it, a waiter in
+				// WaitForGoroutines that has checked activeGoroutines but not
+				// yet entered Cond.Wait would miss this signal and sleep until
+				// the wait timeout (correct result, needlessly delayed).
+				f.goroutineCond.L.Lock()
 				f.goroutineCond.Broadcast()
+				f.goroutineCond.L.Unlock()
 			}
 		}()
 		defer func() {
@@ -1025,6 +1235,9 @@ func (f *SensitiveDataFilter) filterWithTimeout(input string, pattern *regexp.Re
 		return res.output
 	case <-ctx.Done():
 		f.totalTimeouts.Add(1)
+		if os.Getenv("DD_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "dd: filter timeout after %v on %d-byte input, pattern %q\n", timeout, inputLen, pattern.String())
+		}
 		return "[REDACTED]"
 	}
 }
@@ -1091,6 +1304,13 @@ func (f *SensitiveDataFilter) filterWithContext(ctx context.Context, input strin
 
 // replaceWithPatternWithContext applies regex replacement with context awareness.
 // It checks for context cancellation to allow early termination.
+//
+// Note: on cancellation this returns the input UNFILTERED (the pattern is
+// skipped), whereas the large-input path in filterWithTimeout returns
+// "[REDACTED]" for the whole message on timeout. The two failure modes are
+// intentionally different: the medium path is only reachable for inputs under
+// filterMediumInputThreshold (10KB), where a full scan stays well inside the
+// base timeout, so cancellation here is pathological rather than expected.
 func (f *SensitiveDataFilter) replaceWithPatternWithContext(ctx context.Context, input string, pattern *regexp.Regexp) string {
 	// Quick context check before expensive regex operation
 	select {
@@ -1140,12 +1360,51 @@ func (f *SensitiveDataFilter) FilterFieldValue(key string, value any) any {
 	return f.Filter(str)
 }
 
+// FilterString filters a single string field value: it redacts the value
+// entirely when the key is sensitive, otherwise it applies the message-level
+// pattern filter. It is the exact behavior of FilterValueRecursive's string
+// branch, exposed separately so the per-field hot path can work with plain
+// strings — returning the filtered value inside an `any` would box it into a
+// fresh interface allocation per field per log call even when nothing was
+// redacted (pprof: ~22% of allocation objects on the structured-logging path).
+// The returned string is identical to value when no redaction occurred, so a
+// cheap != comparison detects the no-op case.
+func (f *SensitiveDataFilter) FilterString(key, value string) string {
+	if f == nil || !f.enabled.Load() {
+		return value
+	}
+	if internal.IsSensitiveKey(key) {
+		return "[REDACTED]"
+	}
+	return f.Filter(value)
+}
+
 // FilterValueRecursive recursively filters sensitive data from nested structures.
 // It processes maps, slices, arrays, and structs to filter sensitive values.
 // Circular references are detected and replaced with "[CIRCULAR_REFERENCE]".
 // Maximum recursion depth is limited to maxRecursionDepth to prevent stack overflow.
 // Total elements are bounded to prevent resource exhaustion from large structures.
 func (f *SensitiveDataFilter) FilterValueRecursive(key string, value any) (result any) {
+	// Scalar fast path: numeric and boolean values can never match a value
+	// pattern (patterns match text shapes), so only the key check applies.
+	// Returning them directly skips the visited-map pool round-trip and the
+	// reflection dispatch below, which pprof showed was pure overhead for
+	// scalar fields on the structured-logging hot path. Behavior is identical
+	// to the slow path, which also returns these types unchanged unless the
+	// key itself is sensitive.
+	switch value.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
+		if f == nil || !f.enabled.Load() {
+			return value
+		}
+		if internal.IsSensitiveKey(key) {
+			return "[REDACTED]"
+		}
+		return value
+	}
+
 	// SEC-003: Recover from panics in reflection-based recursive filtering.
 	// Return the original value on panic so logging continues without disruption.
 	defer func() {
@@ -1193,9 +1452,11 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 		return "[REDACTED]"
 	}
 
-	// Handle string values directly
+	// Handle string values directly via the shared string semantics (the key
+	// was already checked above, so FilterString's key check is redundant here
+	// but keeps one implementation of the string-branch behavior).
 	if str, ok := value.(string); ok {
-		return f.Filter(str)
+		return f.FilterString(key, str)
 	}
 
 	// Use reflection for complex types
@@ -1284,10 +1545,16 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 			case time.Duration:
 				return v
 			case fmt.Stringer:
-				return v.String()
+				// SEC-003: user String() method — called through the
+				// panic-safe helper. A bare call that panicked would unwind
+				// to FilterValueRecursive's coarse recover, whose fallback
+				// returns the ENTIRE structure unfiltered (fail-open: even
+				// password-keyed fields would bypass redaction). The helper
+				// degrades to a placeholder instead.
+				return internal.SafeStringerString(v)
 			case error:
 				if v != nil {
-					return v.Error()
+					return internal.SafeErrorString(v)
 				}
 				return nil
 			}
@@ -1304,17 +1571,7 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 				continue
 			}
 
-			fieldName := fieldType.Name
-			// Check for json tag
-			if tag := fieldType.Tag.Get("json"); tag != "" && tag != "-" {
-				if tagName, _, found := strings.Cut(tag, ","); found {
-					if tagName != "" {
-						fieldName = tagName
-					}
-				} else if tag != "" {
-					fieldName = tag
-				}
-			}
+			fieldName := internal.JSONFieldName(fieldType)
 
 			result[fieldName] = f.filterValueRecursiveInternal(fieldName, field.Interface(), visited, depth+1, remaining)
 		}
@@ -1325,20 +1582,68 @@ func (f *SensitiveDataFilter) filterValueRecursiveInternal(key string, value any
 	return value
 }
 
+// ============================================================================
+// Rate Limiting (public configuration)
+// ============================================================================
+
+// RateLimitConfig configures rate limiting for the logger (flood protection):
+// a fixed per-second budget for messages and bytes, plus a burst allowance,
+// refilled once per wall-clock second. Zero values disable the corresponding
+// limit. This is an alias of the internal configuration type so callers can
+// construct it directly (matching the JSONOptions alias pattern in config.go).
+//
+// Example:
+//
+//	cfg := dd.DefaultConfig()
+//	cfg.Security.RateLimitConfig = dd.DefaultRateLimitConfig()
+//	cfg.Security.RateLimitConfig.MaxMessagesPerSecond = 1000
+type RateLimitConfig = internal.RateLimitConfig
+
+// RateLimitStrategy defines how over-limit log messages are handled.
+type RateLimitStrategy = internal.RateLimitStrategy
+
+const (
+	// RateLimitStrategyDrop drops messages when the rate limit is exceeded (default).
+	RateLimitStrategyDrop = internal.RateLimitStrategyDrop
+	// RateLimitStrategySample keeps 1 in SamplingRate messages when rate limited.
+	RateLimitStrategySample = internal.RateLimitStrategySample
+	// RateLimitStrategyThrottle is accepted for API completeness; the logger
+	// never blocks, so it currently behaves like RateLimitStrategyDrop.
+	RateLimitStrategyThrottle = internal.RateLimitStrategyThrottle
+)
+
+// DefaultRateLimitConfig returns a RateLimitConfig with sensible defaults:
+// 10,000 messages/second, 10MB/second, a burst allowance of 1,000 messages,
+// drop strategy, and a 1-in-100 sampling rate (used by the Sample strategy).
+func DefaultRateLimitConfig() *RateLimitConfig {
+	return internal.DefaultRateLimitConfig()
+}
+
 // SecurityConfig configures security features for the logger.
 type SecurityConfig struct {
 	// MaxMessageSize is the maximum allowed log message size in bytes.
 	// Messages exceeding this limit are truncated. Zero means no limit.
 	MaxMessageSize int
 	// MaxWriters is the maximum number of output writers allowed.
-	// Attempts to add writers beyond this limit return ErrMaxWritersExceeded.
+	// NOTE: this field is currently informational — writer limits are enforced
+	// against the fixed package cap (100, see ErrMaxWritersExceeded on
+	// Logger.AddWriter), not against this value. Configuring a lower
+	// MaxWriters does NOT cause AddWriter to fail earlier.
 	MaxWriters int
 	// SensitiveFilter is the filter used to redact sensitive data from log output.
 	// A nil filter disables sensitive data filtering.
 	SensitiveFilter *SensitiveDataFilter
 	// RateLimitConfig configures rate limiting to prevent log flooding.
-	// A nil value disables rate limiting.
-	RateLimitConfig *internal.RateLimitConfig
+	// A nil value disables rate limiting. Start from DefaultRateLimitConfig()
+	// and adjust the fields:
+	//
+	//	cfg.Security.RateLimitConfig = dd.DefaultRateLimitConfig()
+	//	cfg.Security.RateLimitConfig.MaxMessagesPerSecond = 1000
+	//
+	// When set, over-limit messages are dropped (or sampled) on the log path,
+	// and a RATE_LIMIT_EXCEEDED audit event is emitted if audit logging is
+	// configured (Config.Audit).
+	RateLimitConfig *RateLimitConfig
 }
 
 // SecurityLevel defines the security level for the logger.
@@ -1347,41 +1652,37 @@ type SecurityLevel int
 
 const (
 	// SecurityLevelDevelopment provides minimal security for development.
-	// - No sensitive data filtering
-	// - No rate limiting
-	// - No audit logging
+	// SecurityConfigForLevel returns a config with no sensitive data filtering.
 	// Use only in local development environments.
 	SecurityLevelDevelopment SecurityLevel = iota
 
 	// SecurityLevelBasic provides basic security for non-production environments.
-	// - Basic sensitive data filtering (passwords, API keys, credit cards)
-	// - No rate limiting
-	// - No audit logging
-	// Suitable for staging and testing environments.
+	// SecurityConfigForLevel returns basic sensitive data filtering (passwords,
+	// API keys, credit cards). Suitable for staging and testing environments.
 	SecurityLevelBasic
 
 	// SecurityLevelStandard provides standard security for production.
-	// - Full sensitive data filtering
-	// - Rate limiting enabled
-	// - Basic audit logging
-	// Recommended for most production deployments.
+	// SecurityConfigForLevel returns the full built-in sensitive data filter
+	// (all standard patterns: credentials, keys, cards, emails, IPs, ...).
+	//
+	// NOTE: the level only selects the sensitive data filter. Rate limiting
+	// (SecurityConfig.RateLimitConfig), audit logging (Config.Audit), and log
+	// integrity (Config.Audit.IntegritySigner) are separate settings that this
+	// preset does not enable — configure them explicitly when needed.
 	SecurityLevelStandard
 
 	// SecurityLevelStrict provides enhanced security for sensitive environments.
-	// - Full sensitive data filtering
-	// - Strict rate limiting
-	// - Full audit logging
-	// - Input sanitization
-	// Suitable for environments handling PII or financial data.
+	// SecurityConfigForLevel returns the full filter plus extra patterns for
+	// confidential/internal identifiers. Rate limiting, audit logging, and
+	// integrity signing are separate settings (see SecurityLevelStandard NOTE).
 	SecurityLevelStrict
 
 	// SecurityLevelParanoid provides maximum security for high-risk environments.
-	// - Full sensitive data filtering with all patterns
-	// - Very strict rate limiting
-	// - Complete audit logging
-	// - All input validation
-	// - Log integrity verification
-	// Use for healthcare (HIPAA), financial (PCI-DSS), or government systems.
+	// SecurityConfigForLevel returns the full filter plus broad extra patterns
+	// (IDs, financial amounts, UUIDs). Rate limiting, audit logging, and
+	// integrity signing are separate settings (see SecurityLevelStandard NOTE).
+	// For healthcare (HIPAA) / financial (PCI-DSS) / government systems, also
+	// consider the HealthcareConfig/FinancialConfig/GovernmentConfig presets.
 	SecurityLevelParanoid
 )
 
@@ -1452,7 +1753,7 @@ func SecurityConfigForLevel(level SecurityLevel) *SecurityConfig {
 // Clone creates a copy of the SecurityConfig.
 //
 // Deep copy:
-//   - SensitiveFilter (via SensitiveDataFilter.Clone())
+//   - SensitiveFilter (via SensitiveDataFilter.clone(), unexported)
 //
 // Returns nil if the receiver is nil.
 func (sc *SecurityConfig) Clone() *SecurityConfig {
@@ -1475,7 +1776,7 @@ func (sc *SecurityConfig) Clone() *SecurityConfig {
 
 func newBasicSensitiveDataFilter() *SensitiveDataFilter {
 	internal.InitPatterns()
-	return newSensitiveDataFilterWithPatterns(internal.CompiledBasicPatterns, defaultFilterTimeout)
+	return newSensitiveDataFilterWithPatterns(internal.CompiledBasicPatterns, internal.BasicPatternGates, defaultFilterTimeout)
 }
 
 // DefaultSecurityConfig returns a security config with basic sensitive data filtering enabled.

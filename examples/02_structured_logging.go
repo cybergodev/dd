@@ -50,6 +50,7 @@ func section1FieldTypes() {
 
 		// Error handling
 		dd.Err(errors.New("connection failed")),
+		dd.ErrWithKey("root_cause", errors.New("upstream timeout")),
 
 		// Complex types (use Any)
 		dd.Any("tags", []string{"vip", "premium"}),

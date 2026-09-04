@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,7 @@ var standardStreams = struct {
 // Standard streams (os.Stdout, os.Stderr, os.Stdin) are never closed.
 // Uses cached stream pointers to avoid data races with tests that modify os.Stdout.
 // Returns the error from Close() if one occurs, nil otherwise.
+// A panic raised by the writer's Close method is recovered and returned as an error.
 func closeWriter(w io.Writer) error {
 	if w == nil {
 		return nil
@@ -41,9 +43,23 @@ func closeWriter(w io.Writer) error {
 		return nil
 	}
 	if closer, ok := w.(io.Closer); ok {
-		return closer.Close()
+		return safeClose(closer)
 	}
 	return nil
+}
+
+// safeClose calls a writer's Close with panic recovery.
+// SEC-003: closeWriter is reached from Logger.Close/MultiWriter.Close, public
+// entry points with no surrounding recover, so a panicking writer must not
+// crash the caller — it becomes a regular close error instead (mirrors
+// Logger.safeWrite).
+func safeClose(c io.Closer) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("close panic: %v", r)
+		}
+	}()
+	return c.Close()
 }
 
 // FileWriter provides thread-safe file writing with log rotation support.
@@ -225,6 +241,19 @@ func applyFileWriterDefaults(config FileWriterConfig) FileWriterConfig {
 		config.MaxSizeMB = DefaultMaxSizeMB
 	}
 
+	// Normalize negative cleanup parameters to zero BEFORE the default matrix
+	// below: a negative value that fell through untouched would disable both
+	// retention policies (cleanup needs MaxAge > 0 && MaxBackups > 0) and let
+	// rotated backups accumulate without bound — the disk exhaustion the
+	// maxBackupCount limit exists to prevent. Zeroed values pick up the
+	// documented defaults instead.
+	if config.MaxAge < 0 {
+		config.MaxAge = 0
+	}
+	if config.MaxBackups < 0 {
+		config.MaxBackups = 0
+	}
+
 	// Cleanup is enabled only when at least one cleanup parameter is configured.
 	// Apply defaults based on what the user has specified:
 	// - Both zero: use full defaults (MaxAge + MaxBackups)
@@ -244,6 +273,12 @@ func applyFileWriterDefaults(config FileWriterConfig) FileWriterConfig {
 
 // Write writes data to the log file. Triggers rotation if the file exceeds MaxSizeMB.
 // Returns os.ErrClosed if the writer has been closed.
+//
+// If a rotation happens, the onRotate callback is invoked AFTER fw.mu is
+// released: the callback runs user hooks (HookOnRotate), and a hook that logs
+// to the same logger or manages its writers would otherwise re-enter Write
+// (fw.mu is not reentrant) or contend Logger.writersMu while a concurrent
+// Logger.Close holds it and waits on fw.mu — either way a deadlock.
 func (fw *FileWriter) Write(p []byte) (int, error) {
 	if fw.closed.Load() {
 		return 0, os.ErrClosed
@@ -255,24 +290,37 @@ func (fw *FileWriter) Write(p []byte) (int, error) {
 	}
 
 	fw.mu.Lock()
-	defer fw.mu.Unlock()
 
 	if fw.file == nil {
+		fw.mu.Unlock()
 		return 0, os.ErrClosed
 	}
 
+	rotated := false
 	if internal.NeedsRotation(fw.currentSize.Load(), int64(pLen), fw.maxSize) {
 		if err := fw.rotate(); err != nil {
+			fw.mu.Unlock()
 			return 0, fmt.Errorf("rotation failed: %w", err)
 		}
+		rotated = true
 	}
 
 	n, err := fw.file.Write(p)
+	if err == nil {
+		fw.currentSize.Add(int64(n))
+	}
+
+	// Snapshot the callback and path under the lock, fire after unlocking.
+	onRotate, rotatedPath := fw.onRotate, fw.path
+	fw.mu.Unlock()
+
+	if rotated && onRotate != nil {
+		onRotate(rotatedPath)
+	}
+
 	if err != nil {
 		return n, fmt.Errorf("write failed: %w", err)
 	}
-
-	fw.currentSize.Add(int64(n))
 	return n, nil
 }
 
@@ -323,7 +371,7 @@ func (fw *FileWriter) rotate() error {
 		fw.file = nil
 	}
 
-	nextIndex := internal.FindNextBackupIndex(fw.path, fw.compress)
+	nextIndex := internal.FindNextBackupIndex(fw.path)
 	backupPath := internal.GetBackupPath(fw.path, nextIndex, false)
 
 	if err := os.Rename(fw.path, backupPath); err != nil {
@@ -368,16 +416,20 @@ func (fw *FileWriter) rotate() error {
 		go fw.compressBackup(backupPath)
 	}
 
-	// Trigger rotation callback for HookOnRotate
-	if fw.onRotate != nil {
-		fw.onRotate(fw.path)
-	}
-
+	// The onRotate callback is NOT invoked here: rotate() runs under fw.mu,
+	// and the callback must fire outside it (see Write).
 	return nil
 }
 
 func (fw *FileWriter) compressBackup(path string) {
 	defer fw.wg.Done()
+	// SEC-003: background goroutine with no caller that could recover a
+	// panic; a compression failure here must not crash the host process.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: compress panic %s: %v\n", path, r)
+		}
+	}()
 	if err := internal.CompressFile(path); err != nil {
 		fmt.Fprintf(os.Stderr, "dd: compress backup %s: %v\n", path, err)
 	}
@@ -385,10 +437,15 @@ func (fw *FileWriter) compressBackup(path string) {
 
 func (fw *FileWriter) cleanupRoutine() {
 	defer fw.wg.Done()
-
+	// SEC-003: background goroutine with no caller that could recover a
+	// panic; an internal failure here must not crash the host process.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: cleanup panic %s: %v\n", fw.path, r)
+		}
+	}()
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-fw.ctx.Done():
@@ -488,6 +545,14 @@ func (bw *BufferedWriter) Write(p []byte) (int, error) {
 	bw.mu.Lock()
 	defer bw.mu.Unlock()
 
+	// Re-check under the lock: Close() flushes and closes the underlying
+	// writer between lock acquisitions, so a Write that raced past the unlocked
+	// check above would otherwise buffer data that no one will ever flush
+	// (silent data loss). Failing cleanly here mirrors FileWriter.Write.
+	if bw.closed.Load() {
+		return 0, os.ErrClosed
+	}
+
 	n, err := bw.buffer.Write(p)
 	if err != nil {
 		return n, err
@@ -556,30 +621,46 @@ func (bw *BufferedWriter) Close() error {
 
 func (bw *BufferedWriter) autoFlushRoutine() {
 	defer bw.wg.Done()
-
 	ticker := time.NewTicker(bw.flushTime)
 	defer ticker.Stop()
-
 	for {
 		select {
 		case <-bw.ctx.Done():
 			return
 		case <-ticker.C:
-			// Check closed flag under lock to prevent race with Close()
-			bw.mu.Lock()
-			if bw.closed.Load() {
-				bw.mu.Unlock()
+			if bw.autoFlushTick() {
 				return
 			}
-			if bw.buffer.Buffered() > 0 && time.Since(bw.lastFlush) >= bw.flushTime {
-				if err := bw.buffer.Flush(); err != nil {
-					fmt.Fprintf(os.Stderr, "dd: autoflush error: %v\n", err)
-				}
-				bw.lastFlush = time.Now()
-			}
-			bw.mu.Unlock()
 		}
 	}
+}
+
+// autoFlushTick flushes the buffer when the flush interval has elapsed,
+// reporting whether the routine should stop (writer closed). It runs on the
+// autoFlush goroutine with no caller that could recover a panic: the
+// underlying writer is caller-supplied, and a panicking Write there must
+// neither crash the host process (SEC-003) nor leave mu locked; a lock
+// abandoned mid-panic would deadlock every later Write on this writer. The
+// deferred unlock pairs with the recover below for that reason; a panic is
+// logged and flushing continues on the next tick.
+func (bw *BufferedWriter) autoFlushTick() (stop bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: autoflush panic: %v\n", r)
+		}
+	}()
+	bw.mu.Lock()
+	defer bw.mu.Unlock()
+	if bw.closed.Load() {
+		return true
+	}
+	if bw.buffer.Buffered() > 0 && time.Since(bw.lastFlush) >= bw.flushTime {
+		if err := bw.buffer.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "dd: autoflush error: %v\n", err)
+		}
+		bw.lastFlush = time.Now()
+	}
+	return false
 }
 
 // MultiWriter distributes writes across multiple writers.
@@ -591,6 +672,65 @@ type MultiWriter struct {
 	writersPtr atomic.Pointer[[]io.Writer]
 	mu         sync.Mutex // protects AddWriter/RemoveWriter operations
 	closed     atomic.Bool
+}
+
+// errWriterListClosed is returned by the writer-list helpers when the list's
+// atomic pointer is nil — the state Logger's close path leaves behind after
+// swapping the writers out for closing. Owners translate it into their own
+// closed-state sentinel so public error contracts stay unchanged.
+var errWriterListClosed = errors.New("writer list closed")
+
+// addToWriterList appends w to the copy-on-write writer list at ptr with an
+// atomic pointer swap. The caller MUST hold the mutex that serializes
+// mutations of the list (Logger.writersMu / MultiWriter.mu): loads and stores
+// are atomic individually, but the read-modify-write is only race-free under
+// that lock. dedupe makes an already-present writer a no-op (MultiWriter
+// semantics; Logger allows duplicates). Returns ErrMaxWritersExceeded at
+// maxWriterCount, or errWriterListClosed when the list has been taken.
+//
+// Shared by Logger.AddWriter and MultiWriter.AddWriter so the slice surgery
+// exists in one place.
+func addToWriterList(ptr *atomic.Pointer[[]io.Writer], w io.Writer, dedupe bool) error {
+	current := ptr.Load()
+	if current == nil {
+		return errWriterListClosed
+	}
+	writers := *current
+	if dedupe && slices.Contains(writers, w) {
+		return nil // already present, not an error
+	}
+	if len(writers) >= maxWriterCount {
+		return ErrMaxWritersExceeded
+	}
+	next := make([]io.Writer, len(writers)+1)
+	copy(next, writers)
+	next[len(writers)] = w
+	ptr.Store(&next)
+	return nil
+}
+
+// removeFromWriterList deletes the first occurrence of w from the list at ptr
+// with an atomic pointer swap. The caller MUST hold the mutation lock (see
+// addToWriterList). Returns ErrWriterNotFound when w is absent, or
+// errWriterListClosed when the list has been taken.
+//
+// Shared by Logger.RemoveWriter and MultiWriter.RemoveWriter.
+func removeFromWriterList(ptr *atomic.Pointer[[]io.Writer], w io.Writer) error {
+	current := ptr.Load()
+	if current == nil {
+		return errWriterListClosed
+	}
+	writers := *current
+	for i := range len(writers) {
+		if writers[i] == w {
+			next := make([]io.Writer, len(writers)-1)
+			copy(next, writers[:i])
+			copy(next[i:], writers[i+1:])
+			ptr.Store(&next)
+			return nil
+		}
+	}
+	return ErrWriterNotFound
 }
 
 // NewMultiWriter creates a new MultiWriter. Nil writers are silently ignored.
@@ -608,7 +748,14 @@ func NewMultiWriter(writers ...io.Writer) *MultiWriter {
 }
 
 // Write writes data to all registered writers. Collects errors from failed writers.
+// Returns an error wrapping os.ErrClosed after Close, mirroring FileWriter and
+// BufferedWriter: a closed writer must fail fast rather than silently accept
+// data into writers that were never Closer (e.g. bytes.Buffer).
 func (mw *MultiWriter) Write(p []byte) (int, error) {
+	if mw.closed.Load() {
+		return 0, fmt.Errorf("cannot write to closed MultiWriter: %w", os.ErrClosed)
+	}
+
 	pLen := len(p)
 	if pLen == 0 {
 		return 0, nil
@@ -625,14 +772,20 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 
 	// Fast path: single writer optimization
 	if writerCount == 1 {
-		return writers[0].Write(p)
+		n, err := writers[0].Write(p)
+		if err == nil && n != pLen {
+			// Mirror the multi-writer path (and the io.Writer contract): a
+			// short write without an error is reported, not silently passed on.
+			return n, io.ErrShortWrite
+		}
+		return n, err
 	}
 
 	// Iterate directly over the immutable slice - no copy needed
 	var allErrors MultiWriterError
 	successCount := 0
 
-	for i := 0; i < writerCount; i++ {
+	for i := range writerCount {
 		n, err := writers[i].Write(p)
 		if err != nil {
 			allErrors.addError(i, writers[i], err)
@@ -658,7 +811,11 @@ func (mw *MultiWriter) Write(p []byte) (int, error) {
 	return pLen, nil
 }
 
-// AddWriter adds a writer to the MultiWriter. Duplicate writers are silently accepted.
+// AddWriter adds a writer to the MultiWriter. Adding a writer that is already
+// registered is a no-op (MultiWriter deduplicates; Logger.AddWriter, by
+// contrast, accepts duplicates) — pinned by TestWriterListAddDedupSemantics.
+// Returns an error wrapping os.ErrClosed if the MultiWriter has been closed:
+// a writer accepted after Close would never be closed itself (resource leak).
 func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	if mw == nil {
 		return ErrNilMultiWriter
@@ -670,30 +827,18 @@ func (mw *MultiWriter) AddWriter(w io.Writer) error {
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
-	// Load current writers slice
-	currentWriters := mw.writersPtr.Load()
-	if currentWriters == nil {
-		return ErrNilWriter
+	if mw.closed.Load() {
+		return fmt.Errorf("cannot add writer to closed MultiWriter: %w", os.ErrClosed)
 	}
 
-	// Check for duplicates
-	for _, existing := range *currentWriters {
-		if existing == w {
-			return nil // Already exists, not an error
+	if err := addToWriterList(&mw.writersPtr, w, true); err != nil {
+		if errors.Is(err, errWriterListClosed) {
+			// Legacy nil-list mapping (unreachable in practice: Close
+			// snapshots the list without nil-ing it).
+			return ErrNilWriter
 		}
+		return err
 	}
-
-	if len(*currentWriters) >= maxWriterCount {
-		return ErrMaxWritersExceeded
-	}
-
-	// Create new slice with the new writer added
-	newWriters := make([]io.Writer, len(*currentWriters)+1)
-	copy(newWriters, *currentWriters)
-	newWriters[len(*currentWriters)] = w
-
-	// Atomically swap the pointer
-	mw.writersPtr.Store(&newWriters)
 	return nil
 }
 
@@ -706,27 +851,15 @@ func (mw *MultiWriter) RemoveWriter(w io.Writer) error {
 	mw.mu.Lock()
 	defer mw.mu.Unlock()
 
-	// Load current writers slice
-	currentWriters := mw.writersPtr.Load()
-	if currentWriters == nil {
-		return ErrWriterNotFound
-	}
-
-	writerCount := len(*currentWriters)
-	for i := 0; i < writerCount; i++ {
-		if (*currentWriters)[i] == w {
-			// Create new slice without the removed writer
-			newWriters := make([]io.Writer, writerCount-1)
-			copy(newWriters, (*currentWriters)[:i])
-			copy(newWriters[i:], (*currentWriters)[i+1:])
-
-			// Atomically swap the pointer
-			mw.writersPtr.Store(&newWriters)
-			return nil
+	if err := removeFromWriterList(&mw.writersPtr, w); err != nil {
+		if errors.Is(err, errWriterListClosed) {
+			// Legacy nil-list mapping (unreachable in practice: Close
+			// snapshots the list without nil-ing it).
+			return ErrWriterNotFound
 		}
+		return err
 	}
-
-	return ErrWriterNotFound
+	return nil
 }
 
 // Close closes all registered writers that implement io.Closer.
@@ -735,8 +868,13 @@ func (mw *MultiWriter) Close() error {
 		return nil // Already closed
 	}
 
-	// Load writers atomically
+	// Load the writers snapshot under mu: this serializes with AddWriter, whose
+	// closed check runs under the same lock. Without it, a writer accepted by a
+	// concurrent AddWriter (past its closed check, before our snapshot) would
+	// never be closed here — a resource leak.
+	mw.mu.Lock()
 	writersPtr := mw.writersPtr.Load()
+	mw.mu.Unlock()
 	if writersPtr == nil {
 		return nil
 	}

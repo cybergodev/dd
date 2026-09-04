@@ -4,6 +4,36 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.3.3 - Security Hardening, Correctness & Hot-Path Performance (2026-09-05)
+
+### Fixed
+- Symlink redirection attack on the log path: the documented protection was dead code (fstat follows symlinks) — now enforced via pre-open lstat and post-open identity re-check, so `ErrSymlinkNotAllowed` is actually returned
+- Two redaction patterns never compiled (PEM private key, GCP service-account key exceeded Go's regex repeat limit) — both key types passed through unredacted
+- Letter-only sensitive values (SWIFT, MRN, driver's license, connection strings, fingerprints) bypassed the redaction pre-gate; separator-less keyword forms (`dlnumber`, `socialinsurancenumber`, `fpid`) slipped past the pattern gates
+- Structured log calls with map/slice/func-typed fields crashed the process when sensitive-data filtering was enabled
+- Recursive field filtering failed OPEN on a panicking `String()`/`Error()` — sibling secret fields now stay redacted (fail-closed)
+- Quoted text-format field values emitted raw control bytes — newline-splitting consumers could be fed forged log lines
+- `IntegritySigner.Verify` panicked (slice bounds) when `SignaturePrefix` itself contained `]`
+- Every audit-written signed event failed `Verify`/`VerifyAuditEvent` — the space separator leaked into the re-signed payload
+- Strict/paranoid/industry presets silently ran ungated (gate-slice misalignment): redaction kept, the performance guarantee lost
+- Large messages (>32 KB) were wholesale replaced with `[REDACTED]` on the fixed 50 ms filter deadline — the timeout now scales with input length
+- A timed-out `WaitForGoroutines` permanently disabled sensitive-data filtering for all later log calls
+- Panicking user callbacks no longer crash the process: log-arg `Stringer`/`error` values, `Err*` field constructors, hook error handler, write-error handler, `LevelResolver`, writer `Flush`/`Close`, and all background goroutines (autoflush, cleanup, compression, audit worker)
+
+### Performance
+- Steady-state logging performs zero library-side allocations (pooled line buffers end-to-end; SimpleLogging/ConcurrentLogging 1 → 0 allocs/op)
+- Caller capture moved to fixed-skip entry dispatchers: SimpleLogging −68%, StructuredLogging −50%, TextFormat −48% ns/op
+- Sound pattern gates skip provably unmatchable regexes: FormattedLogging 35.7µs → 1.9µs (−95%)
+- Second-byte keyword index and fused token scan: FormattedLogging −12%, filter cache-hit path −21%, token-scan CPU share halved
+
+### Changed
+- Symlinked log paths now actually fail with `ErrSymlinkNotAllowed` at open/rotate (documented contract, previously unenforced)
+- `LevelResolver` is now also invoked by every `IsLevelEnabled` check — resolvers run more frequently than before
+- Invalid `AuditConfig`s now fail `Config.Validate`/`New` instead of being silently dropped (audit no longer silently disabled)
+- `ClearFor` marked deprecated (exact alias of `Remove`)
+
+---
+
 ## v1.3.2 - Hot-Path Performance & Redaction Safety (2026-06-16)
 
 ### Fixed

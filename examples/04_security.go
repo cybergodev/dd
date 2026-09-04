@@ -55,6 +55,14 @@ func section1BasicFiltering() {
 		dd.String("token", "bearer-xyz789"), // Filtered by key name
 	)
 
+	// Nested values (maps, slices, structs via dd.Any) are filtered recursively
+	logger.InfoWith("Nested structures",
+		dd.Any("request", map[string]any{
+			"path": "/login",
+			"body": map[string]any{"user": "john", "password": "secret123"},
+		}),
+	)
+
 	fmt.Println("✓ Sensitive data automatically filtered")
 }
 
@@ -88,13 +96,13 @@ func section3CustomFiltering() {
 	fmt.Println("3. Custom Filtering")
 	fmt.Println("--------------------")
 
-	// Start with empty filter and add custom patterns
-	filter := dd.NewEmptySensitiveDataFilter()
-	if err := filter.AddPatterns(
+	// One-shot constructor: patterns are compiled and ReDoS-checked on creation
+	filter, err := dd.NewCustomSensitiveDataFilter(
 		`(?i)(internal_token[:\s=]+)[^\s]+`,
 		`(?i)(session_id[:\s=]+)[^\s]+`,
 		`(?i)(company_secret[:\s=]+)[^\s]+`,
-	); err != nil {
+	)
+	if err != nil {
 		fmt.Printf("  Invalid pattern: %v\n", err)
 		return
 	}

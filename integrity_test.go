@@ -81,10 +81,11 @@ func TestIntegritySigner_Verify(t *testing.T) {
 		t.Fatalf("Verify() error = %v", err)
 	}
 
-	// Note: verification may fail due to signature format differences
-	// This test validates the structure of the result
 	if result == nil {
 		t.Fatal("Verify() returned nil result")
+	}
+	if !result.Valid {
+		t.Errorf("Verify() of a correctly signed entry should be Valid, got %+v", result)
 	}
 }
 
@@ -239,16 +240,9 @@ func TestNewIntegritySigner_NilConfig(t *testing.T) {
 	}
 }
 
-func TestNewIntegritySigner_ShortKey(t *testing.T) {
-	config := IntegrityConfig{
-		SecretKey: make([]byte, 16), // Too short
-	}
-
-	_, err := NewIntegritySigner(config)
-	if err == nil {
-		t.Error("NewIntegritySigner should fail with short key")
-	}
-}
+// TestNewIntegritySigner_ShortKey was removed: coverage_test.go
+// TestIntegritySignerBoundaryKeys asserts the same 16-byte rejection inside
+// its empty/16/32/33/64-byte key table.
 
 func TestIntegrityConfig_Clone(t *testing.T) {
 	original := IntegrityConfig{
@@ -300,26 +294,6 @@ func TestDefaultIntegrityConfig(t *testing.T) {
 	}
 }
 
-func TestDefaultIntegrityConfigSafe(t *testing.T) {
-	config, err := DefaultIntegrityConfigSafe()
-
-	if err != nil {
-		t.Fatalf("DefaultIntegrityConfigSafe should not return error, got: %v", err)
-	}
-
-	if len(config.SecretKey) != 32 {
-		t.Errorf("Default SecretKey length should be 32, got %d", len(config.SecretKey))
-	}
-
-	if config.HashAlgorithm != HashAlgorithmSHA256 {
-		t.Errorf("Default HashAlgorithm should be SHA256")
-	}
-
-	if config.SignaturePrefix != "[SIG:" {
-		t.Errorf("Default SignaturePrefix should be [SIG:")
-	}
-}
-
 func TestDefaultIntegrityConfigSafe_UniqueKeys(t *testing.T) {
 	config1, err := DefaultIntegrityConfigSafe()
 	if err != nil {
@@ -342,4 +316,78 @@ func TestHashAlgorithm_String(t *testing.T) {
 		{HashAlgorithmSHA256, "SHA256"},
 		{HashAlgorithm(999), "Unknown"},
 	}, HashAlgorithm.String)
+}
+
+func TestIntegritySigner_VerifyWithSpaceSeparator(t *testing.T) {
+	config := IntegrityConfig{
+		SecretKey:        make([]byte, 32),
+		HashAlgorithm:    HashAlgorithmSHA256,
+		IncludeTimestamp: true,
+		IncludeSequence:  true,
+		SignaturePrefix:  "[SIG:",
+	}
+
+	signer, err := NewIntegritySigner(config)
+	if err != nil {
+		t.Fatalf("NewIntegritySigner() error = %v", err)
+	}
+
+	message := "audit event line"
+	sig := signer.Sign(message)
+
+	// AuditLogger.writeEvent composes entries as message + " " + signature.
+	// Verify must accept this form and report the message WITHOUT the separator.
+	entry := message + " " + sig
+	result, err := signer.Verify(entry)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Valid {
+		t.Error("Verify() should accept an entry with a space-separated signature")
+	}
+	if result.Message != message {
+		t.Errorf("Message = %q, want %q", result.Message, message)
+	}
+
+	// Tampering must still be detected in the separator form.
+	tampered := message + "!" + " " + sig
+	result, err = signer.Verify(tampered)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if result.Valid {
+		t.Error("Verify() should reject a tampered message")
+	}
+}
+
+func TestIntegritySigner_VerifyMessageEndingWithSpace(t *testing.T) {
+	config := IntegrityConfig{
+		SecretKey:        make([]byte, 32),
+		HashAlgorithm:    HashAlgorithmSHA256,
+		IncludeTimestamp: false,
+		IncludeSequence:  false,
+		SignaturePrefix:  "[SIG:",
+	}
+
+	signer, err := NewIntegritySigner(config)
+	if err != nil {
+		t.Fatalf("NewIntegritySigner() error = %v", err)
+	}
+
+	// A message that itself ends with a space, signed directly (no separator):
+	// only the single-separator retry must be stripped, never the message's own
+	// trailing bytes.
+	message := "trailing space "
+	sig := signer.Sign(message)
+
+	result, err := signer.Verify(message + sig)
+	if err != nil {
+		t.Fatalf("Verify() error = %v", err)
+	}
+	if !result.Valid {
+		t.Error("Verify() should accept a directly-concatenated entry whose message ends with a space")
+	}
+	if result.Message != message {
+		t.Errorf("Message = %q, want %q", result.Message, message)
+	}
 }

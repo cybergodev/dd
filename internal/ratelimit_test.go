@@ -31,21 +31,58 @@ func TestRateLimiter_BasicRateLimit(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_NoRateLimit(t *testing.T) {
-	config := &RateLimitConfig{
-		MaxMessagesPerSecond: 0, // Disabled
-		MaxBytesPerSecond:    0, // Disabled
-		BurstSize:            5,
-		Strategy:             RateLimitStrategyDrop,
+// TestRateLimiter_LimitsDisabled consolidates the "limits off ⇒ everything
+// passes" family: zero and negative message/byte limits both disable
+// limiting regardless of burst settings.
+func TestRateLimiter_LimitsDisabled(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *RateLimitConfig
+		calls  int
+	}{
+		{"zero limits with burst", &RateLimitConfig{
+			MaxMessagesPerSecond: 0, MaxBytesPerSecond: 0, BurstSize: 5,
+			Strategy: RateLimitStrategyDrop,
+		}, 100},
+		{"all zero", &RateLimitConfig{
+			MaxMessagesPerSecond: 0, MaxBytesPerSecond: 0, BurstSize: 0,
+			Strategy: RateLimitStrategyDrop,
+		}, 1000},
+		{"negative values", &RateLimitConfig{
+			MaxMessagesPerSecond: -1, MaxBytesPerSecond: -1, BurstSize: -1,
+			Strategy: RateLimitStrategyDrop,
+		}, 100},
 	}
 
-	rl := NewRateLimiter(config)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rl := NewRateLimiter(tt.config)
+			for i := 0; i < tt.calls; i++ {
+				if rl.ShouldRateLimit(100) {
+					t.Fatalf("message %d limited despite disabled limits", i)
+				}
+			}
+		})
+	}
+}
 
-	// All messages should pass
-	for i := 0; i < 100; i++ {
-		if rl.ShouldRateLimit(100) {
-			t.Error("Message should not be rate limited when limits are disabled")
-		}
+// TestAllowBytesBoundaries covers the post-format byte gate directly: nil
+// limiter, disabled limits, and zero/negative message sizes are no-ops.
+func TestAllowBytesBoundaries(t *testing.T) {
+	var nilLimiter *RateLimiter
+	if !nilLimiter.AllowBytes(100) {
+		t.Error("nil limiter should allow")
+	}
+	if !nilLimiter.AllowBytes(0) {
+		t.Error("nil limiter should allow empty messages")
+	}
+
+	rl := NewRateLimiter(&RateLimitConfig{Strategy: RateLimitStrategyDrop})
+	if !rl.AllowBytes(0) {
+		t.Error("msgSize=0 should be allowed (nothing to account)")
+	}
+	if !rl.AllowBytes(-5) {
+		t.Error("negative msgSize should be allowed")
 	}
 }
 
@@ -269,9 +306,10 @@ func TestNewRateLimiter_NilConfig(t *testing.T) {
 	if rl == nil {
 		t.Fatal("NewRateLimiter should not return nil")
 	}
-
-	if rl.config.MaxMessagesPerSecond != 10000 {
-		t.Error("Nil config should use defaults")
+	// The exact default values are pinned by TestDefaultRateLimitConfig;
+	// here it is enough that a real config was installed.
+	if rl.config == nil {
+		t.Error("Nil config should be replaced with defaults, not stay nil")
 	}
 }
 
@@ -302,44 +340,6 @@ func TestRateLimiter_NewSecondReset(t *testing.T) {
 // ============================================================================
 // RATE LIMITER BOUNDARY TESTS
 // ============================================================================
-
-func TestRateLimiter_ZeroConfig(t *testing.T) {
-	// Zero config should disable rate limiting
-	config := &RateLimitConfig{
-		MaxMessagesPerSecond: 0,
-		MaxBytesPerSecond:    0,
-		BurstSize:            0,
-		Strategy:             RateLimitStrategyDrop,
-	}
-
-	rl := NewRateLimiter(config)
-
-	// All messages should pass
-	for i := 0; i < 1000; i++ {
-		if rl.ShouldRateLimit(100) {
-			t.Error("Zero config should not rate limit any messages")
-		}
-	}
-}
-
-func TestRateLimiter_NegativeValues(t *testing.T) {
-	// Negative values should be treated as disabled
-	config := &RateLimitConfig{
-		MaxMessagesPerSecond: -1,
-		MaxBytesPerSecond:    -1,
-		BurstSize:            -1,
-		Strategy:             RateLimitStrategyDrop,
-	}
-
-	rl := NewRateLimiter(config)
-
-	// Should not panic and should not rate limit
-	for i := 0; i < 100; i++ {
-		if rl.ShouldRateLimit(100) {
-			t.Error("Negative values should disable rate limiting")
-		}
-	}
-}
 
 func TestRateLimiter_VeryLargeMessage(t *testing.T) {
 	config := &RateLimitConfig{
@@ -415,5 +415,63 @@ func TestRateLimiter_BurstOnly(t *testing.T) {
 	// Should allow approximately MaxMessagesPerSecond + BurstSize
 	if allowed < 40 || allowed > 60 {
 		t.Errorf("Expected ~50 messages (burst), got %d", allowed)
+	}
+}
+
+// TestRateLimiter_AllowBytesRollbackNeverNegative pins the byte-gate rollback
+// floor. AllowBytes' messageCount rollback assumed a prior AllowMessage had
+// incremented the same limiter in the same window, but the logger loads its
+// rate limiter twice on the log path and SetSecurityConfig can swap the
+// instance between the two gates (or maybeResetSecond can zero the counter in
+// between). Standalone AllowBytes rejections model that shape: without the
+// floor, each rejection drives messageCount further negative and the window
+// admits more than MaxMessagesPerSecond messages until the next reset.
+func TestRateLimiter_AllowBytesRollbackNeverNegative(t *testing.T) {
+	config := &RateLimitConfig{
+		MaxMessagesPerSecond: 5,
+		MaxBytesPerSecond:    100, // tiny byte budget: every call below is rejected
+		BurstSize:            0,
+		Strategy:             RateLimitStrategyDrop,
+	}
+	rl := NewRateLimiter(config)
+
+	// Byte-gate rejections without any matching AllowMessage increment.
+	for i := 0; i < 100; i++ {
+		if rl.AllowBytes(1000) {
+			t.Fatal("oversized message should be rejected by the byte gate")
+		}
+	}
+
+	if stats := rl.Stats(); stats.MessageCount < 0 {
+		t.Fatalf("messageCount went negative (%d); the rollback must floor at zero", stats.MessageCount)
+	}
+
+	// The floored counter must still roll back a real AllowMessage increment
+	// (same instance, same window): 5 fully-allowed messages, then a 6th that
+	// passes the message gate but is rejected by the byte gate, leaves exactly
+	// 5 counted — not 6 (no rollback) and not 4 (over-rollback).
+	rl2 := NewRateLimiter(&RateLimitConfig{
+		MaxMessagesPerSecond: 10,
+		MaxBytesPerSecond:    100,
+		BurstSize:            0,
+		Strategy:             RateLimitStrategyDrop,
+	})
+	for i := 0; i < 5; i++ {
+		if !rl2.AllowMessage() {
+			t.Fatal("messages within budget must be allowed")
+		}
+		if !rl2.AllowBytes(10) {
+			t.Fatal("small messages within the byte budget must be allowed")
+		}
+	}
+	// The 6th message passes the message gate, then is rejected by the byte gate.
+	if !rl2.AllowMessage() {
+		t.Fatal("message within budget must be allowed")
+	}
+	if rl2.AllowBytes(1000) {
+		t.Fatal("oversized message should be rejected by the byte gate")
+	}
+	if got := rl2.Stats().MessageCount; got != 5 {
+		t.Fatalf("messageCount = %d after rollback, want 5", got)
 	}
 }

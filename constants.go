@@ -28,18 +28,6 @@ const (
 )
 
 const (
-	// defaultBufferSize is the initial capacity for message buffers.
-	// 1024 bytes covers most typical log messages without reallocation.
-	defaultBufferSize = 1024
-
-	// maxBufferSize is the maximum buffer capacity returned to the pool.
-	// Buffers larger than 4KB are replaced with default-sized buffers to
-	// prevent memory bloat from occasional large messages. This value
-	// balances memory efficiency with performance for typical workloads.
-	maxBufferSize = 4 * 1024
-)
-
-const (
 	// maxPathLength limits file paths to 4096 bytes (POSIX PATH_MAX).
 	// Prevents path traversal attacks and memory exhaustion from malicious paths.
 	maxPathLength = 4096
@@ -162,6 +150,12 @@ const (
 	// are still detected and redacted.
 	// Set to 512 to cover most sensitive data patterns (credit cards, SSNs, API keys, etc.)
 	boundaryCheckSize = 512
+
+	// boundaryLookahead caps how far past the truncation point the boundary
+	// scan may read. It must cover the longest single-pattern match that can
+	// straddle the cut (a PEM private key block matches ~4KB), while bounding
+	// the truncation-time regex scan to a fixed-size window.
+	boundaryLookahead = 4096
 )
 
 const (
@@ -170,5 +164,11 @@ const (
 	debugVisualizationDepth = 2
 )
 
-// DefaultLogPath is the default path for log files.
+// DefaultLogPath is a conventional log file path ("logs/app.log"), provided as
+// a convenience constant for callers configuring file output:
+//
+//	cfg.Targets = []dd.OutputTarget{dd.FileOutput(dd.DefaultLogPath)}
+//
+// No configuration uses it implicitly — file targets always require an
+// explicit path.
 const DefaultLogPath = "logs/app.log"

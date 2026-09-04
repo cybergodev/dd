@@ -14,13 +14,14 @@ import (
 // 1. Basic capture and assertion
 // 2. Filtering by level
 // 3. Field inspection
-// 4. Custom config with recorder
+// 4. Dependency injection via CoreLogger (swap in a recorder-backed logger)
 func main() {
 	fmt.Println("=== DD Testing with LoggerRecorder ===")
 
 	section1BasicCapture()
 	section2LevelFiltering()
 	section3FieldInspection()
+	section4DependencyInjection()
 
 	fmt.Println("\n✅ Testing examples completed!")
 }
@@ -98,6 +99,7 @@ func section3FieldInspection() {
 	// Use JSON format for reliable field parsing
 	cfg := dd.JSONConfig()
 	recorder := dd.NewLoggerRecorder()
+	recorder.SetFormat(dd.FormatJSON) // must match the logger's format for parsing
 	logger, _ := recorder.NewLogger(cfg)
 	defer logger.Close()
 
@@ -124,4 +126,49 @@ func section3FieldInspection() {
 	}
 
 	fmt.Println()
+}
+
+// orderService depends on the dd.CoreLogger interface rather than *dd.Logger,
+// so production code and tests can supply different implementations.
+type orderService struct {
+	logger dd.CoreLogger
+}
+
+func newOrderService(logger dd.CoreLogger) *orderService {
+	return &orderService{logger: logger}
+}
+
+func (s *orderService) Checkout(orderID string) {
+	s.logger.InfoWith("checkout completed",
+		dd.String("order_id", orderID),
+		dd.Int("items", 3),
+	)
+}
+
+// Section 4: Dependency injection — the service logs through the CoreLogger
+// interface; the test substitutes a recorder-backed logger for the real one.
+func section4DependencyInjection() {
+	fmt.Println("4. Dependency Injection (CoreLogger)")
+	fmt.Println("--------------------------------------")
+
+	recorder := dd.NewLoggerRecorder()
+	recorder.SetFormat(dd.FormatJSON) // parsing must match the logger's format
+	logger, err := recorder.NewLogger(dd.JSONConfig())
+	if err != nil {
+		fmt.Printf("  Failed to create test logger: %v\n", err)
+		return
+	}
+	defer logger.Close()
+
+	// Run the service under test with the recorder in place of a real logger
+	service := newOrderService(logger)
+	service.Checkout("order-42")
+
+	// Assert on the captured output — in a real test, fail with t.Errorf
+	fmt.Printf("  Captured entries: %d\n", recorder.Count())
+	fmt.Printf("  Has 'checkout completed': %v\n", recorder.ContainsMessage("checkout completed"))
+	if val := recorder.GetFieldValue("order_id"); val != nil {
+		fmt.Printf("  order_id field: %v\n", val)
+	}
+	fmt.Println("  ✓ Production swaps in dd.New() — service code is unchanged")
 }

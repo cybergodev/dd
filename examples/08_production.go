@@ -193,7 +193,12 @@ func section3GracefulShutdown() {
 
 	logger.Info("Shutting down gracefully")
 
-	// Use Shutdown for graceful cleanup with timeout (preferred over Close)
+	// Recommended sequence: wait for in-flight security filter goroutines to
+	// drain, then Shutdown flushes writers and closes with a timeout
+	if !logger.WaitForFilterGoroutines(2 * time.Second) {
+		fmt.Println("  Warning: filter goroutines did not drain in time")
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := logger.Shutdown(shutdownCtx); err != nil {

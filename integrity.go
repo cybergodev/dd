@@ -129,6 +129,11 @@ type IntegritySigner struct {
 // NewIntegritySigner creates a new IntegritySigner with the given configuration.
 // Use DefaultIntegrityConfigSafe() to generate a cryptographically secure key.
 //
+// SECURITY: after the key is copied into the signer, the caller's cfg.SecretKey
+// bytes are zeroed so the key material exists in only one place. The passed
+// config therefore cannot be reused to create a second signer — call
+// IntegrityConfig.Clone() (or generate a fresh key) per signer.
+//
 // Returns errors:
 //   - When SecretKey is less than 32 bytes
 //   - When HashAlgorithm is not supported
@@ -208,45 +213,42 @@ func (s *IntegritySigner) signData(data *bytes.Buffer) *signResult {
 	return result
 }
 
-// buildSignatureString constructs the signature output string from the sign result.
-// Uses pooled buffer to reduce allocations.
+// buildSignatureString constructs the signature output string from the sign
+// result. It is pure with respect to the pools: it borrows nothing and does
+// NOT recycle result — the caller owns result and releases it (see Sign/
+// SignFields), keeping borrow and release lexically adjacent. The string is
+// short-lived and already allocation-bound (String + base64), so a
+// strings.Builder beats pooling here; this also stops the HMAC-payload pool
+// (signDataPool) from being borrowed for an unrelated purpose.
 func (s *IntegritySigner) buildSignatureString(result *signResult) string {
-	encodedSig := base64.RawURLEncoding.EncodeToString(result.signature)
+	var sb strings.Builder
+	// prefix + worst-case ts (19 digits) + seq (20 digits) + separators +
+	// base64 of a 32-byte HMAC (43 chars) + "]"
+	sb.Grow(len(s.config.SignaturePrefix) + 88)
 
-	sigBuilder := signDataPool.Get().(*bytes.Buffer)
-	sigBuilder.Reset()
-
-	defer func() {
-		// SECURITY: Zero buffer before returning to pool
-		b := sigBuilder.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		sigBuilder.Reset()
-		signDataPool.Put(sigBuilder)
-	}()
-
-	sigBuilder.WriteString(s.config.SignaturePrefix)
-
+	sb.WriteString(s.config.SignaturePrefix)
 	if s.config.IncludeTimestamp {
-		sigBuilder.WriteString(strconv.FormatInt(result.timestamp, 10))
+		sb.WriteString(strconv.FormatInt(result.timestamp, 10))
 	}
-	sigBuilder.WriteString(":")
+	sb.WriteString(":")
 	if s.config.IncludeSequence {
-		sigBuilder.WriteString(strconv.FormatUint(result.sequence, 10))
+		sb.WriteString(strconv.FormatUint(result.sequence, 10))
 	}
-	sigBuilder.WriteString(":")
-	sigBuilder.WriteString(encodedSig)
-	sigBuilder.WriteString("]")
+	sb.WriteString(":")
+	sb.WriteString(base64.RawURLEncoding.EncodeToString(result.signature))
+	sb.WriteString("]")
+	return sb.String()
+}
 
-	// Release the signResult back to pool
+// putSignResult zeroes the signature bytes and recycles the signResult.
+// Callers must invoke it exactly once per signResultPool.Get, via defer next
+// to the Get.
+func putSignResult(result *signResult) {
 	for i := range result.signature {
 		result.signature[i] = 0
 	}
 	result.signature = result.signature[:0]
 	signResultPool.Put(result)
-
-	return sigBuilder.String()
 }
 
 // Sign generates an HMAC signature for a log message.
@@ -276,6 +278,7 @@ func (s *IntegritySigner) Sign(message string) string {
 	}()
 
 	result := s.signData(data)
+	defer putSignResult(result)
 
 	return s.buildSignatureString(result)
 }
@@ -313,6 +316,7 @@ func (s *IntegritySigner) SignFields(message string, fields []Field) string {
 	}()
 
 	result := s.signData(data)
+	defer putSignResult(result)
 
 	return s.buildSignatureString(result)
 }
@@ -347,7 +351,15 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		}, nil
 	}
 
-	sigEnd := strings.Index(entry[sigStart:], "]")
+	// SEC-003: scan for the closing ']' only AFTER the prefix. A custom
+	// SignaturePrefix may itself contain ']' (Validate does not reject one),
+	// and scanning from the prefix start would find that inner bracket first,
+	// inverting the content slice bounds (entry[hi:lo]) and panicking —
+	// reachable from the Sign→Verify round-trip itself. For prefixes without
+	// ']' the first bracket after the prefix start is also the first after
+	// the prefix end, so this is byte-identical to the old scan.
+	prefixEnd := sigStart + len(s.config.SignaturePrefix)
+	sigEnd := strings.Index(entry[prefixEnd:], "]")
 	if sigEnd == -1 {
 		return &LogIntegrity{
 			Valid:   false,
@@ -356,11 +368,12 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 	}
 
 	// Extract the signature content (between prefix and ])
-	sigContent := entry[sigStart+len(s.config.SignaturePrefix) : sigStart+sigEnd]
+	sigContent := entry[prefixEnd : prefixEnd+sigEnd]
 	message := entry[:sigStart]
 
 	// Parse signature format: [SIG:ts:seq:sig]
-	// Format can be: ts:seq:sig, :seq:sig, ts::sig, or :::sig
+	// Emitted forms (buildSignatureString always writes both colons):
+	// ts:seq:sig, :seq:sig, ts::sig, or ::sig
 	parts := strings.SplitN(sigContent, ":", 3)
 	if len(parts) != 3 {
 		// Try legacy format (just base64 signature without metadata)
@@ -406,7 +419,44 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		sequence = seq
 	}
 
-	// Rebuild the signed data with the same format as Sign()
+	// Rebuild the signed payload and compare signatures (constant-time).
+	// Try the message as extracted first; on mismatch, retry once with a single
+	// trailing space stripped: AuditLogger.writeEvent (and other callers)
+	// append the signature after a one-space separator, but Sign() signs the
+	// message WITHOUT that separator. Without the retry, every audit-written
+	// entry failed verification because the separator byte leaked into the
+	// re-signed payload.
+	if hmac.Equal(signature, s.expectedSignature(message, timestampStr, sequenceStr)) {
+		return &LogIntegrity{
+			Valid:     true,
+			Message:   message,
+			Timestamp: timestamp,
+			Sequence:  sequence,
+		}, nil
+	}
+	if trimmed, ok := strings.CutSuffix(message, " "); ok {
+		if hmac.Equal(signature, s.expectedSignature(trimmed, timestampStr, sequenceStr)) {
+			return &LogIntegrity{
+				Valid:     true,
+				Message:   trimmed,
+				Timestamp: timestamp,
+				Sequence:  sequence,
+			}, nil
+		}
+	}
+
+	return &LogIntegrity{
+		Valid:   false,
+		Message: message,
+	}, nil
+}
+
+// expectedSignature rebuilds the signed payload for message using the timestamp
+// and sequence strings exactly as they appeared inside the signature, and
+// returns the HMAC that Sign() would have produced for that combination.
+// Shared by Verify and verifyLegacy so both stay in lock-step with signData's
+// payload format.
+func (s *IntegritySigner) expectedSignature(message, timestampStr, sequenceStr string) []byte {
 	data := signDataPool.Get().(*bytes.Buffer)
 	data.Reset()
 	data.WriteString(message)
@@ -415,7 +465,6 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 		data.WriteString("|")
 		data.WriteString(timestampStr)
 	}
-
 	if s.config.IncludeSequence && sequenceStr != "" {
 		data.WriteString("|")
 		data.WriteString(sequenceStr)
@@ -434,22 +483,7 @@ func (s *IntegritySigner) Verify(entry string) (*LogIntegrity, error) {
 	// Create a fresh hasher and recompute signature directly from buffer bytes
 	hasher := s.newHasher()
 	hasher.Write(data.Bytes())
-	expectedSig := hasher.Sum(nil)
-
-	// Compare signatures (constant-time comparison)
-	if !hmac.Equal(signature, expectedSig) {
-		return &LogIntegrity{
-			Valid:   false,
-			Message: message,
-		}, nil
-	}
-
-	return &LogIntegrity{
-		Valid:     true,
-		Message:   message,
-		Timestamp: timestamp,
-		Sequence:  sequence,
-	}, nil
+	return hasher.Sum(nil)
 }
 
 // verifyLegacy handles verification of legacy signature format (just base64 without metadata).
@@ -464,17 +498,20 @@ func (s *IntegritySigner) verifyLegacy(message, sigStr string) (*LogIntegrity, e
 		}, nil
 	}
 
-	// For legacy signatures, we can only verify the message portion
-	// Create a fresh hasher and recompute signature
-	hasher := s.newHasher()
-	hasher.Write([]byte(message))
-	expectedSig := hasher.Sum(nil)
-
-	// Compare signatures (constant-time comparison)
-	// Note: We compare the full expected signature, not a truncated version.
-	// Truncating the expected signature to match the provided signature length
-	// would significantly weaken the HMAC verification.
-	if !hmac.Equal(signature, expectedSig) {
+	// For legacy signatures, we can only verify the message portion.
+	// On mismatch, retry once with a single trailing space stripped — the same
+	// separator handling as Verify (see the comment there).
+	valid := hmac.Equal(signature, s.expectedSignature(message, "", ""))
+	msg := message
+	if !valid {
+		if trimmed, ok := strings.CutSuffix(message, " "); ok {
+			if hmac.Equal(signature, s.expectedSignature(trimmed, "", "")) {
+				valid = true
+				msg = trimmed
+			}
+		}
+	}
+	if !valid {
 		return &LogIntegrity{
 			Valid:   false,
 			Message: message,
@@ -484,7 +521,7 @@ func (s *IntegritySigner) verifyLegacy(message, sigStr string) (*LogIntegrity, e
 	// Legacy signature valid but without timestamp/sequence verification
 	return &LogIntegrity{
 		Valid:   true,
-		Message: message,
+		Message: msg,
 	}, nil
 }
 

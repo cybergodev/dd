@@ -37,6 +37,28 @@ var sanitizeBufferPool = sync.Pool{
 	},
 }
 
+// sanitizeClass classifies each byte for SanitizeControlChars' fast-path scan:
+// one table load replaces the four-comparison branch chain the scan previously
+// evaluated per byte, which matters for large messages (the scan is O(len)).
+const (
+	sanitizeClassClean byte = iota // plain byte, cannot start anything sanitized
+	sanitizeClassCtrl              // control byte (<0x20 except \t) or DEL: always sanitized
+	sanitizeClassLead              // 0xE2/0xEF: may lead a sanitized Unicode control sequence
+)
+
+// sanitizeClassTable maps every byte to its sanitizeClass. Only ASCII control
+// bytes (excluding \t), DEL, and the two multibyte lead bytes are non-clean.
+var sanitizeClassTable = func() (t [256]byte) {
+	for i := 0; i < 0x20; i++ {
+		t[i] = sanitizeClassCtrl
+	}
+	t['\t'] = sanitizeClassClean // tab is allowed through
+	t[0x7f] = sanitizeClassCtrl  // DEL
+	t[0xE2] = sanitizeClassLead  // U+2000-U+20FF Unicode control range
+	t[0xEF] = sanitizeClassLead  // U+FEFF BOM (and other 0xEF sequences)
+	return t
+}()
+
 // SanitizeControlChars replaces dangerous control characters with visible escape sequences.
 // This preserves debugging information while preventing log injection attacks.
 //
@@ -55,20 +77,23 @@ func SanitizeControlChars(message string) string {
 
 	// Fast path: check if sanitization is needed using string indexing
 	// Avoids []byte allocation when no sanitization is needed
+	//
+	// The lead-byte class carries no length guarantee: a 0xE2/0xEF byte at the
+	// very end of the message (fewer than 3 bytes remaining) heads a truncated
+	// sequence the slow path keeps as-is, so only a complete 3-byte window
+	// triggers sanitization.
 	needsSanitization := false
-	for i := range msgLen {
-		b := message[i]
-		// 0x1b is ESC character (start of ANSI escape sequences)
-		// \n (0x0a) and \r (0x0d) are escaped to prevent CRLF injection
-		if b == 0x00 || b == 0x1b || (b < 32 && b != '\t') || b == 127 {
+scan:
+	for i := 0; i < msgLen; i++ {
+		switch sanitizeClassTable[message[i]] {
+		case sanitizeClassCtrl:
 			needsSanitization = true
-			break
-		}
-		// Check for UTF-8 encoded Unicode control characters
-		// These start with 0xE2 (for U+2000-U+20FF range) or 0xEF (for U+FEFF)
-		if (b == 0xE2 || b == 0xEF) && i+2 < msgLen {
-			needsSanitization = true
-			break
+			break scan
+		case sanitizeClassLead:
+			if i+2 < msgLen {
+				needsSanitization = true
+				break scan
+			}
 		}
 	}
 
@@ -232,10 +257,8 @@ func skipAnsiSequenceString(data string, start int) int {
 		return skip
 	}
 
-	// Other single-character sequences
-	if (b >= 0x20 && b <= 0x2F) || (b >= 0x30 && b <= 0x3F) || (b >= 0x40 && b <= 0x5F) {
-		return 1
-	}
-
+	// Other single-character sequences: ESC followed by one byte in 0x20-0x5F
+	// (Fe/Fs sequences per ECMA-48). Anything else is consumed as a single
+	// byte too — one ESC byte on its own is already inert once dropped.
 	return 1
 }

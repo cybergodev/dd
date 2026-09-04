@@ -63,7 +63,9 @@ func DefaultRateLimitConfig() *RateLimitConfig {
 	}
 }
 
-// RateLimiter implements a token bucket rate limiter for log messages.
+// RateLimiter implements per-second rate limiting for log messages: fixed
+// per-second budgets (messages, bytes) refilled once per wall-clock second,
+// plus a burst allowance on top of the message budget.
 // It uses a combination of atomic operations and mutex for thread-safe access.
 // The mutex is only used for second boundary transitions to avoid TOCTOU races.
 type RateLimiter struct {
@@ -118,6 +120,14 @@ func (rl *RateLimiter) maybeResetSecond(now time.Time) {
 	// Double-check after acquiring the lock: another goroutine may have
 	// already advanced the window while we were waiting.
 	if nowSec == rl.currentSecond.Load() {
+		return
+	}
+	// SECURITY: only advance the window FORWARD. A backwards wall-clock step
+	// (NTP correction, VM snapshot resume, manual change) used to trigger
+	// this reset too, fully refilling the budgets on every observed second
+	// transition — refreshing the flood-protection budget many times per
+	// actual second. Treat a backwards step as "still the same window".
+	if nowSec < rl.currentSecond.Load() {
 		return
 	}
 	rl.currentSecond.Store(nowSec)
@@ -177,11 +187,37 @@ func (rl *RateLimiter) AllowBytes(msgSize int) bool {
 		// messages. AllowMessage is a no-op (no increment) when
 		// MaxMessagesPerSecond <= 0, so only roll back when it is active.
 		if rl.config.MaxMessagesPerSecond > 0 {
-			rl.messageCount.Add(-1)
+			decrementFloored(&rl.messageCount)
 		}
 		return !rl.handleRateLimited()
 	}
 	return true
+}
+
+// decrementFloored decrements v by one, never below zero.
+//
+// The byte gate's messageCount rollback assumed AllowMessage had incremented
+// the same limiter instance in the same accounting window, but neither holds
+// under concurrency: the logger loads its rate limiter twice (AllowMessage in
+// shouldLog, AllowBytes in logCoreWithDepth), and SetSecurityConfig can swap
+// the instance between the two — or maybeResetSecond can zero the counter
+// between the increment and the rollback. A plain Add(-1) then drives
+// messageCount negative, and a negative count lets the window admit more than
+// MaxMessagesPerSecond messages until the next reset. Flooring the rollback at
+// zero keeps the invariant "messageCount >= 0"; when the increment is missing
+// the rollback is skipped, which can only over-consume a message slot
+// (fail-closed). Off the happy path: this runs only when the byte gate
+// rejects a message.
+func decrementFloored(v *atomic.Int64) {
+	for {
+		current := v.Load()
+		if current <= 0 {
+			return
+		}
+		if v.CompareAndSwap(current, current-1) {
+			return
+		}
+	}
 }
 
 // ShouldRateLimit checks whether a message of the given size should be rate

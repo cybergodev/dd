@@ -166,11 +166,12 @@ func FuzzFilterFieldValue(f *testing.F) {
 
 		result := filter.FilterFieldValue(key, value)
 
-		// Sensitive keys should be redacted
+		// Sensitive keys must always be fully redacted: FilterFieldValue returns
+		// "[REDACTED]" whenever IsSensitiveKey(key) holds and the value is a
+		// string, so this is a deterministic invariant, not a heuristic.
 		if internal.IsSensitiveKey(key) {
 			if str, ok := result.(string); ok && str != "[REDACTED]" {
-				// Note: The filter may not always redact if the key doesn't match exactly
-				// This is expected behavior, so we don't fail the test
+				t.Errorf("sensitive key %q was not redacted: %q", key, str)
 			}
 		}
 

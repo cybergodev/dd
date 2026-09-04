@@ -171,7 +171,8 @@ config := dd.DefaultConfig()
 config.Security.MaxMessageSize = 5 * 1024 * 1024 // Default: 5MB
 ```
 
-Messages exceeding the limit are truncated with `... [TRUNCATED]` suffix.
+Messages exceeding the limit are truncated in place at a UTF-8 rune boundary
+and an ellipsis (`...`) is appended, so the written line never exceeds the limit.
 
 ### 3. ReDoS (Regular Expression Denial of Service) Protection
 
@@ -179,14 +180,17 @@ The sensitive data filter includes multiple layers of protection against ReDoS a
 
 #### Timeout Protection
 
-Each regex operation has a configurable timeout (default: 50ms):
+Each regex operation has a timeout: a 50ms base that scales with input length
+(+4x base per 32KB above 32KB), so large legitimate messages are not falsely
+discarded:
 ```go
 filter := dd.NewSensitiveDataFilter()
 // Timeout is automatically applied to prevent hanging
 result := filter.Filter(potentiallyMaliciousInput)
 ```
 
-If a regex operation exceeds the timeout, it returns `[REDACTED]`.
+If a regex operation exceeds the timeout, the caller abandons the scan and the
+input is returned as `[REDACTED]` (fail closed).
 
 #### Input Length Limiting
 
@@ -219,15 +223,20 @@ The filter includes panic recovery to handle regex engine crashes:
 
 #### Writer Count Limiting
 
-Prevents resource exhaustion by limiting the number of output writers:
+Prevents resource exhaustion via a fixed package cap of 100 writers, enforced
+in `Config.Validate` and `Logger.AddWriter`:
 ```go
+// New() with more than 100 targets fails validation
 config := dd.DefaultConfig()
-config.Security.MaxWriters = 100 // Default: 100
-logger, _ := dd.New(config)
+config.Targets = targets // len(targets) > 100
+_, err := dd.New(config) // Returns ErrMaxWritersExceeded
 
-// Attempting to exceed limit returns error
-err := logger.AddWriter(newWriter) // Returns error if limit exceeded
+// The same fixed cap applies to writers added at runtime
+err = logger.AddWriter(newWriter) // Returns ErrMaxWritersExceeded beyond 100
 ```
+
+Note: `SecurityConfig.MaxWriters` is informational only — configuring a lower
+value does not lower the enforced cap.
 
 #### Field Key Validation
 
@@ -288,25 +297,24 @@ The library detects UTF-8 overlong encoding attacks, which can be used to bypass
 
 ### 6. Secure Memory Handling
 
-The library implements secure memory handling internally to prevent sensitive
-data from lingering in memory. These types live in the unexported `internal`
-package and are **not** part of the public API — callers benefit automatically
-and do not (and cannot) use them directly:
-
-- `SecureBuffer`: a byte buffer that zeros its contents before returning to the pool.
-- `SecureString`: a string wrapper with constant-time comparison.
-- `SecureBytes` / `WipeBytes()`: zero byte slices.
-
-As a user you get this for free: all pooled buffers (JSON encoder, text builder,
-field builder, sanitize buffer) are zeroed before being returned to their pools.
+The library prevents sensitive log content from lingering in pooled memory.
+This is entirely internal — callers benefit automatically and do not (and
+cannot) use it directly.
 
 #### Pool Buffer Zeroing
 
-All pooled buffers are zeroed before being returned to the pool:
-- JSON encoding buffers
-- Text formatting buffers
-- Field formatting buffers
-- Sanitization buffers
+Every pool that can carry log content zeroes its buffers before returning
+them (buffers that grew oversized are zeroed and discarded instead of pooled):
+
+- Log line buffers (text and JSON output lines)
+- Argument-formatting and sanitization buffers
+- JSON encoder buffers and audit encoder buffers
+- Debug output buffers
+- HMAC signing data and signature buffers (integrity signer)
+
+Map pools (JSON entry/field maps, recursive-filter visited maps) are
+`clear()`ed before reuse. `NewIntegritySigner` additionally zeros its copy of
+the configured `SecretKey` (documented in its godoc).
 
 ### 7. Thread Safety
 
@@ -314,7 +322,9 @@ All public methods are fully concurrent-safe:
 - Atomic operations for hot paths (level checks, state management)
 - RWMutex for writer management (infrequent operations)
 - Lock-free design for logging operations
-- Immutable configuration after logger creation
+- Runtime reconfiguration is supported and safe: SetLevel, SetSecurityConfig,
+  AddWriter/RemoveWriter, hooks, and context extractors can all be changed
+  while other goroutines are logging
 
 ```go
 // Safe for concurrent use
@@ -331,10 +341,12 @@ wg.Wait()
 
 #### Atomic Cache Operations
 
-Caches use atomic operations to ensure consistency:
-- `sync.Map` for caller and depth caches
-- `atomic.Pointer` for time cache
-- CAS (Compare-And-Swap) loops for atomic updates
+Caches use concurrent-safe primitives:
+- `sync.Map` for the caller cache (bounded at 10,000 entries) and the
+  sensitive-field-key result cache (bounded at 8,192 entries)
+- `atomic.Pointer` for the per-second time-format cache (layouts with
+  sub-second precision bypass it to avoid stale fractional digits)
+- Atomic counters with CAS updates for cache size limiting
 
 ### 8. Audit Logging
 
@@ -342,26 +354,29 @@ DD provides comprehensive audit logging for security monitoring:
 
 #### Audit Event Types
 
-| Event Type | Description | Severity |
-|------------|-------------|----------|
-| `SENSITIVE_DATA_REDACTED` | Sensitive data was filtered | Info |
-| `RATE_LIMIT_EXCEEDED` | Rate limit triggered | Warning |
-| `REDOS_ATTEMPT` | Potential ReDoS pattern detected | Error |
-| `SECURITY_VIOLATION` | General security violation | Error |
-| `INTEGRITY_VIOLATION` | Log integrity check failed | Critical |
-| `INPUT_SANITIZED` | Input was sanitized | Info |
-| `PATH_TRAVERSAL_ATTEMPT` | Path traversal detected | Error |
-| `LOG4SHELL_ATTEMPT` | Log4Shell pattern detected | Critical |
-| `NULL_BYTE_INJECTION` | Null byte injection detected | Warning |
-| `OVERLONG_ENCODING` | UTF-8 overlong encoding detected | Warning |
-| `HOMOGRAPH_ATTACK` | Homograph attack detected | Warning |
+| Event Type | Description | Severity | Emitted by |
+|------------|-------------|----------|------------|
+| `SENSITIVE_DATA_REDACTED` | Sensitive data was filtered | Info | Logger, automatically on each redaction |
+| `RATE_LIMIT_EXCEEDED` | Rate limit triggered | Warning | Logger, automatically when the rate limiter drops a message |
+| `REDOS_ATTEMPT` | Potential ReDoS pattern detected | Critical | `AuditLogger.LogReDoSAttempt` (caller-invoked) |
+| `SECURITY_VIOLATION` | General security violation | Error | `AuditLogger.LogSecurityViolation` (caller-invoked) |
+| `INTEGRITY_VIOLATION` | Log integrity check failed | Critical | `AuditLogger.LogIntegrityViolation` (caller-invoked) |
+| `PATH_TRAVERSAL_ATTEMPT` | Path traversal detected | Critical | `AuditLogger.LogPathTraversalAttempt` (caller-invoked) |
+
+The `INPUT_SANITIZED`, `LOG4SHELL_ATTEMPT`, `NULL_BYTE_INJECTION`,
+`OVERLONG_ENCODING`, and `HOMOGRAPH_ATTACK` event type constants exist, but no
+library code path emits them today — they are reserved for applications that
+perform their own detection and log events via `AuditLogger.Log`. (Log4Shell,
+null-byte, overlong-encoding, and homograph payloads are blocked at their
+respective validation layers — see sections 2 and 5 — without audit events.)
 
 #### Usage
 
 ```go
 // Configure audit logging
 auditConfig := dd.DefaultAuditConfig()
-auditConfig.Output = auditFile // *os.File; nil = events only via the Events channel
+auditConfig.Output = auditFile // *os.File; nil = events are accepted and
+                               // counted (Stats) but produce no output
 auditConfig.JSONFormat = true
 
 // Attach to the main logger via Config.Audit (*AuditConfig).
@@ -389,8 +404,8 @@ DD detects and blocks Log4Shell (CVE-2021-44228) attack patterns:
 
 All caches have size limits to prevent memory exhaustion:
 - Caller cache: 10,000 entries max
-- Depth cache: 5,000 entries max
-- Filter result cache: 1,000 entries max
+- Sensitive-field-key result cache: 8,192 entries max
+- Filter result cache: 1,000 entries max (only inputs ≤ 64 bytes are cached)
 
 #### Cache TTL
 
@@ -473,7 +488,7 @@ Set message size limits based on your application's needs:
 ```go
 config := dd.DefaultConfig()
 config.Security.MaxMessageSize = 1 * 1024 * 1024 // 1MB for high-security environments
-config.Security.MaxWriters = 50
+config.Security.RateLimitConfig = dd.DefaultRateLimitConfig() // flood protection
 ```
 
 ### 5. Secure File Permissions
@@ -604,7 +619,7 @@ config.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
 config := dd.DefaultConfig()
 // Basic filtering is already enabled by default (DefaultSecurityConfig())
 config.Security.MaxMessageSize = 5 * 1024 * 1024 // 5MB
-config.Security.MaxWriters = 100
+config.Security.RateLimitConfig = dd.DefaultRateLimitConfig() // 10k msg/s, 10MB/s
 ```
 
 ### Maximum Security Configuration
@@ -613,8 +628,8 @@ config.Security.MaxWriters = 100
 config := dd.DefaultConfig()
 config.Security = &dd.SecurityConfig{
     MaxMessageSize:  1 * 1024 * 1024, // 1MB
-    MaxWriters:      50,
     SensitiveFilter: dd.NewSensitiveDataFilter(), // full filtering
+    RateLimitConfig: dd.DefaultRateLimitConfig(), // flood protection
 }
 ```
 
@@ -629,7 +644,6 @@ filter.AddPattern(`\bCUSTOM_SECRET_[A-Z0-9]+\b`)
 config := dd.DefaultConfig()
 config.Security = &dd.SecurityConfig{
     MaxMessageSize:  2 * 1024 * 1024,
-    MaxWriters:      75,
     SensitiveFilter: filter,
 }
 ```
@@ -646,7 +660,7 @@ config.Security = &dd.SecurityConfig{
 | Custom filtering      | Varies             | Varies           | Specific compliance needs  |
 | Message size limiting | Minimal            | High             | Always enable              |
 | Newline escaping      | Minimal            | High             | Always enabled             |
-| Field key validation  | Minimal            | Medium           | Always enabled             |
+| Field key validation  | Minimal            | Medium           | Opt-in (disabled by default) |
 
 ---
 
@@ -658,12 +672,13 @@ All memory pools implement secure handling:
 
 | Pool Type | Security Measure |
 |-----------|-----------------|
-| JSON Encoder Pool | Buffer zeroed before return |
-| Text Builder Pool | Buffer zeroed before return |
-| Field Pool | Buffer zeroed before return |
-| Sanitize Buffer Pool | Buffer zeroed before return |
-| Caller PC Pool | Slice reused, no sensitive data |
-| Map Pools | Clear() called before return |
+| Log line buffers (text/JSON) | Zeroed before return; oversized buffers discarded |
+| Argument & sanitize buffers | Zeroed before return |
+| JSON / audit encoder buffers | Zeroed before return |
+| Debug output buffers | Zeroed before return |
+| HMAC sign data / signature buffers | Zeroed before return |
+| Caller PC pool | PCs only, never log content |
+| Map pools (JSON entry/field, filter visited) | clear() before return |
 
 ### Cache Consistency
 
@@ -676,8 +691,8 @@ All caches implement atomic operations:
 ### Fast Path Security
 
 Performance optimizations maintain security:
-- Depth limits prevent stack overflow (max: 1000)
-- JSON depth limits prevent recursive attacks (max: 100)
+- Recursive value filtering is depth-limited (max depth 100) and element-count bounded
+- JSON serialization is depth-limited to prevent recursive attacks (max depth 100)
 - Time cache uses atomic operations for consistency
 - All buffers zeroed before pool return
 

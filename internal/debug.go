@@ -32,13 +32,34 @@ func NewDebugBuffer() *DebugBuffer {
 // Release returns the buffer to the pool if it's not too large.
 func (b *DebugBuffer) Release() {
 	if b.Buffer != nil {
+		// SECURITY: zero contents before the buffer leaves our hands —
+		// discarded and pooled alike. These buffers carry full debug payloads
+		// built from user field values; every other pool in this package
+		// (line, args, json builders) zeroes on release for exactly this
+		// reason, and leaving plaintext sensitive data resident in pooled
+		// memory here would contradict that policy.
+		zeroBuffer(b.Buffer)
 		// Discard buffers that grew too large to prevent unbounded memory growth
 		if b.Cap() <= MaxDebugBufferSize {
-			b.Reset()
 			debugBufPool.Put(b.Buffer)
 		}
 		b.Buffer = nil
 	}
+}
+
+// newDebugEncoder returns a JSON encoder writing into buf with the security
+// defaults shared by all debug output paths.
+//
+// SECURITY: HTML escaping stays ON, matching the structured JSON formatter
+// (internal/json.go): debug payloads contain user data that may end up
+// rendered in HTML contexts, so & < > must not pass through raw. The encoder
+// call sites in this file used to disagree (single-arg FormatJSONData true,
+// multi-arg and writeTextItems false), applying the XSS rationale
+// inconsistently within one function's output.
+func newDebugEncoder(w io.Writer) *json.Encoder {
+	encoder := json.NewEncoder(w)
+	encoder.SetEscapeHTML(true)
+	return encoder
 }
 
 // writeString writes to w ignoring errors, for debug/diagnostic output
@@ -70,7 +91,9 @@ func FormatSimpleValue(v any) string {
 		if err == nil {
 			return "nil"
 		}
-		return err.Error()
+		// SEC-003: user Error method — the debug Text/JSON helpers run outside
+		// any recover, so this call must be panic-safe.
+		return SafeErrorString(err)
 	}
 
 	val := reflect.ValueOf(v)
@@ -96,10 +119,7 @@ func FormatJSONData(data ...any) string {
 
 		converted := ConvertValue(data[0])
 
-		encoder := json.NewEncoder(buf)
-		// SECURITY: Enable HTML escaping to prevent XSS attacks when debug
-		// output is rendered in HTML contexts. Matches writeJSONString behavior.
-		encoder.SetEscapeHTML(true)
+		encoder := newDebugEncoder(buf)
 		if err := encoder.Encode(converted); err != nil {
 			if jsonData, err := json.Marshal(data[0]); err == nil {
 				return string(jsonData)
@@ -117,13 +137,9 @@ func FormatJSONData(data ...any) string {
 	// Multiple arguments: treat as key-value pairs
 	result := make(map[string]any, len(data)/2)
 	for i := 0; i < len(data); i += 2 {
-		var key string
+		key := fmt.Sprintf("%v", ConvertValue(data[i]))
+
 		var value any
-
-		if i < len(data) {
-			key = fmt.Sprintf("%v", ConvertValue(data[i]))
-		}
-
 		if i+1 < len(data) {
 			value = ConvertValue(data[i+1])
 		}
@@ -136,8 +152,7 @@ func FormatJSONData(data ...any) string {
 	buf := NewDebugBuffer()
 	defer buf.Release()
 
-	encoder := json.NewEncoder(buf)
-	encoder.SetEscapeHTML(false)
+	encoder := newDebugEncoder(buf)
 	if err := encoder.Encode(result); err != nil {
 		if jsonData, err := json.Marshal(result); err == nil {
 			return string(jsonData)
@@ -152,29 +167,25 @@ func FormatJSONData(data ...any) string {
 	return output
 }
 
-// OutputTextData writes formatted data to the specified writer.
-// It outputs complex types as pretty-printed JSON and simple types as-is.
-func OutputTextData(w io.Writer, data ...any) {
-	if len(data) == 0 {
-		writeString(w, "\n")
-		return
-	}
-
+// writeTextItems writes each item separated by single spaces, terminated by a
+// trailing newline. leadingSpace emits one space before the first item, for
+// callers that prefix the list with e.g. a caller string. Simple types are
+// written as-is; complex types are rendered as indented JSON; encoding
+// failures fall back to "[i] value".
+func writeTextItems(w io.Writer, data []any, leadingSpace bool) {
 	buf := NewDebugBuffer()
 	defer buf.Release()
 
-	encoder := json.NewEncoder(buf)
-	encoder.SetEscapeHTML(false)
+	encoder := newDebugEncoder(buf)
 	encoder.SetIndent("", "  ")
 
 	for i, item := range data {
+		if leadingSpace || i > 0 {
+			writeString(w, " ")
+		}
+
 		if IsSimpleType(item) {
-			output := FormatSimpleValue(item)
-			if i < len(data)-1 {
-				writeString(w, output+" ")
-			} else {
-				writeString(w, output+"\n")
-			}
+			writeString(w, FormatSimpleValue(item))
 			continue
 		}
 
@@ -183,11 +194,6 @@ func OutputTextData(w io.Writer, data ...any) {
 
 		if err := encoder.Encode(convertedItem); err != nil {
 			writeString(w, fmt.Sprintf("[%d] %v", i, item))
-			if i < len(data)-1 {
-				writeString(w, " ")
-			} else {
-				writeString(w, "\n")
-			}
 			continue
 		}
 
@@ -195,13 +201,20 @@ func OutputTextData(w io.Writer, data ...any) {
 		if len(out) > 0 && out[len(out)-1] == '\n' {
 			out = out[:len(out)-1]
 		}
-
-		if i < len(data)-1 {
-			writeString(w, string(out)+" ")
-		} else {
-			writeString(w, string(out)+"\n")
-		}
+		writeString(w, string(out))
 	}
+
+	writeString(w, "\n")
+}
+
+// OutputTextData writes formatted data to the specified writer.
+// It outputs complex types as pretty-printed JSON and simple types as-is.
+func OutputTextData(w io.Writer, data ...any) {
+	if len(data) == 0 {
+		writeString(w, "\n")
+		return
+	}
+	writeTextItems(w, data, false)
 }
 
 // OutputJSON writes JSON-formatted data to the specified writer with caller info.
@@ -223,42 +236,5 @@ func OutputText(w io.Writer, caller string, data ...any) {
 	}
 
 	writeString(w, caller)
-
-	buf := NewDebugBuffer()
-	defer buf.Release()
-
-	encoder := json.NewEncoder(buf)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-
-	for i, item := range data {
-		if IsSimpleType(item) {
-			output := FormatSimpleValue(item)
-			if i < len(data)-1 {
-				writeString(w, " "+output)
-			} else {
-				writeString(w, " "+output+"\n")
-			}
-			continue
-		}
-
-		buf.Reset()
-		convertedItem := ConvertValue(item)
-
-		if err := encoder.Encode(convertedItem); err != nil {
-			writeString(w, fmt.Sprintf(" [%d] %v", i, item))
-			continue
-		}
-
-		output := buf.Bytes()
-		if len(output) > 0 && output[len(output)-1] == '\n' {
-			output = output[:len(output)-1]
-		}
-
-		if i < len(data)-1 {
-			writeString(w, " "+string(output))
-		} else {
-			writeString(w, " "+string(output)+"\n")
-		}
-	}
+	writeTextItems(w, data, true)
 }

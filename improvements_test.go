@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -191,13 +192,6 @@ func TestDefaultLoggerWarning(t *testing.T) {
 	if initErr != nil {
 		t.Logf("DefaultInitError returned: %v (may be expected in some environments)", initErr)
 	}
-
-	// Verify the default logger has essential methods
-	t.Run("Default logger has required methods", func(t *testing.T) {
-		// These should not panic
-		_ = logger.IsClosed()
-		_ = logger.GetLevel()
-	})
 }
 
 // TestWithFields tests the WithFields context propagation
@@ -480,6 +474,31 @@ func TestSampling(t *testing.T) {
 			t.Errorf("Expected 10 lines after disabling sampling, got %d", lines)
 		}
 	})
+
+	t.Run("sampling with Initial=0 starts immediately", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		cfg.Level = LevelInfo
+		cfg.Sampling = &SamplingConfig{
+			Enabled:    true,
+			Initial:    0,
+			Thereafter: 1,
+			Tick:       time.Minute,
+		}
+		logger, _ := New(cfg)
+
+		for i := 0; i < 10; i++ {
+			logger.Info("test message")
+		}
+
+		// With Initial=0, sampling starts immediately: some messages must
+		// still be logged, not all of them silently dropped.
+		lines := strings.Count(buf.String(), "test message")
+		if lines == 0 {
+			t.Error("Sampling with Initial=0 should still log some messages")
+		}
+	})
 }
 
 // TestHookContextOriginalFields tests that OriginalFields are passed to hooks
@@ -711,6 +730,59 @@ func TestLevelResolver(t *testing.T) {
 		}
 		if !strings.Contains(output, "warn 1") {
 			t.Error("Warn should appear under high load")
+		}
+	})
+
+	t.Run("IsLevelEnabled honors resolver", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+		cfg.Level = LevelDebug // static level is more permissive than the resolver
+		logger, _ := New(cfg)
+
+		logger.SetLevelResolver(func(ctx context.Context) LogLevel {
+			return LevelWarn
+		})
+
+		if logger.IsDebugEnabled() || logger.IsInfoEnabled() {
+			t.Error("IsDebugEnabled/IsInfoEnabled must honor the resolver (Warn), not the static level (Debug)")
+		}
+		if !logger.IsWarnEnabled() || !logger.IsErrorEnabled() {
+			t.Error("IsWarnEnabled/IsErrorEnabled must be true under a Warn resolver")
+		}
+		if !logger.IsLevelEnabled(LevelWarn) || logger.IsLevelEnabled(LevelInfo) {
+			t.Error("IsLevelEnabled must reflect the resolver's effective level")
+		}
+
+		// The predicate must agree with actual gating.
+		logger.Debug("debug should not appear")
+		if strings.Contains(buf.String(), "debug should not appear") {
+			t.Error("Debug filtered by the gate but reported enabled — predicate and gate disagree")
+		}
+	})
+
+	t.Run("IsLevelEnabled falls back to static level on resolver panic", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Level = LevelInfo
+		logger, _ := New(cfg)
+
+		logger.SetLevelResolver(func(ctx context.Context) LogLevel { panic("resolver boom") })
+
+		if logger.IsDebugEnabled() {
+			t.Error("panicking resolver must fall back to the static level (Info): Debug disabled")
+		}
+		if !logger.IsInfoEnabled() || !logger.IsFatalEnabled() {
+			t.Error("panicking resolver must fall back to the static level (Info): Info/Fatal enabled")
+		}
+	})
+
+	t.Run("IsLevelEnabled rejects levels above fatal", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Level = LevelDebug
+		logger, _ := New(cfg)
+
+		if logger.IsLevelEnabled(LevelFatal + 1) {
+			t.Error("levels above LevelFatal must be reported disabled, matching the gate")
 		}
 	})
 
@@ -1536,16 +1608,6 @@ func TestErrorFieldConstructors(t *testing.T) {
 		}
 	})
 
-	t.Run("ErrWithKey creates field with custom key", func(t *testing.T) {
-		field := ErrWithKey("named_error", errors.New("test error"))
-		if field.Key != "named_error" {
-			t.Errorf("Expected key 'named_error', got %q", field.Key)
-		}
-		if field.Value != "test error" {
-			t.Errorf("Expected value 'test error', got %v", field.Value)
-		}
-	})
-
 	t.Run("ErrWithStack captures stack trace", func(t *testing.T) {
 		field := ErrWithStack(errors.New("test error"))
 		if field.Key != "error" {
@@ -1560,6 +1622,11 @@ func TestErrorFieldConstructors(t *testing.T) {
 		}
 		if !strings.Contains(value, "Stack:") {
 			t.Errorf("Expected stack trace in value, got %s", value)
+		}
+		// Regression: the trace must start at the immediate caller of
+		// ErrWithStack (this file), not one frame higher.
+		if !strings.Contains(value, "improvements_test.go") {
+			t.Errorf("Expected immediate caller frame (improvements_test.go) in stack, got %s", value)
 		}
 	})
 
@@ -1640,4 +1707,145 @@ func TestEntry_PrintMethods(t *testing.T) {
 			t.Errorf("Expected field in output, got: %s", output)
 		}
 	})
+}
+
+// countingStringer counts how many times its String method runs.
+type countingStringer struct {
+	calls *int32
+}
+
+func (c countingStringer) String() string {
+	atomic.AddInt32(c.calls, 1)
+	return "counted"
+}
+
+// TestLoggerEntrySkipsFormattingWhenLevelDisabled verifies that the entry layer
+// (LoggerEntry.Log/Logf) formats its arguments only after the level gate
+// passes — the same contract (*Logger).Log/Logf already honor. A disabled
+// level must not evaluate user String()/Error() methods or format strings.
+func TestLoggerEntrySkipsFormattingWhenLevelDisabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Level = LevelError
+	logger, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = logger.Close() }()
+
+	var calls int32
+	entry := logger.WithFields(String("request_id", "abc123"))
+
+	// Below the configured level: neither Log's direct String() call nor
+	// Logf's %v formatting (which also invokes String()) may run.
+	entry.Info(countingStringer{calls: &calls})
+	entry.Infof("value=%v", countingStringer{calls: &calls})
+	if calls != 0 {
+		t.Errorf("String() ran %d times for a disabled level, want 0", calls)
+	}
+
+	// At/above the configured level: formatting runs exactly once per call.
+	entry.Error(countingStringer{calls: &calls})
+	entry.Errorf("value=%v", countingStringer{calls: &calls})
+	if calls != 2 {
+		t.Errorf("String() ran %d times for enabled levels, want 2", calls)
+	}
+}
+
+// len returns the number of buffered bytes (test helper for closeTrackingWriter).
+func (w *closeTrackingWriter) len() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Len()
+}
+
+// TestShutdownWithCanceledContextLeavesLoggerUsable verifies the fail-fast
+// contract for an already-expired context: Shutdown must return the context
+// error WITHOUT marking the logger closed. Previously the closed flag was set
+// first and closeWritersLocked then aborted immediately on the canceled
+// context — zero writers closed, logger permanently unusable (a retry with a
+// fresh context returned nil without doing anything).
+func TestShutdownWithCanceledContextLeavesLoggerUsable(t *testing.T) {
+	w := &closeTrackingWriter{}
+	cfg := DefaultConfig()
+	cfg.Targets = []OutputTarget{CustomOutput(w)}
+	logger, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // expire before the call
+
+	if err := logger.Shutdown(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Shutdown(canceled ctx) error = %v, want context.Canceled", err)
+	}
+	if logger.IsClosed() {
+		t.Fatal("logger marked closed by a failed Shutdown; want still open and retryable")
+	}
+	if w.isClosed() {
+		t.Fatal("writer closed by a failed Shutdown; want untouched")
+	}
+
+	// The logger must remain usable after the failed shutdown attempt.
+	logger.Info("still logging")
+	if w.len() == 0 {
+		t.Fatal("logger did not write after a failed Shutdown")
+	}
+
+	// A retry with a live context must complete the teardown.
+	if err := logger.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown(retry) error = %v", err)
+	}
+	if !w.isClosed() {
+		t.Fatal("writer not closed by successful Shutdown retry")
+	}
+}
+
+// countWriter counts Write calls (test helper).
+type countWriter struct {
+	n atomic.Int64
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	c.n.Add(1)
+	return len(p), nil
+}
+
+// TestWriterListAddDedupSemantics pins the one behavioral difference the
+// shared writer-list helpers parameterize: Logger accepts duplicate writers,
+// while MultiWriter treats re-adding an existing writer as a no-op.
+func TestWriterListAddDedupSemantics(t *testing.T) {
+	// Logger: the same writer may be added twice.
+	logger, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = logger.Close() }()
+
+	lw := &countWriter{}
+	base := logger.WriterCount() // DefaultConfig() installs a stdout writer
+	for range 2 {
+		if err := logger.AddWriter(lw); err != nil {
+			t.Fatalf("Logger.AddWriter error = %v", err)
+		}
+	}
+	if got := logger.WriterCount(); got != base+2 {
+		t.Errorf("Logger.WriterCount() = %d after adding the same writer twice, want %d (duplicates allowed)", got, base+2)
+	}
+
+	// MultiWriter: re-adding an existing writer must not grow the list.
+	cw := &countWriter{}
+	mw := NewMultiWriter(cw)
+	if err := mw.AddWriter(cw); err != nil {
+		t.Fatalf("MultiWriter.AddWriter(existing) error = %v, want nil", err)
+	}
+	if _, err := mw.Write([]byte("x")); err != nil {
+		t.Fatalf("MultiWriter.Write error = %v", err)
+	}
+	if got := cw.n.Load(); got != 1 {
+		t.Errorf("writer called %d times, want 1 (AddWriter must dedupe)", got)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("MultiWriter.Close error = %v", err)
+	}
 }

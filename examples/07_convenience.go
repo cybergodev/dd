@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -199,6 +200,22 @@ func section5ConstructorErrors() {
 	}
 	defer logger4.Close()
 	logger4.Info("Created with dual output")
+
+	// Pattern 5: Match constructor errors with sentinel errors (errors.Is)
+	badCfg := dd.DefaultConfig()
+	badCfg.Targets = []dd.OutputTarget{dd.FileOutput("")} // empty path is invalid
+	_, err = dd.New(badCfg)
+	fmt.Printf("  New() error: %v\n", err)
+	if errors.Is(err, dd.ErrEmptyFilePath) {
+		fmt.Println("  ✓ errors.Is matched sentinel dd.ErrEmptyFilePath")
+	}
+
+	// Constructors document their sentinel errors (see the Err* variables)
+	_, err = dd.New(dd.DefaultConfig(), dd.DefaultConfig())
+	fmt.Printf("  New() error: %v\n", err)
+	if errors.Is(err, dd.ErrMultipleConfigs) {
+		fmt.Println("  ✓ errors.Is matched sentinel dd.ErrMultipleConfigs")
+	}
 
 	fmt.Println("\n✓ Always handle errors explicitly for robust code")
 }

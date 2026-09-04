@@ -1,6 +1,8 @@
 package dd
 
 import (
+	"context"
+	"errors"
 	"runtime"
 	"strings"
 	"sync"
@@ -303,4 +305,115 @@ func (b *safeBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(p), nil
+}
+
+// flushOnlyWriter implements Flusher but NOT io.Closer, mirroring a bare
+// *bufio.Writer registered via AddWriter: the case where Logger.Close()
+// historically returned without flushing, silently losing buffered data.
+type flushOnlyWriter struct {
+	mu      sync.Mutex
+	pending strings.Builder
+	flushed strings.Builder
+}
+
+func (w *flushOnlyWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.pending.Write(p)
+}
+
+func (w *flushOnlyWriter) Flush() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, err := w.flushed.WriteString(w.pending.String())
+	w.pending.Reset()
+	return err
+}
+
+// TestCloseFlushesFlusherOnlyWriter pins the M-1 fix: Close() (and Shutdown)
+// must flush writers that implement Flusher but not io.Closer before finishing
+// teardown, or their buffered data is silently lost. The built-in writers all
+// flush inside their own Close; a custom user writer may implement neither.
+func TestCloseFlushesFlusherOnlyWriter(t *testing.T) {
+	w := &flushOnlyWriter{}
+	cfg := DefaultConfig()
+	cfg.Targets = []OutputTarget{CustomOutput(w)}
+	cfg.Level = LevelInfo
+	logger, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	logger.Info("must survive close")
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	w.mu.Lock()
+	flushed := w.flushed.String()
+	w.mu.Unlock()
+	if !strings.Contains(flushed, "must survive close") {
+		t.Errorf("Close() lost buffered data of a Flusher-only writer; flushed content: %q", flushed)
+	}
+}
+
+// slowClosingWriter blocks in Close until its release channel fires, letting
+// a test hold a writer in mid-Close while Shutdown's context expires.
+type slowClosingWriter struct {
+	release   chan struct{}
+	closeDone chan struct{}
+}
+
+func (w *slowClosingWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func (w *slowClosingWriter) Close() error {
+	<-w.release
+	close(w.closeDone)
+	return nil
+}
+
+// TestShutdownTimeoutStillClosesWriters pins the M-2 fix: when Shutdown's
+// context expires mid-teardown, the already-taken writers must still be
+// flushed and closed by the background teardown loop instead of being
+// permanently leaked (their only reachable reference was swapped out of the
+// logger before the loop began).
+func TestShutdownTimeoutStillClosesWriters(t *testing.T) {
+	slow := &slowClosingWriter{
+		release:   make(chan struct{}),
+		closeDone: make(chan struct{}),
+	}
+	fast := &slowClosingWriter{
+		release:   make(chan struct{}),
+		closeDone: make(chan struct{}),
+	}
+	close(fast.release) // fast writer closes as soon as its Close is reached
+
+	cfg := DefaultConfig()
+	cfg.Targets = []OutputTarget{CustomOutput(slow), CustomOutput(fast)}
+	cfg.Level = LevelInfo
+	logger, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := logger.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown(expiring ctx) error = %v, want context.DeadlineExceeded", err)
+	}
+
+	// The caller gave up, but teardown must continue: release the slow writer
+	// and require BOTH writers to complete their Close within a generous
+	// bound. Before the fix the loop aborted on ctx.Done() and neither the
+	// slow writer (never reached again) nor the fast writer (queued behind
+	// it) was ever closed.
+	close(slow.release)
+	for name, done := range map[string]chan struct{}{"slow": slow.closeDone, "fast": fast.closeDone} {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Errorf("%s writer was never closed after Shutdown timeout (leaked)", name)
+		}
+	}
 }

@@ -13,8 +13,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/cybergodev/dd/internal"
 )
 
 // ============================================================================
@@ -582,41 +580,6 @@ func (t *threadSafeWriter) String() string {
 // SECURITY AND SANITIZATION TESTS
 // ============================================================================
 
-func TestSanitization(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Level = LevelInfo
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Security = DefaultSecurityConfig()
-	logger, _ := New(cfg)
-
-	// Test control character sanitization
-	logger.Info("test\x00message\x1f")
-	output := buf.String()
-	if strings.Contains(output, "\x00") || strings.Contains(output, "\x1f") {
-		t.Error("Control characters should be sanitized")
-	}
-}
-
-func TestMessageSizeLimit(t *testing.T) {
-	var buf bytes.Buffer
-	secConfig := DefaultSecurityConfig()
-	secConfig.MaxMessageSize = 100
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelInfo
-	cfg.Security = secConfig
-	logger, _ := New(cfg)
-
-	largeMessage := strings.Repeat("a", 200)
-	logger.Info(largeMessage)
-
-	output := buf.String()
-	if len(output) > 150 {
-		t.Error("Message should be truncated per maxMessageSize")
-	}
-}
-
 // TestHookOnFilterFiresOnRedaction verifies that the previously-never-triggered
 // HookOnFilter event now fires when sensitive data is redacted, carrying the
 // redacted field's key (never its value).
@@ -914,19 +877,9 @@ func TestDefaultJSONOptions(t *testing.T) {
 	}
 }
 
-func TestJSONFieldNamesDefaults(t *testing.T) {
-	names := internal.DefaultJSONFieldNames()
-
-	if names.Timestamp != "timestamp" {
-		t.Errorf("Default timestamp field = %q, want %q", names.Timestamp, "timestamp")
-	}
-	if names.Level != "level" {
-		t.Errorf("Default level field = %q, want %q", names.Level, "level")
-	}
-	if names.Message != "message" {
-		t.Errorf("Default message field = %q, want %q", names.Message, "message")
-	}
-}
+// TestJSONFieldNamesDefaults was removed: internal/json_test.go
+// TestDefaultJSONFieldNames asserts all five default names, co-located with
+// the code under test.
 
 func TestFullLoggingPipeline(t *testing.T) {
 	tmpFile := t.TempDir() + "/test.log"
@@ -1035,34 +988,9 @@ func TestDebugVisualization(t *testing.T) {
 	}
 }
 
-func TestTypeConverter(t *testing.T) {
-	// Test simple types
-	isSimple := internal.IsSimpleType("test")
-	if !isSimple {
-		t.Error("String should be simple type")
-	}
-
-	isSimple = internal.IsSimpleType(42)
-	if !isSimple {
-		t.Error("Int should be simple type")
-	}
-
-	isSimple = internal.IsSimpleType(map[string]string{})
-	if isSimple {
-		t.Error("Map should not be simple type")
-	}
-
-	// Test format simple value
-	formatted := internal.FormatSimpleValue("test")
-	if formatted != "test" {
-		t.Errorf("formatSimpleValue(string) = %q, want %q", formatted, "test")
-	}
-
-	formatted = internal.FormatSimpleValue(nil)
-	if formatted != "nil" {
-		t.Errorf("formatSimpleValue(nil) = %q, want %q", formatted, "nil")
-	}
-}
+// TestTypeConverter was removed: it re-tested internal.IsSimpleType and
+// internal.FormatSimpleValue from the root package; internal/debug_test.go
+// carries the complete tables for both.
 
 func TestTypeConverterComplexTypes(t *testing.T) {
 	r, w, _ := os.Pipe()
@@ -1099,26 +1027,11 @@ func TestTypeConverterComplexTypes(t *testing.T) {
 // ERROR HANDLING TESTS
 // ============================================================================
 
-func TestErrorReturns(t *testing.T) {
-	// Test New() with nil config - it returns a default logger
-	logger, err := New()
-	if logger == nil {
-		t.Error("New() should return default logger, not nil")
-	}
-	_ = err // Use err to avoid lint error
-
-	// Test NewFileWriter with invalid path
-	_, err = NewFileWriter("\x00invalid", DefaultFileWriterConfig())
-	if err == nil {
-		t.Error("NewFileWriter() with invalid path should fail")
-	}
-
-	// Test NewBufferedWriter with nil writer
-	_, err = NewBufferedWriter(nil, BufferedWriterConfig{BufferSize: 1024})
-	if err == nil {
-		t.Error("NewBufferedWriter(nil) should fail")
-	}
-}
+// TestErrorReturns was removed: each member is covered with a stronger
+// assertion elsewhere — New() default (TestLogWithLazyMessageGate and many
+// others), NewFileWriter invalid paths (coverage_test.go
+// TestNewFileWriterInvalidPaths), NewBufferedWriter(nil) (boundary_test.go
+// TestBufferedWriterBoundary).
 
 // ============================================================================
 // SECURITY FILTER TESTS (Consolidated from security_test.go)
@@ -1154,21 +1067,9 @@ func TestSensitiveDataFilter(t *testing.T) {
 	}
 }
 
-func TestDefaultSecurityConfig(t *testing.T) {
-	config := DefaultSecurityConfig()
-
-	if config == nil {
-		t.Fatal("DefaultSecurityConfig should not return nil")
-	}
-
-	if config.MaxMessageSize <= 0 {
-		t.Error("MaxMessageSize should be positive")
-	}
-
-	if config.MaxWriters <= 0 {
-		t.Error("MaxWriters should be positive")
-	}
-}
+// TestDefaultSecurityConfig was removed: security_test.go
+// TestPresetConfigsHaveMaxWriters asserts the same fields for
+// DefaultSecurityConfig and four other presets.
 
 // ============================================================================
 // CONCURRENT DEFAULT LOGGER TESTS
@@ -1271,38 +1172,9 @@ func TestConfigBuild(t *testing.T) {
 	})
 }
 
-func TestConfigValidation(t *testing.T) {
-	t.Run("InvalidLevel", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Level = LogLevel(99)
-
-		_, err := New(cfg)
-		if err == nil {
-			t.Error("Build() with invalid level should return error")
-		}
-	})
-
-	t.Run("InvalidFormat", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Format = LogFormat(99)
-
-		_, err := New(cfg)
-		if err == nil {
-			t.Error("Build() with invalid format should return error")
-		}
-	})
-
-	t.Run("NoConfig", func(t *testing.T) {
-		logger, err := New()
-		if err != nil {
-			t.Errorf("New() with no config should not return error, got: %v", err)
-		}
-		if logger == nil {
-			t.Error("New() should return a logger")
-		}
-		logger.Close()
-	})
-}
+// TestConfigValidation was removed: builder_test.go TestConfigValidateErrors
+// asserts the same invalid level/format values against their sentinels, and
+// coverage_test.go boundary tables cover the New()/SetLevel() surfaces.
 
 // ============================================================================
 // IS LEVEL ENABLED TESTS
@@ -1340,50 +1212,34 @@ func TestIsLevelEnabled(t *testing.T) {
 		}
 	})
 
-	t.Run("convenience methods at Info level", func(t *testing.T) {
-		if logger.IsDebugEnabled() {
-			t.Error("IsDebugEnabled() should return false when level is Info")
+	t.Run("convenience methods", func(t *testing.T) {
+		cases := []struct {
+			level                           LogLevel
+			debug, info, warn, lgErr, fatal bool
+		}{
+			{LevelInfo, false, true, true, true, true},
+			{LevelDebug, true, true, true, true, true},
+			{LevelError, false, false, false, true, true},
 		}
-		if !logger.IsInfoEnabled() {
-			t.Error("IsInfoEnabled() should return true when level is Info")
-		}
-		if !logger.IsWarnEnabled() {
-			t.Error("IsWarnEnabled() should return true when level is Info")
-		}
-		if !logger.IsErrorEnabled() {
-			t.Error("IsErrorEnabled() should return true when level is Info")
-		}
-		if !logger.IsFatalEnabled() {
-			t.Error("IsFatalEnabled() should return true when level is Info")
-		}
-	})
-
-	t.Run("convenience methods at Debug level", func(t *testing.T) {
-		logger.SetLevel(LevelDebug)
-		if !logger.IsDebugEnabled() {
-			t.Error("IsDebugEnabled() should return true when level is Debug")
-		}
-		if !logger.IsInfoEnabled() {
-			t.Error("IsInfoEnabled() should return true when level is Debug")
-		}
-	})
-
-	t.Run("convenience methods at Error level", func(t *testing.T) {
-		logger.SetLevel(LevelError)
-		if logger.IsDebugEnabled() {
-			t.Error("IsDebugEnabled() should return false when level is Error")
-		}
-		if logger.IsInfoEnabled() {
-			t.Error("IsInfoEnabled() should return false when level is Error")
-		}
-		if logger.IsWarnEnabled() {
-			t.Error("IsWarnEnabled() should return false when level is Error")
-		}
-		if !logger.IsErrorEnabled() {
-			t.Error("IsErrorEnabled() should return true when level is Error")
-		}
-		if !logger.IsFatalEnabled() {
-			t.Error("IsFatalEnabled() should return true when level is Error")
+		for _, tc := range cases {
+			t.Run(tc.level.String(), func(t *testing.T) {
+				logger.SetLevel(tc.level)
+				if logger.IsDebugEnabled() != tc.debug {
+					t.Errorf("IsDebugEnabled() at %s = %v, want %v", tc.level, !tc.debug, tc.debug)
+				}
+				if logger.IsInfoEnabled() != tc.info {
+					t.Errorf("IsInfoEnabled() at %s = %v, want %v", tc.level, !tc.info, tc.info)
+				}
+				if logger.IsWarnEnabled() != tc.warn {
+					t.Errorf("IsWarnEnabled() at %s = %v, want %v", tc.level, !tc.warn, tc.warn)
+				}
+				if logger.IsErrorEnabled() != tc.lgErr {
+					t.Errorf("IsErrorEnabled() at %s = %v, want %v", tc.level, !tc.lgErr, tc.lgErr)
+				}
+				if logger.IsFatalEnabled() != tc.fatal {
+					t.Errorf("IsFatalEnabled() at %s = %v, want %v", tc.level, !tc.fatal, tc.fatal)
+				}
+			})
 		}
 	})
 
@@ -1462,30 +1318,33 @@ func TestPackageLevelIsEnabledFunctions(t *testing.T) {
 	logger, _ := New(cfg)
 	SetDefault(logger)
 
-	// Verify package-level functions delegate correctly
-	if IsDebugEnabled() {
-		t.Error("IsDebugEnabled() should be false when level is Info")
+	// Verify package-level functions delegate to the default logger.
+	cases := []struct {
+		level                           LogLevel
+		debug, info, warn, lgErr, fatal bool
+	}{
+		{LevelInfo, false, true, true, true, true},
+		{LevelError, false, false, false, true, true},
 	}
-	if !IsInfoEnabled() {
-		t.Error("IsInfoEnabled() should be true when level is Info")
-	}
-	if !IsWarnEnabled() {
-		t.Error("IsWarnEnabled() should be true when level is Info")
-	}
-	if !IsErrorEnabled() {
-		t.Error("IsErrorEnabled() should be true when level is Info")
-	}
-	if !IsFatalEnabled() {
-		t.Error("IsFatalEnabled() should be true when level is Info")
-	}
-
-	// Test level change
-	SetLevel(LevelError)
-	if IsInfoEnabled() {
-		t.Error("IsInfoEnabled() should be false when level is Error")
-	}
-	if !IsErrorEnabled() {
-		t.Error("IsErrorEnabled() should be true when level is Error")
+	for _, tc := range cases {
+		t.Run(tc.level.String(), func(t *testing.T) {
+			SetLevel(tc.level)
+			if IsDebugEnabled() != tc.debug {
+				t.Errorf("IsDebugEnabled() at %s = %v, want %v", tc.level, !tc.debug, tc.debug)
+			}
+			if IsInfoEnabled() != tc.info {
+				t.Errorf("IsInfoEnabled() at %s = %v, want %v", tc.level, !tc.info, tc.info)
+			}
+			if IsWarnEnabled() != tc.warn {
+				t.Errorf("IsWarnEnabled() at %s = %v, want %v", tc.level, !tc.warn, tc.warn)
+			}
+			if IsErrorEnabled() != tc.lgErr {
+				t.Errorf("IsErrorEnabled() at %s = %v, want %v", tc.level, !tc.lgErr, tc.lgErr)
+			}
+			if IsFatalEnabled() != tc.fatal {
+				t.Errorf("IsFatalEnabled() at %s = %v, want %v", tc.level, !tc.fatal, tc.fatal)
+			}
+		})
 	}
 }
 
@@ -1913,45 +1772,9 @@ func TestErrorsAs(t *testing.T) {
 	}
 }
 
-func TestAllErrorCodesMatchSentinels(t *testing.T) {
-	// Test that all error codes correctly match their sentinel errors
-	codeToSentinel := map[string]error{
-		errCodeNilConfig:          ErrNilConfig,
-		errCodeNilWriter:          ErrNilWriter,
-		errCodeNilFilter:          ErrNilFilter,
-		errCodeLoggerClosed:       ErrLoggerClosed,
-		errCodeWriterNotFound:     ErrWriterNotFound,
-		errCodeInvalidLevel:       ErrInvalidLevel,
-		errCodeInvalidFormat:      ErrInvalidFormat,
-		errCodeMaxWritersExceeded: ErrMaxWritersExceeded,
-		errCodeEmptyFilePath:      ErrEmptyFilePath,
-		errCodePathTooLong:        ErrPathTooLong,
-		errCodePathTraversal:      ErrPathTraversal,
-		errCodeNullByte:           ErrNullByte,
-		errCodeInvalidPath:        ErrInvalidPath,
-		errCodeSymlinkNotAllowed:  ErrSymlinkNotAllowed,
-		errCodeMaxSizeExceeded:    ErrMaxSizeExceeded,
-		errCodeMaxBackupsExceeded: ErrMaxBackupsExceeded,
-		errCodeBufferSizeTooLarge: ErrBufferSizeTooLarge,
-		errCodeInvalidPattern:     ErrInvalidPattern,
-		errCodeEmptyPattern:       ErrEmptyPattern,
-		errCodePatternTooLong:     ErrPatternTooLong,
-		errCodeReDoSPattern:       ErrReDoSPattern,
-		errCodePatternFailed:      ErrPatternFailed,
-	}
-
-	for code, sentinel := range codeToSentinel {
-		t.Run(code, func(t *testing.T) {
-			err := &LoggerError{
-				Code:    code,
-				Message: "test message",
-			}
-			if !errors.Is(err, sentinel) {
-				t.Errorf("errors.Is(LoggerError{Code: %q}, %v) = false, want true", code, sentinel)
-			}
-		})
-	}
-}
+// TestAllErrorCodesMatchSentinels was removed: boundary_test.go
+// TestErrorIsAllSentinels is a superset (28 sentinels incl. ErrNilHook,
+// ErrNilExtractor, ErrConfigValidation).
 
 // ============================================================================
 // EDGE CASE TESTS (merged from edge_cases_test.go)
@@ -2005,36 +1828,6 @@ func TestVeryLargeFieldCount(t *testing.T) {
 // CONCURRENCY EDGE CASE TESTS
 // ============================================================================
 
-func TestConcurrentCloseWhileLogging(t *testing.T) {
-	const goroutines = 20
-	const messagesPerGoroutine = 50
-
-	var wg sync.WaitGroup
-	var closeOnce sync.Once
-
-	logger, _ := New()
-
-	// Start goroutines that log
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < messagesPerGoroutine; j++ {
-				logger.Info("message from goroutine", "id", id, "msg", j)
-
-				// Close the logger partway through
-				if id == 0 && j == 25 {
-					closeOnce.Do(func() {
-						logger.Close()
-					})
-				}
-			}
-		}(i)
-	}
-
-	wg.Wait()
-}
-
 func TestConcurrentAddRemoveWriter(t *testing.T) {
 	logger, _ := New()
 	const goroutines = 50
@@ -2069,132 +1862,88 @@ func (w *errorWriter) Write(p []byte) (n int, err error) {
 	return 0, w.err
 }
 
-func TestWriterWriteErrors(t *testing.T) {
-	t.Run("error writer", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Targets = []OutputTarget{CustomOutput(&errorWriter{err: errors.New("write error")})}
-		cfg.Level = LevelInfo
-		logger, _ := New(cfg)
+// TestPartialWriteHandled pins the short-write contract: a writer that
+// reports a short write with io.ErrShortWrite must surface that error to
+// the write error handler. Failing-writer dispatch is covered by
+// coverage_test.go TestWriterErrorWithHandler.
+func TestPartialWriteHandled(t *testing.T) {
+	var captured error
+	cfg := DefaultConfig()
+	cfg.Targets = []OutputTarget{CustomOutput(&partialWriter{})}
+	cfg.Level = LevelInfo
+	logger, _ := New(cfg)
 
-		// Should not panic when writer returns error
-		logger.Info("test message")
-		// If we get here without panic, the test passes
-	})
+	logger.SetWriteErrorHandler(func(w io.Writer, err error) { captured = err })
+	logger.Info("test message that is longer than the buffer")
 
-	t.Run("partial write", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Targets = []OutputTarget{CustomOutput(&partialWriter{})}
-		cfg.Level = LevelInfo
-		logger, _ := New(cfg)
-
-		// Should handle partial writes gracefully
-		logger.Info("test message that is longer than the buffer")
-		// If we get here without panic, the test passes
-	})
+	if !errors.Is(captured, io.ErrShortWrite) {
+		t.Errorf("write error handler captured %v, want io.ErrShortWrite", captured)
+	}
 }
 
 // partialWriter writes only half the data
 type partialWriter struct{}
 
+// Write is io.Writer-conformant: a short write is reported with an error,
+// as the io.Writer contract requires.
 func (w *partialWriter) Write(p []byte) (n int, err error) {
-	return len(p) / 2, nil
+	return len(p) / 2, io.ErrShortWrite
 }
 
 // ============================================================================
 // SAMPLING EDGE CASE TESTS
 // ============================================================================
 
-func TestSamplingIntegration(t *testing.T) {
-	t.Run("sampling disabled allows all", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := DefaultConfig()
-		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-		cfg.Level = LevelInfo
-		cfg.Sampling = nil // No sampling
-		logger, _ := New(cfg)
-
-		// Log many messages
-		for i := 0; i < 100; i++ {
-			logger.Info("test message")
-		}
-
-		// All should be logged
-		lines := strings.Count(buf.String(), "test message")
-		if lines != 100 {
-			t.Errorf("Expected 100 messages, got %d", lines)
-		}
-	})
-
-	t.Run("sampling enabled", func(t *testing.T) {
-		var buf bytes.Buffer
-		cfg := DefaultConfig()
-		cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-		cfg.Level = LevelInfo
-		cfg.Sampling = &SamplingConfig{
-			Enabled:    true,
-			Initial:    10,
-			Thereafter: 100, // Keep 1 in 100 after initial
-			Tick:       time.Minute,
-		}
-		logger, _ := New(cfg)
-
-		// Log many messages
-		for i := 0; i < 200; i++ {
-			logger.Info("test message")
-		}
-
-		// Should have sampled some messages
-		lines := strings.Count(buf.String(), "test message")
-		if lines == 0 {
-			t.Error("Should have logged at least some messages")
-		}
-		if lines > 200 {
-			t.Errorf("Too many messages logged: %d", lines)
-		}
-	})
-}
+// TestSamplingIntegration was removed: improvements_test.go TestSampling
+// covers the same disabled case with exact counts and pins Initial-only,
+// Thereafter, and runtime SetSampling behavior.
 
 // ============================================================================
 // NIL AND EMPTY VALUE TESTS
 // ============================================================================
 
-func TestNilFieldValues(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelInfo
-	logger, _ := New(cfg)
-
-	logger.InfoWith("nil test",
-		Any("nil_value", nil),
-		String("string_value", "test"),
-	)
-
-	output := buf.String()
-	if !strings.Contains(output, "nil test") {
-		t.Error("Should contain message")
+// TestEdgeShapedFields consolidates the edge-shaped-field cases that used to
+// be four near-identical functions (nil value / empty key / no fields /
+// 1000-char key): each row must log its message and any well-formed
+// companion field without derailing the pipeline.
+func TestEdgeShapedFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		msg    string
+		fields []Field
+		extra  string // additional substring expected in the output, "" for none
+	}{
+		{"nil field value", "nil test",
+			[]Field{Any("nil_value", nil), String("string_value", "test")},
+			"string_value=test"},
+		{"empty field key", "empty key test",
+			[]Field{String("", "value_with_empty_key"), String("valid_key", "valid_value")},
+			"valid_key=valid_value"},
+		{"no fields", "message", nil, ""},
+		{"very long field name", "message",
+			[]Field{String(strings.Repeat("a", 1000), "value")},
+			""},
 	}
-	if !strings.Contains(output, "string_value=test") {
-		t.Error("Should contain string field")
-	}
-}
 
-func TestEmptyFieldKey(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelInfo
-	logger, _ := New(cfg)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cfg := DefaultConfig()
+			cfg.Targets = []OutputTarget{CustomOutput(&buf)}
+			cfg.Level = LevelInfo
+			logger, _ := New(cfg)
+			defer logger.Close()
 
-	// Empty key should not cause panic
-	logger.InfoWith("empty key test",
-		String("", "value_with_empty_key"),
-		String("valid_key", "valid_value"),
-	)
+			logger.InfoWith(tc.msg, tc.fields...)
 
-	output := buf.String()
-	if !strings.Contains(output, "empty key test") {
-		t.Error("Should contain message")
+			output := buf.String()
+			if !strings.Contains(output, tc.msg) {
+				t.Errorf("output %q should contain message %q", output, tc.msg)
+			}
+			if tc.extra != "" && !strings.Contains(output, tc.extra) {
+				t.Errorf("output %q should contain %q", output, tc.extra)
+			}
+		})
 	}
 }
 
@@ -2238,23 +1987,3 @@ func TestTimeFormatConfiguration(t *testing.T) {
 // ============================================================================
 // LOGGER CLOSE EDGE CASES
 // ============================================================================
-
-// ============================================================================
-// HOOK ERROR TESTS
-// ============================================================================
-
-func TestHookError(t *testing.T) {
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelInfo
-	cfg.Hooks = NewHookRegistry()
-	cfg.Hooks.Add(HookBeforeLog, func(ctx context.Context, h *HookContext) error {
-		return errors.New("hook error")
-	})
-	logger, _ := New(cfg)
-
-	logger.Info("test message")
-	// Hook error should not cause a panic — that's the key behavioral guarantee
-	// The message may or may not be logged depending on hook configuration
-}

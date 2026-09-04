@@ -192,8 +192,9 @@ func ValidateAndSecurePath(path string, maxPathLength int, emptyFilePathErr, nul
 		}
 	}
 
-	// Note: Symlink checking is done AFTER opening the file in OpenFile
-	// to prevent TOCTOU (time-of-check-time-of-use) vulnerabilities
+	// Note: Symlink checking is done in OpenFile — an lstat gate before the
+	// open plus a SameFile recheck after it — so the check and the open
+	// cannot be separated by a TOCTOU (time-of-check-time-of-use) window.
 	return cleanPath, nil
 }
 
@@ -251,15 +252,37 @@ func validateNoADS(path string) error {
 
 // ValidateTimeFormat validates a time format string.
 // Returns nil if the format is valid or empty (empty uses default).
-// Returns an error if the format cannot be used to parse/format time.
+// Returns an error if the format cannot round-trip a time value.
+//
+// The check uses FIXED probe times rather than time.Now(): render-then-parse
+// is date-sensitive for ambiguous layouts — "1_2" renders June 16 as "616"
+// (unparseable two-digit month) but September 1 as "9 1" (parseable) — so a
+// now()-based check accepted or rejected the same format depending on the
+// calendar day, making Config.Validate flaky by date.
 func ValidateTimeFormat(format string) error {
 	if format == "" {
 		return nil // Empty format is valid (will use default)
 	}
-	if _, err := time.Parse(format, time.Now().Format(format)); err != nil {
-		return fmt.Errorf("invalid time format %q: %w", format, err)
+	for _, probe := range timeFormatProbes {
+		rendered := probe.Format(format)
+		parsed, err := time.Parse(format, rendered)
+		if err != nil {
+			return fmt.Errorf("invalid time format %q: %w", format, err)
+		}
+		if parsed.Format(format) != rendered {
+			return fmt.Errorf("invalid time format %q: not round-trippable", format)
+		}
 	}
 	return nil
+}
+
+// timeFormatProbes are fixed times chosen so ambiguous layouts fail
+// deterministically: a single-digit month with a two-digit day (June 16) and
+// two-digit month/day (November 22), each carrying full clock and zone
+// components so time-bearing layouts are exercised too.
+var timeFormatProbes = []time.Time{
+	time.Date(2026, time.June, 16, 15, 4, 5, 0, time.UTC),
+	time.Date(2026, time.November, 22, 3, 4, 5, 0, time.UTC),
 }
 
 // DetectNullByteInjection checks for null byte injection attacks.

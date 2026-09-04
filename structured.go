@@ -101,19 +101,23 @@ func Time(key string, value time.Time) Field {
 // Err creates a field from an error.
 // If the error is nil, the value will be nil.
 // Otherwise, the value will be the error's message string.
+// A panic raised by the error's Error method is recovered into an
+// "%!v(PANIC=Error method: ...)" placeholder instead of propagating.
 func Err(err error) Field {
 	if err == nil {
 		return Field{Key: "error", Value: nil}
 	}
-	return Field{Key: "error", Value: err.Error()}
+	return Field{Key: "error", Value: internal.SafeErrorString(err)}
 }
 
 // ErrWithKey creates a field from an error with a custom key.
+// A panic raised by the error's Error method is recovered into an
+// "%!v(PANIC=Error method: ...)" placeholder instead of propagating.
 func ErrWithKey(key string, err error) Field {
 	if err == nil {
 		return Field{Key: key, Value: nil}
 	}
-	return Field{Key: key, Value: err.Error()}
+	return Field{Key: key, Value: internal.SafeErrorString(err)}
 }
 
 // ErrWithStack creates a field from an error including its stack trace.
@@ -125,19 +129,26 @@ func ErrWithStack(err error) Field {
 
 	const maxDepth = 32
 	var pcs [maxDepth]uintptr
-	n := runtime.Callers(3, pcs[:])
+	// skip=2: skip runtime.Callers itself (0) and ErrWithStack (1), so the
+	// captured stack starts at the caller of ErrWithStack — the user code that
+	// created the field. (skip=3 dropped that frame: the trace began one level
+	// too high, hiding the actual error site.)
+	n := runtime.Callers(2, pcs[:])
 
 	frames := runtime.CallersFrames(pcs[:n])
 	var sb strings.Builder
-	sb.WriteString(err.Error())
+	sb.WriteString(internal.SafeErrorString(err))
 	sb.WriteString("\nStack:")
 
+	// Skip both runtime frames and this library's own frames, using the
+	// runtime-detected module prefix so forks keep working.
+	ddPrefix := internal.DDPackagePrefix() + "/"
 	for {
 		frame, more := frames.Next()
 		if !strings.Contains(frame.File, "runtime/") &&
-			!strings.Contains(frame.File, "github.com/cybergodev/dd/") {
-			sb.WriteString(fmt.Sprintf("\n\t%s:%d: %s",
-				frame.File, frame.Line, frame.Function))
+			!strings.Contains(frame.File, ddPrefix) {
+			fmt.Fprintf(&sb, "\n\t%s:%d: %s",
+				frame.File, frame.Line, frame.Function)
 		}
 		if !more {
 			break
@@ -148,19 +159,34 @@ func ErrWithStack(err error) Field {
 }
 
 // Package-level structured logging functions using the default logger.
+//
+// FRAME-SHAPE NOTE: these functions call logWithDispatch directly rather than
+// (*Logger).LogWith, so the entry-caller capture sees exactly one entry-method
+// frame (this function) between user code and the funnel — see the note on the
+// package-level functions in logger.go.
 
 // DebugWith logs a structured debug message with the default logger.
-func DebugWith(msg string, fields ...Field) { Default().LogWith(LevelDebug, msg, fields...) }
+func DebugWith(msg string, fields ...Field) {
+	Default().logWithDispatch(LevelDebug, msg, fields...)
+}
 
 // InfoWith logs a structured info message with the default logger.
-func InfoWith(msg string, fields ...Field) { Default().LogWith(LevelInfo, msg, fields...) }
+func InfoWith(msg string, fields ...Field) {
+	Default().logWithDispatch(LevelInfo, msg, fields...)
+}
 
 // WarnWith logs a structured warning message with the default logger.
-func WarnWith(msg string, fields ...Field) { Default().LogWith(LevelWarn, msg, fields...) }
+func WarnWith(msg string, fields ...Field) {
+	Default().logWithDispatch(LevelWarn, msg, fields...)
+}
 
 // ErrorWith logs a structured error message with the default logger.
-func ErrorWith(msg string, fields ...Field) { Default().LogWith(LevelError, msg, fields...) }
+func ErrorWith(msg string, fields ...Field) {
+	Default().logWithDispatch(LevelError, msg, fields...)
+}
 
 // FatalWith logs a structured fatal message with the default logger and exits.
 // WARNING: defer statements will NOT execute. For graceful shutdown, use ErrorWith() with custom logic.
-func FatalWith(msg string, fields ...Field) { Default().LogWith(LevelFatal, msg, fields...) }
+func FatalWith(msg string, fields ...Field) {
+	Default().logWithDispatch(LevelFatal, msg, fields...)
+}

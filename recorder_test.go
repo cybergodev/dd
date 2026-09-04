@@ -87,26 +87,9 @@ func TestLoggerRecorder_ContainsMessage(t *testing.T) {
 	}
 }
 
-func TestLoggerRecorder_Clear(t *testing.T) {
-	recorder := NewLoggerRecorder()
-	logger, _ := recorder.NewLogger()
-
-	logger.Info("message 1")
-	logger.Info("message 2")
-
-	if recorder.Count() != 2 {
-		t.Errorf("Expected 2 entries before clear, got %d", recorder.Count())
-	}
-
-	recorder.Clear()
-
-	if recorder.Count() != 0 {
-		t.Errorf("Expected 0 entries after clear, got %d", recorder.Count())
-	}
-	if recorder.HasEntries() {
-		t.Error("Expected HasEntries to return false after clear")
-	}
-}
+// TestLoggerRecorder_Clear was removed: coverage_test.go
+// TestLoggerRecorder_ClearComplete asserts the same post-Clear state plus
+// LastEntry/EntriesAtLevel.
 
 func TestLoggerRecorder_WithFields(t *testing.T) {
 	recorder := NewLoggerRecorder()
@@ -235,5 +218,60 @@ func TestParseLevelString(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("parseLevelString(%q) = %v, want %v", tc.input, result, tc.expected)
 		}
+	}
+}
+
+// TestTrimNewline pins the line-ending normalization applied to recorded
+// output: exactly one trailing LF and then one trailing CR are removed.
+func TestTrimNewline(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty", "", ""},
+		{"no newline", "value", "value"},
+		{"trailing LF", "value\n", "value"},
+		{"trailing CR", "value\r", "value"},
+		{"trailing CRLF", "value\r\n", "value"},
+		{"LF only", "\n", ""},
+		{"CRLF only", "\r\n", ""},
+		{"embedded LF kept", "a\nb", "a\nb"},
+		{"double LF strips one", "value\n\n", "value\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := trimNewline(tt.input); got != tt.want {
+				t.Errorf("trimNewline(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoggerRecorder_QuotedFieldValues pins that the recorder's text parser
+// handles the formatter's value quoting correctly. A value ENDING with a
+// quote made the old quote-state tracker unbalanced (escaped quotes toggled
+// it), so the token swallowed the space separator and every following field
+// ("b" below) silently vanished from the parsed entry; quoted values were
+// also returned with their surrounding quotes as part of the string.
+func TestLoggerRecorder_QuotedFieldValues(t *testing.T) {
+	recorder := NewLoggerRecorder()
+	logger, _ := recorder.NewLogger()
+
+	logger.InfoWith("quoted values",
+		String("note", `value "quoted"`), // ends with a quote: old parser went unbalanced
+		String("b", "2"),                 // old parser swallowed this token into "note"
+		String("spaced", "hello world"),
+	)
+
+	if got, ok := recorder.GetFieldValue("note").(string); !ok || got != `value "quoted"` {
+		t.Errorf("GetFieldValue(note) = %v, want %q", recorder.GetFieldValue("note"), `value "quoted"`)
+	}
+	if got := recorder.GetFieldValue("b"); got != "2" {
+		t.Errorf("GetFieldValue(b) = %v, want \"2\" — field after escaped-quote value must not be swallowed", got)
+	}
+	if got, ok := recorder.GetFieldValue("spaced").(string); !ok || got != "hello world" {
+		t.Errorf("GetFieldValue(spaced) = %v, want %q (surrounding quotes must be stripped)", recorder.GetFieldValue("spaced"), "hello world")
 	}
 }

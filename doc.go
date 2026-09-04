@@ -88,25 +88,29 @@
 //
 // # Context Integration
 //
-// Use ContextExtractors in the Config to automatically extract tracing fields:
-//
-//	traceExtractor := func(ctx context.Context) []dd.Field {
-//	    var fields []dd.Field
-//	    if traceID := dd.GetTraceID(ctx); traceID != "" {
-//	        fields = append(fields, dd.String("trace_id", traceID))
-//	    }
-//	    if spanID := dd.GetSpanID(ctx); spanID != "" {
-//	        fields = append(fields, dd.String("span_id", spanID))
-//	    }
-//	    return fields
-//	}
-//
-//	cfg := dd.DefaultConfig()
-//	cfg.ContextExtractors = []dd.ContextExtractor{traceExtractor}
-//	logger, _ := dd.New(cfg)
+// dd.WithTraceID/dd.WithSpanID/dd.WithRequestID store tracing values in a
+// context.Context, and dd.GetTraceID/dd.GetSpanID/dd.GetRequestID read them
+// back. Log methods do not accept a context, so these values are NOT picked
+// up automatically — pass them as fields at the call site:
 //
 //	ctx := dd.WithTraceID(context.Background(), "trace-123")
-//	logger.InfoWith("Processing request", dd.String("user", "alice"))
+//	logger.InfoWith("Processing request",
+//	    dd.String("trace_id", dd.GetTraceID(ctx)),
+//	    dd.String("user", "alice"),
+//	)
+//
+// ContextExtractors in the Config run for every log entry, but they receive
+// context.Background() (there is no request context to hand them). Use them
+// for process-global enrichment only — hostname, service name, environment:
+//
+//	cfg := dd.DefaultConfig()
+//	cfg.ContextExtractors = []dd.ContextExtractor{
+//	    func(ctx context.Context) []dd.Field {
+//	        hostname, _ := os.Hostname()
+//	        return []dd.Field{dd.String("hostname", hostname)}
+//	    },
+//	}
+//	logger, _ := dd.New(cfg)
 //
 // # Sensitive Data Filtering
 //

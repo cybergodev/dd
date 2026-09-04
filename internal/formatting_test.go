@@ -1,7 +1,7 @@
 package internal
 
 import (
-	"bytes"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -146,9 +146,9 @@ func TestFormatArgsToStringComplexTypes(t *testing.T) {
 		t.Errorf("Slice not formatted properly: got %q", result)
 	}
 
-	// Test map (complex type)
+	// Test map (complex type): rendered as JSON, not fmt's map[a:1]
 	result = formatter.FormatArgsToString(map[string]int{"a": 1})
-	if !strings.Contains(result, "a") {
+	if !strings.Contains(result, `{"a":1}`) {
 		t.Errorf("Map not formatted properly: got %q", result)
 	}
 }
@@ -304,6 +304,50 @@ func TestTimeCache(t *testing.T) {
 	}
 }
 
+// TestTimeCacheSubSecondFormat pins that the per-second cache does not freeze
+// sub-second digits. timeCache keyed its single cache entry by whole Unix
+// seconds, so with a fractional-second layout (DevelopmentConfig's
+// "15:04:05.000", or any custom ".000"/".999999" format) every entry logged
+// within one second reused the first call's milliseconds — stale timestamps.
+func TestTimeCacheSubSecondFormat(t *testing.T) {
+	layout := "15:04:05.000"
+	tc := newTimeCache(layout)
+	if !tc.subSecond {
+		t.Fatalf("formatHasSubSecond(%q) = false, want true", layout)
+	}
+
+	first := tc.getFormattedTime()
+	time.Sleep(6 * time.Millisecond)
+	second := tc.getFormattedTime()
+	if first == second {
+		t.Errorf("sub-second timestamp frozen within one second: first=%s second=%s", first, second)
+	}
+	if _, err := time.Parse(layout, second); err != nil {
+		t.Errorf("formatted time %q does not parse with layout %q: %v", second, layout, err)
+	}
+}
+
+// TestFormatHasSubSecond checks layout classification for the cache bypass.
+func TestFormatHasSubSecond(t *testing.T) {
+	cases := []struct {
+		layout string
+		want   bool
+	}{
+		{"2006-01-02T15:04:05Z07:00", false},
+		{"15:04:05", false},
+		{"15:04:05.000", true},
+		{"15:04:05.999", true},
+		{"2006-01-02 15:04:05.000000", true},
+		{"15:04:05,000", true},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := formatHasSubSecond(tc.layout); got != tc.want {
+			t.Errorf("formatHasSubSecond(%q) = %v, want %v", tc.layout, got, tc.want)
+		}
+	}
+}
+
 func TestResolveDynamicCaller(t *testing.T) {
 	formatter := NewMessageFormatter(&FormatterConfig{
 		Format:        LogFormatText,
@@ -364,43 +408,118 @@ func TestIsDDFunction(t *testing.T) {
 	}
 }
 
-func TestFormatTextPooledBuffers(t *testing.T) {
-	formatter := NewMessageFormatter(&FormatterConfig{
-		Format:        LogFormatText,
-		TimeFormat:    time.RFC3339,
-		IncludeTime:   true,
-		IncludeLevel:  true,
-		DynamicCaller: false,
-	})
+// TestFormatPooledBuffers drives both format paths through many cycles so
+// pooled buffers are reused and corrupted state (stale bytes, missed resets)
+// would surface as a wrong message.
+func TestFormatPooledBuffers(t *testing.T) {
+	tests := []struct {
+		name      string
+		format    LogFormat
+		wantFrag  string
+		withField bool
+	}{
+		{"text", LogFormatText, "test message", false},
+		{"json", LogFormatJSON, `"message":"test message"`, true},
+	}
 
-	// Run multiple times to test buffer pooling
-	for i := 0; i < 100; i++ {
-		result := formatter.FormatWithMessage(LevelInfo, 10, "test message", nil)
-		if !strings.Contains(result, "test message") {
-			t.Errorf("Iteration %d: result should contain message", i)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			formatter := NewMessageFormatter(&FormatterConfig{
+				Format:       tt.format,
+				TimeFormat:   time.RFC3339,
+				IncludeTime:  true,
+				IncludeLevel: true,
+			})
+
+			for i := 0; i < 100; i++ {
+				var fields []Field
+				if tt.withField {
+					fields = []Field{
+						{Key: "iteration", Value: i},
+						{Key: "data", Value: "test"},
+					}
+				}
+				result := formatter.FormatWithMessage(LevelInfo, 10, "test message", fields)
+				if !strings.Contains(result, tt.wantFrag) {
+					t.Errorf("iteration %d: result should contain %q, got %q", i, tt.wantFrag, result)
+				}
+			}
+		})
 	}
 }
 
-func TestFormatJSONPooledBuffers(t *testing.T) {
-	formatter := NewMessageFormatter(&FormatterConfig{
-		Format:        LogFormatJSON,
-		TimeFormat:    time.RFC3339,
-		IncludeTime:   true,
-		IncludeLevel:  true,
-		DynamicCaller: false,
-	})
+// TestIsSimpleJSONValue classifies values for the JSON fast path: scalars and
+// homogeneous string/int slices are simple; structs, maps, and []any are not.
+func TestIsSimpleJSONValue(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want bool
+	}{
+		{"string", "s", true},
+		{"int", 1, true},
+		{"int64", int64(1), true},
+		{"uint", uint(1), true},
+		{"float64", 1.5, true},
+		{"bool", true, true},
+		{"nil", nil, true},
+		{"time", time.Time{}, true},
+		{"duration", time.Second, true},
+		{"[]string", []string{"a"}, true},
+		{"[]int", []int{1}, true},
+		{"struct", struct{ A int }{}, false},
+		{"map", map[string]int{"a": 1}, false},
+		{"[]any", []any{1}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSimpleJSONValue(tt.v); got != tt.want {
+				t.Errorf("isSimpleJSONValue(%T) = %v, want %v", tt.v, got, tt.want)
+			}
+		})
+	}
+}
 
-	// Run multiple times to test buffer pooling
-	for i := 0; i < 100; i++ {
-		fields := []Field{
-			{Key: "iteration", Value: i},
-			{Key: "data", Value: "test"},
-		}
-		result := formatter.FormatWithMessage(LevelInfo, 10, "test message", fields)
-		if !strings.Contains(result, `"message":"test message"`) {
-			t.Errorf("Iteration %d: result should contain message", i)
-		}
+// TestFormatJSONSlowPath forces the map-based JSON path (formatJSON):
+// PrettyPrint disables the fast path and a complex field value is not a
+// "simple" JSON value.
+func TestFormatJSONSlowPath(t *testing.T) {
+	formatter := NewMessageFormatter(&FormatterConfig{
+		Format:      LogFormatJSON,
+		TimeFormat:  time.RFC3339,
+		IncludeTime: true,
+		JSON: &JSONOptions{
+			PrettyPrint: true,
+			Indent:      "  ",
+		},
+	})
+	out := formatter.FormatWithMessage(LevelInfo, 0, "hello", []Field{
+		{Key: "complex", Value: map[string]any{"nested": 1}},
+	})
+	if !strings.Contains(out, "hello") {
+		t.Errorf("JSON slow-path output missing message: %s", out)
+	}
+	if !strings.Contains(out, "complex") {
+		t.Errorf("JSON slow-path output missing field key: %s", out)
+	}
+}
+
+// TestDDPackagePrefix verifies the runtime-detected module prefix actually
+// prefixes this package's own frames. The assertion is fork-safe: it derives
+// the expectation from the runtime rather than a hardcoded import path.
+func TestDDPackagePrefix(t *testing.T) {
+	prefix := DDPackagePrefix()
+	if prefix == "" {
+		t.Fatal("DDPackagePrefix() is empty")
+	}
+
+	pc, _, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	fn := runtime.FuncForPC(pc).Name() // <prefix>/internal.TestDDPackagePrefix
+	if !strings.HasPrefix(fn, prefix+"/internal.") {
+		t.Errorf("DDPackagePrefix() = %q does not prefix this package's frame %q", prefix, fn)
 	}
 }
 
@@ -453,70 +572,5 @@ func TestGetJSONOptions(t *testing.T) {
 	}
 	if opts.Indent != "    " {
 		t.Errorf("Expected indent '    ', got %q", opts.Indent)
-	}
-}
-
-// TestBufferPools verifies that all sync.Pool instances work correctly
-// without panics under concurrent load. Consolidated from multiple pool tests.
-func TestBufferPools(t *testing.T) {
-	tests := []struct {
-		name     string
-		testFunc func()
-	}{
-		{
-			name: "textBuilderPool",
-			testFunc: func() {
-				for i := 0; i < 100; i++ {
-					buf := textBuilderPool.Get().(*bytes.Buffer)
-					buf.Reset()
-					buf.WriteString("test")
-					textBuilderPool.Put(buf)
-				}
-			},
-		},
-		{
-			name: "argsBuilderPool",
-			testFunc: func() {
-				for i := 0; i < 100; i++ {
-					buf := argsBuilderPool.Get().(*bytes.Buffer)
-					buf.Reset()
-					buf.WriteString("test")
-					argsBuilderPool.Put(buf)
-				}
-			},
-		},
-		{
-			name: "jsonEntryMapPool",
-			testFunc: func() {
-				for i := 0; i < 100; i++ {
-					m := jsonEntryMapPool.Get().(*map[string]any)
-					entry := *m
-					for k := range entry {
-						delete(entry, k)
-					}
-					jsonEntryMapPool.Put(m)
-				}
-			},
-		},
-		{
-			name: "jsonFieldsMapPool",
-			testFunc: func() {
-				for i := 0; i < 100; i++ {
-					m := jsonFieldsMapPool.Get().(*map[string]any)
-					fields := *m
-					for k := range fields {
-						delete(fields, k)
-					}
-					jsonFieldsMapPool.Put(m)
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Just verify no panic occurs
-			tt.testFunc()
-		})
 	}
 }

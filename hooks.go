@@ -124,16 +124,6 @@ func NewHookRegistry() *HookRegistry {
 	}
 }
 
-// newHookRegistryWithErrorHandler creates a registry with a custom error handler.
-// When an error handler is set, all hooks are executed even if some fail,
-// and errors are passed to the handler instead of being returned immediately.
-func newHookRegistryWithErrorHandler(handler HookErrorHandler) *HookRegistry {
-	return &HookRegistry{
-		hooks:        make(map[HookEvent][]Hook),
-		errorHandler: handler,
-	}
-}
-
 // SetErrorHandler sets the error handler for this registry.
 // Pass nil to remove the error handler and restore default behavior.
 func (r *HookRegistry) SetErrorHandler(handler HookErrorHandler) {
@@ -175,6 +165,7 @@ func (r *HookRegistry) Remove(event HookEvent) {
 //
 // Panic Recovery: If a hook panics, the panic is recovered and converted to an error.
 // This ensures that a misbehaving hook cannot crash the application.
+// A panicking error handler is likewise recovered and returned as an error.
 func (r *HookRegistry) Trigger(ctx context.Context, event HookEvent, hookCtx *HookContext) (err error) {
 	if r == nil {
 		return nil
@@ -196,11 +187,20 @@ func (r *HookRegistry) Trigger(ctx context.Context, event HookEvent, hookCtx *Ho
 		hookErr := r.executeHookWithRecovery(ctx, hook, hookCtx, event)
 		if hookErr != nil {
 			if handler != nil {
-				// Call the error handler and continue to next hook
-				handler(event, hookCtx, hookErr)
-				// Record first error to return later
+				// Call the error handler and continue to next hook.
+				// SEC-003: the handler is user code and is invoked from paths
+				// that run outside logCoreWithDepth's recover (Close, rotation
+				// callbacks, pre-core field processing), so it needs its own
+				// backstop — this is the behavior HookErrorHandler's doc
+				// already promises.
 				if firstErr == nil {
-					firstErr = hookErr
+					if handlerErr := executeHandlerWithRecovery(handler, event, hookCtx, hookErr); handlerErr != nil {
+						firstErr = handlerErr
+					} else {
+						firstErr = hookErr
+					}
+				} else {
+					_ = executeHandlerWithRecovery(handler, event, hookCtx, hookErr)
 				}
 			} else {
 				// Default behavior: stop on first error (including panic)
@@ -210,6 +210,23 @@ func (r *HookRegistry) Trigger(ctx context.Context, event HookEvent, hookCtx *Ho
 	}
 
 	return firstErr
+}
+
+// executeHandlerWithRecovery executes a hook error handler with panic recovery.
+// If the handler panics, the panic is recovered, logged to stderr, and returned
+// as an error — mirroring executeHookWithRecovery so a misbehaving error handler
+// cannot crash the application.
+func executeHandlerWithRecovery(handler HookErrorHandler, event HookEvent, hookCtx *HookContext, hookErr error) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			panicErr := fmt.Errorf("hook error handler panic for event %s: %v (while handling: %w)", event, rec, hookErr)
+			fmt.Fprintf(os.Stderr, "dd: %v\n", panicErr)
+			err = panicErr
+		}
+	}()
+
+	handler(event, hookCtx, hookErr)
+	return nil
 }
 
 // executeHookWithRecovery executes a hook with panic recovery.
@@ -283,10 +300,12 @@ func (r *HookRegistry) Clear() {
 }
 
 // ClearFor removes all hooks for a specific event type.
+//
+// Deprecated: ClearFor is a duplicate of Remove (byte-for-byte the same
+// operation) kept only for backward compatibility; use Remove, which pairs
+// with Add like every other registry in this package.
 func (r *HookRegistry) ClearFor(event HookEvent) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.hooks, event)
+	r.Remove(event)
 }
 
 // HooksConfig provides a struct-based configuration for creating hook registries.

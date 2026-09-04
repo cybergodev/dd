@@ -147,7 +147,13 @@ func section4DynamicManagement() {
 		fmt.Printf("Failed to create file writer: %v\n", err)
 		return
 	}
-	logger.AddWriter(fileWriter)
+	// The writer outlives AddWriter/RemoveWriter — close it ourselves
+	defer fileWriter.Close()
+
+	if err := logger.AddWriter(fileWriter); err != nil {
+		fmt.Printf("Failed to add writer: %v\n", err)
+		return
+	}
 	fmt.Printf("After adding file: %d writers\n", logger.WriterCount())
 
 	logger.Info("Goes to console + file")
