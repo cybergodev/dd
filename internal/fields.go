@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -18,70 +17,41 @@ type Field struct {
 
 // Constants for field formatting
 const (
-	// FieldBuilderCapacity is the initial capacity for field builder
-	// Increased from 384 to 768 to reduce grow() calls
-	FieldBuilderCapacity = 768
 	// EstimatedFieldSize is the estimated size per field in bytes
 	EstimatedFieldSize = 40
 )
 
-// fieldPool pools bytes.Buffer objects for field formatting
-// to reduce memory allocations during high-frequency logging.
-// SECURITY: Uses bytes.Buffer instead of strings.Builder to allow
-// proper zeroing of sensitive data before returning to pool.
-var fieldPool = sync.Pool{
-	New: func() any {
-		buf := &bytes.Buffer{}
-		buf.Grow(FieldBuilderCapacity)
-		return buf
-	},
+// Numeric field writers: strconv.Append* into a stack-allocated scratch
+// buffer avoids the intermediate string allocation of strconv.FormatInt /
+// FormatUint / FormatFloat, which profiling showed as ~20% of allocation
+// objects on the structured-logging path (one string per numeric field).
+// The scratch sizes are worst-case for the type: int64 fits 19 digits plus a
+// sign; float64's shortest 'g' representation fits well within 32 bytes.
+
+// appendInt writes v in base 10 to buf without allocating.
+func appendInt(buf *bytes.Buffer, v int64) {
+	var scratch [20]byte
+	buf.Write(strconv.AppendInt(scratch[:0], v, 10))
 }
 
-// FormatFields formats structured fields into a string representation.
-// Uses a sync.Pool for bytes.Buffer to reduce allocations.
-// SECURITY: Zeroes buffer contents before returning to pool to prevent
-// sensitive data from remaining in pooled memory.
-func FormatFields(fields []Field) string {
-	fieldCount := len(fields)
-	if fieldCount == 0 {
-		return ""
-	}
+// appendUint writes v in base 10 to buf without allocating.
+func appendUint(buf *bytes.Buffer, v uint64) {
+	var scratch [20]byte
+	buf.Write(strconv.AppendUint(scratch[:0], v, 10))
+}
 
-	buf := fieldPool.Get().(*bytes.Buffer)
-	buf.Reset()
+// appendFloat64 writes v's shortest 'g' representation to buf without
+// allocating (matching strconv.FormatFloat(v, 'g', -1, 64)).
+func appendFloat64(buf *bytes.Buffer, v float64) {
+	var scratch [32]byte
+	buf.Write(strconv.AppendFloat(scratch[:0], v, 'g', -1, 64))
+}
 
-	// SECURITY: Zero buffer contents before returning to pool
-	defer func() {
-		// Don't return large buffers to pool - let GC collect them
-		if buf.Cap() > 2048 {
-			return
-		}
-		// Zero the buffer contents for security
-		zeroBuffer(buf)
-		fieldPool.Put(buf)
-	}()
-
-	estimatedSize := fieldCount * EstimatedFieldSize
-	if buf.Cap() < estimatedSize {
-		buf.Grow(estimatedSize - buf.Cap())
-	}
-
-	for _, field := range fields {
-		if field.Key == "" {
-			continue
-		}
-
-		if buf.Len() > 0 {
-			buf.WriteByte(' ')
-		}
-
-		buf.WriteString(field.Key)
-		buf.WriteByte('=')
-
-		formatFieldValueBytes(buf, field.Value)
-	}
-
-	return buf.String()
+// appendFloat32 writes v's shortest 'g' representation to buf without
+// allocating (matching strconv.FormatFloat(v, 'g', -1, 32)).
+func appendFloat32(buf *bytes.Buffer, v float32) {
+	var scratch [32]byte
+	buf.Write(strconv.AppendFloat(scratch[:0], float64(v), 'g', -1, 32))
 }
 
 // formatFieldValueBytes formats a single field value to the buffer.
@@ -94,39 +64,58 @@ func formatFieldValueBytes(buf *bytes.Buffer, v any) {
 			buf.WriteByte('"')
 			for j := 0; j < len(val); j++ {
 				c := val[j]
-				if c == '"' || c == '\\' {
+				switch {
+				case c == '"' || c == '\\':
 					buf.WriteByte('\\')
+					buf.WriteByte(c)
+				case c == '\n':
+					// SECURITY: escape line breaks so a quoted field value can
+					// never forge additional log lines (log injection); the
+					// quotes alone do not protect consumers that split output
+					// on newlines. \r gets the same treatment.
+					buf.WriteString("\\n")
+				case c == '\r':
+					buf.WriteString("\\r")
+				case (c < 0x20 && c != '\t') || c == 0x7f:
+					// SECURITY: remaining control bytes (incl. DEL) become
+					// visible \xNN escapes — inert for terminals and parsers,
+					// unlike raw bytes. \t stays raw (allowed, matches
+					// SanitizeControlChars' policy for messages).
+					buf.WriteString("\\x")
+					buf.WriteByte(HexChars[c>>4])
+					buf.WriteByte(HexChars[c&0x0f])
+				default:
+					buf.WriteByte(c)
 				}
-				buf.WriteByte(c)
 			}
 			buf.WriteByte('"')
 		} else {
 			buf.WriteString(val)
 		}
 	case int:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 	case int64:
-		buf.WriteString(strconv.FormatInt(val, 10))
+		appendInt(buf, val)
 	case int32:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 	case int16:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 	case int8:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 	case uint64:
-		buf.WriteString(strconv.FormatUint(val, 10))
+		appendUint(buf, val)
 	case uint32:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 	case uint16:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 	case uint8:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 	case float64:
-		buf.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
+		appendFloat64(buf, val)
 	case float32:
-		buf.WriteString(strconv.FormatFloat(float64(val), 'g', -1, 32))
+		appendFloat32(buf, val)
 	case bool:
 		if val {
 			buf.WriteString("true")
@@ -160,7 +149,9 @@ func NeedsQuoting(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c <= ' ' || c == '"' || c == '\\' {
+		// SECURITY: 0x7f (DEL) is included so control bytes can never reach
+		// the unquoted path — the escape logic lives in the quoted branch.
+		if c <= ' ' || c == '"' || c == '\\' || c == 0x7f {
 			return true
 		}
 	}

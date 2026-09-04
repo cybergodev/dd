@@ -114,9 +114,3 @@ func deepCallStack(depth int) string {
 	}
 	return deepCallStack(depth - 1)
 }
-
-func TestCallerBuilderPool(t *testing.T) {
-	for range 1000 {
-		_ = GetCaller(1, true)
-	}
-}

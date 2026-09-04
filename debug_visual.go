@@ -25,22 +25,27 @@ import (
 // Print writes to the default logger's configured writers using LevelInfo.
 // This is a convenience function equivalent to Default().Print().
 // Applies sensitive data filtering based on SecurityConfig.
+//
+// FRAME-SHAPE NOTE: calls logDispatch/logfDispatch directly rather than the
+// (*Logger).Print family, so the entry-caller capture sees exactly one
+// entry-method frame (this function) between user code and the funnel — see
+// the note on the package-level functions in logger.go.
 func Print(args ...any) {
-	Default().Print(args...)
+	Default().logDispatch(LevelInfo, args...)
 }
 
 // Println writes to the default logger's configured writers with a newline.
 // Uses LevelInfo for filtering. Applies sensitive data filtering.
 // Note: Behaves identically to Print() because the underlying Log() already adds a newline.
 func Println(args ...any) {
-	Default().Println(args...)
+	Default().logDispatch(LevelInfo, args...)
 }
 
 // Printf formats according to a format specifier and writes to the default
 // logger's configured writers. Uses LevelInfo for filtering.
 // Applies sensitive data filtering based on SecurityConfig.
 func Printf(format string, args ...any) {
-	Default().Printf(format, args...)
+	Default().logfDispatch(LevelInfo, format, args...)
 }
 
 // NOTE: The direct-output JSON helpers below (JSON/JSONF) are deliberately
@@ -87,7 +92,8 @@ func Textf(format string, args ...any) {
 // widen the debug-only API surface without benefit; production code should use
 // logger.Info/Error plus explicit shutdown instead.
 
-// Exit outputs data as pretty-printed JSON to stdout and exits with code 0.
+// Exit outputs data as pretty-printed text to stdout and exits with code 0.
+// Complex values are rendered as indented JSON (see internal.OutputText).
 func Exit(data ...any) {
 	internal.OutputText(os.Stdout, internal.GetCaller(debugVisualizationDepth, false), data...)
 	os.Exit(0)

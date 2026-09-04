@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,27 +21,6 @@ func TestNewConfig(t *testing.T) {
 		}
 		if cfg.Format != FormatText {
 			t.Errorf("Expected FormatText, got %v", cfg.Format)
-		}
-	})
-
-	t.Run("modify fields directly", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Level = LevelDebug
-		cfg.Format = FormatJSON
-		cfg.DynamicCaller = true
-		cfg.FullPath = true
-
-		if cfg.Level != LevelDebug {
-			t.Errorf("Expected LevelDebug, got %v", cfg.Level)
-		}
-		if cfg.Format != FormatJSON {
-			t.Errorf("Expected FormatJSON, got %v", cfg.Format)
-		}
-		if !cfg.DynamicCaller {
-			t.Error("Expected DynamicCaller to be true")
-		}
-		if !cfg.FullPath {
-			t.Error("Expected FullPath to be true")
 		}
 	})
 
@@ -91,39 +71,10 @@ func TestConfigJSON(t *testing.T) {
 	}
 }
 
-func TestConfigFileOutput(t *testing.T) {
-	t.Run("File config sets file path", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Targets = []OutputTarget{FileOutput("logs/test.log")}
-
-		if cfg.Targets[0].Path != "logs/test.log" {
-			t.Errorf("Expected Path 'logs/test.log', got '%s'", cfg.Targets[0].Path)
-		}
-	})
-
-	t.Run("modify rotation settings", func(t *testing.T) {
-		cfg := DefaultConfig()
-		target := FileOutput("logs/test.log")
-		target.MaxSizeMB = 50
-		target.MaxBackups = 5
-		target.MaxAge = 7 * 24 * time.Hour
-		target.Compress = true
-		cfg.Targets = []OutputTarget{target}
-
-		if cfg.Targets[0].MaxSizeMB != 50 {
-			t.Errorf("Expected MaxSizeMB=50, got %d", cfg.Targets[0].MaxSizeMB)
-		}
-		if cfg.Targets[0].MaxBackups != 5 {
-			t.Errorf("Expected MaxBackups=5, got %d", cfg.Targets[0].MaxBackups)
-		}
-		if cfg.Targets[0].MaxAge != 7*24*time.Hour {
-			t.Errorf("Expected MaxAge=7d, got %v", cfg.Targets[0].MaxAge)
-		}
-		if !cfg.Targets[0].Compress {
-			t.Error("Expected Compress to be true")
-		}
-	})
-}
+// TestConfigFileOutput was removed: "File config sets file path" is
+// asserted (with the defaults) by boundary_test.go
+// TestOutputTypeConstructors, and "modify rotation settings" only re-checked
+// struct-field assignments.
 
 func TestBuilderConfigClone(t *testing.T) {
 	t.Run("clone preserves settings", func(t *testing.T) {
@@ -336,32 +287,6 @@ func TestBuilderConfigClone(t *testing.T) {
 	})
 }
 
-func TestConfigWithSampling(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Sampling = &SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 10,
-		Tick:       time.Minute,
-	}
-
-	if cfg.Sampling == nil {
-		t.Fatal("Expected Sampling to be set")
-	}
-	if !cfg.Sampling.Enabled {
-		t.Error("Expected Sampling.Enabled to be true")
-	}
-	if cfg.Sampling.Initial != 100 {
-		t.Errorf("Expected Initial=100, got %d", cfg.Sampling.Initial)
-	}
-	if cfg.Sampling.Thereafter != 10 {
-		t.Errorf("Expected Thereafter=10, got %d", cfg.Sampling.Thereafter)
-	}
-	if cfg.Sampling.Tick != time.Minute {
-		t.Errorf("Expected Tick=1m, got %v", cfg.Sampling.Tick)
-	}
-}
-
 func TestConfigAddHook(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Hooks = NewHookRegistry()
@@ -481,4 +406,122 @@ func TestNewMultipleConfigs(t *testing.T) {
 		}
 		defer logger.Close()
 	})
+}
+
+// TestOutputTargetResolve covers every OutputTarget.resolve branch, including
+// the error sentinels for empty file paths, nil custom writers, and unknown
+// target types.
+func TestOutputTargetResolve(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  OutputTarget
+		wantErr error
+	}{
+		// Console resolves to os.Stdout — must NOT be closed here.
+		{"console", ConsoleOutput(), nil},
+		{"file with path", FileOutput(filepath.Join(t.TempDir(), "resolve.log")), nil},
+		{"file without path", OutputTarget{Type: OutputFile}, ErrEmptyFilePath},
+		{"custom writer", CustomOutput(&bytes.Buffer{}), nil},
+		{"custom without writer", OutputTarget{Type: OutputCustom}, ErrNilWriter},
+		{"unknown type", OutputTarget{Type: OutputType(99)}, nil /* asserted below */},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, err := tt.target.resolve()
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("resolve() error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+
+			if tt.name == "unknown type" {
+				// Unknown types report a descriptive error rather than a sentinel.
+				if err == nil || !strings.Contains(err.Error(), "unknown output type") {
+					t.Errorf("resolve(unknown type) error = %v, want 'unknown output type'", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("resolve() unexpected error: %v", err)
+			}
+			if w == nil {
+				t.Fatal("resolve() returned nil writer")
+			}
+			// Only close writers we own: console rows share os.Stdout with
+			// the test binary, and custom rows use caller-owned buffers.
+			if tt.target.Type == OutputFile {
+				if closer, ok := w.(io.Closer); ok {
+					closer.Close()
+				}
+			}
+		})
+	}
+}
+
+// TestConfigValidateErrors pins every Config.Validate rejection branch and
+// its sentinel, so config mistakes fail at New() with a matchable error.
+func TestConfigValidateErrors(t *testing.T) {
+	tooManyTargets := make([]OutputTarget, maxWriterCount+1)
+	for i := range tooManyTargets {
+		tooManyTargets[i] = CustomOutput(&bytes.Buffer{})
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr error
+	}{
+		{"level below range", func(c *Config) { c.Level = LevelDebug - 1 }, ErrInvalidLevel},
+		{"level above range", func(c *Config) { c.Level = LevelFatal + 1 }, ErrInvalidLevel},
+		{"format invalid", func(c *Config) { c.Format = LogFormat(99) }, ErrInvalidFormat},
+		{
+			"non-roundtripping time format",
+			func(c *Config) { c.IncludeTime = true; c.TimeFormat = "1_2" },
+			nil, // exact error type asserted loosely below (internal validation)
+		},
+		{
+			"too many writers",
+			func(c *Config) { c.Targets = tooManyTargets },
+			ErrMaxWritersExceeded,
+		},
+		{
+			"custom target without writer",
+			func(c *Config) { c.Targets = []OutputTarget{{Type: OutputCustom}} },
+			nil, // plain fmt.Errorf, asserted by message below
+		},
+		{
+			"file target without path",
+			func(c *Config) { c.Targets = []OutputTarget{{Type: OutputFile}} },
+			nil, // plain fmt.Errorf, asserted by message below
+		},
+		{
+			"invalid audit config",
+			func(c *Config) { c.Audit = &AuditConfig{BufferSize: -1} },
+			nil, // wrapped audit error, asserted by message below
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tt.mutate(&cfg)
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil, want error")
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Errorf("Validate() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	// Sanity: the defaults themselves must validate.
+	if err := DefaultConfig().Validate(); err != nil {
+		t.Errorf("DefaultConfig().Validate() = %v, want nil", err)
+	}
 }

@@ -18,6 +18,7 @@ import (
 // 3. Dynamic level resolver
 // 4. Custom fatal handler
 // 5. Debug utilities
+// 6. Dynamic-level logging (Log/Logf/LogWith) and package-level WithFields
 func main() {
 	fmt.Println("=== DD Advanced Features ===")
 
@@ -26,6 +27,7 @@ func main() {
 	section3LevelResolver()
 	section4FatalHandler()
 	section5DebugUtilities()
+	section6DynamicLevels()
 
 	fmt.Println("\n✅ Advanced features completed!")
 }
@@ -228,4 +230,30 @@ func section5DebugUtilities() {
 
 	fmt.Println("\n  WARNING: Package-level dd.Text/JSON/etc. do NOT filter data!")
 	fmt.Println("  Logger methods (logger.Text/JSON) write to configured writers with filtering.")
+}
+
+// Section 6: Dynamic-level logging — Log/Logf/LogWith choose the level at
+// runtime; package-level WithFields attaches persistent fields to the default
+// logger without holding a *Logger.
+func section6DynamicLevels() {
+	fmt.Println("6. Dynamic-Level Logging")
+	fmt.Println("-------------------------")
+
+	logger, _ := dd.New(dd.DevelopmentConfig())
+	defer logger.Close()
+
+	// Level chosen at runtime instead of by method name (e.g., from config)
+	level := dd.LevelWarn
+	logger.Log(level, "Logged via Log() with a runtime level")
+	logger.Logf(level, "Logged via Logf() with %s", "a format string")
+	logger.LogWith(level, "Logged via LogWith()",
+		dd.String("mode", "dynamic"),
+	)
+
+	// Package-level entries build on the default logger
+	dd.WithFields(
+		dd.String("service", "batch-job"),
+	).Info("Package-level entry with persistent fields")
+
+	fmt.Println()
 }

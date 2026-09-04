@@ -17,6 +17,7 @@ type callerCacheEntry struct {
 	file      string
 	line      int
 	formatted string // pre-formatted "file:line" string
+	isFunnel  bool   // frame is dd's own entry funnel (entry-capture validation)
 }
 
 // maxCallerCacheSize limits the cache size to prevent unbounded memory growth.
@@ -61,26 +62,49 @@ func GetCaller(callerDepth int, fullPath bool) string {
 // map lookup plus an allocation-free format (line numbers < 100 use smallInts).
 // On a miss it resolves the frame via runtime.CallersFrames and caches the result.
 //
-// Shared by GetCaller and the formatter's resolveDynamicCaller so both reuse one
-// cache with identical formatting, and so the dynamic-caller fast path can resolve
-// the user frame from a single stack capture without a second runtime.Callers.
+// Shared by GetCaller and the formatter's caller resolvers so all reuse one
+// cache with identical formatting.
 func callerForPC(pc uintptr, fullPath bool) string {
+	caller, _ := callerForPCLookup(pc, fullPath, false)
+	return caller
+}
+
+// callerForPCValidated is callerForPC that additionally reports whether the
+// frame is acceptable as an entry-captured caller: anything except dd's own
+// entry funnel (see isFunnelSourceFile). The flag rides on the same cache
+// entry, so validation is free on the (hot) cache-hit path.
+func callerForPCValidated(pc uintptr, fullPath bool) (string, bool) {
+	return callerForPCLookup(pc, fullPath, true)
+}
+
+// callerForPCLookup implements callerForPC and callerForPCValidated.
+func callerForPCLookup(pc uintptr, fullPath, validate bool) (string, bool) {
 	// Check cache first (fast path - no allocation needed)
 	if cached, ok := callerCache.Load(pc); ok {
 		entry := cached.(*callerCacheEntry)
+		if validate && entry.isFunnel {
+			return "", false
+		}
 		if fullPath {
 			// Re-format from cached full path
-			return formatCallerDirect(entry.file, entry.line)
+			return formatCallerDirect(entry.file, entry.line), true
 		}
-		return entry.formatted
+		return entry.formatted, true
 	}
 
 	// Cache miss - resolve the single frame for this PC.
 	frames := runtime.CallersFrames([]uintptr{pc})
 	frame, _ := frames.Next()
 	if frame.PC == 0 {
-		return ""
+		return "", validate
 	}
+
+	// Classify the frame: dd's entry funnel or acceptable caller. Used by the
+	// entry-caller capture to reject capture-shape violations (a frame from
+	// the funnel itself means the fixed skip landed too shallow); harmless
+	// for plain lookups. Module-internal test and example files are NOT
+	// funnel files, so in-module callers keep the fast path.
+	frameIsFunnel := isFunnelSourceFile(frame.File)
 
 	// Get base name for short path version (always cache short path)
 	baseName := getBaseName(frame.File)
@@ -91,6 +115,7 @@ func callerForPC(pc uintptr, fullPath bool) string {
 		file:      frame.File, // Store full path
 		line:      frame.Line,
 		formatted: formatted, // Pre-formatted short path
+		isFunnel:  frameIsFunnel,
 	}
 
 	// Store in cache with size limit
@@ -113,10 +138,13 @@ func callerForPC(pc uintptr, fullPath bool) string {
 	}
 
 	// Return based on fullPath setting
-	if fullPath {
-		return formatCallerDirect(frame.File, frame.Line)
+	if validate && frameIsFunnel {
+		return "", false
 	}
-	return formatted
+	if fullPath {
+		return formatCallerDirect(frame.File, frame.Line), true
+	}
+	return formatted, true
 }
 
 // formatCallerDirect formats file and line without using pool.

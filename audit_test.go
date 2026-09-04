@@ -204,9 +204,10 @@ func TestAuditLogger_BufferOverflow(t *testing.T) {
 	wg.Wait()
 
 	stats := al.Stats()
-	// Some events may have been dropped
-	if stats.Dropped == 0 && stats.TotalEvents < 100 {
-		t.Logf("Some events processed: TotalEvents=%d, Dropped=%d", stats.TotalEvents, stats.Dropped)
+	// Accounting must be exact: every event was either recorded or dropped —
+	// a smaller sum would mean silent loss.
+	if got := stats.TotalEvents + stats.Dropped; got != 100 {
+		t.Errorf("TotalEvents(%d) + Dropped(%d) = %d, want 100 (no silent loss)", stats.TotalEvents, stats.Dropped, got)
 	}
 }
 
@@ -651,4 +652,63 @@ func TestAuditLogger_WriteEventWithOutput(t *testing.T) {
 			t.Errorf("Expected text format without timestamp, got: %s", output)
 		}
 	})
+}
+
+// TestAuditLoggerZeroBufferSizeClamped pins that an enabled AuditConfig with
+// zero BufferSize is clamped to the documented default rather than building
+// an UNBUFFERED channel — where the non-blocking send in Log only succeeds
+// while the worker is parked in its receive, silently dropping the vast
+// majority of security events (&AuditConfig{Enabled: true} hits this).
+func TestAuditLoggerZeroBufferSizeClamped(t *testing.T) {
+	al, err := NewAuditLogger(AuditConfig{Enabled: true, Output: nil})
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
+	defer func() { _ = al.Close() }()
+
+	if got := al.Stats().BufferSize; got != defaultAuditBufferSize {
+		t.Errorf("BufferSize = %d, want %d (zero must clamp to the default, not an unbuffered channel)", got, defaultAuditBufferSize)
+	}
+}
+
+// TestAuditLoggerCloseLeavesNoStrandedEvents pins the Log/Close exclusion:
+// after Close returns, no event may remain in the channel. Before the
+// sendMu exclusion, a Log that raced past the unlocked closed check could
+// deliver into the buffer after the drain loop saw an empty channel and
+// exited — the event was counted by Stats as logged but never written, the
+// worst failure mode for a security audit trail.
+func TestAuditLoggerCloseLeavesNoStrandedEvents(t *testing.T) {
+	al, err := NewAuditLogger(AuditConfig{Enabled: true, Output: nil})
+	if err != nil {
+		t.Fatalf("NewAuditLogger() error = %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					al.Log(AuditEvent{
+						Type:     AuditEventSecurityViolation,
+						Severity: AuditSeverityWarning,
+					})
+				}
+			}
+		}()
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	_ = al.Close()
+	close(stop)
+	wg.Wait()
+
+	if n := len(al.events); n != 0 {
+		t.Errorf("%d events stranded in channel after Close (counted as logged but never written)", n)
+	}
 }

@@ -100,9 +100,9 @@ type Config struct {
 	DynamicCaller bool
 	FullPath      bool
 
-	// Output destinations (unified). When set, takes priority over
-	// Output, Outputs, and File fields.
+	// Output destinations (unified).
 	// Use ConsoleOutput(), FileOutput(), CustomOutput() helpers.
+	// When empty, the logger writes to os.Stdout.
 	Targets []OutputTarget
 
 	// JSON configuration
@@ -200,20 +200,17 @@ func JSONConfig() Config {
 		DynamicCaller: true,
 		Security:      DefaultSecurityConfig(), // Security enabled by default
 		FatalHandler:  defaultFatalHandler,
-		JSON: &internal.JSONOptions{
-			PrettyPrint: false,
-			Indent:      defaultJSONIndent,
-			FieldNames:  internal.DefaultJSONFieldNames(),
-		},
+		JSON:          DefaultJSONOptions(),
 	}
 }
 
 // Clone creates a copy of the configuration.
 //
 // Clone behavior:
-//   - Deep copy: JSON, Sampling, Security, Hooks configs
-//   - Shallow copy: FatalHandler, WriteErrorHandler, FieldValidation
-//     (function pointers are shared)
+//   - Deep copy: JSON, Sampling, Security, Hooks, Audit configs
+//   - Shared by pointer (later mutations through the original are visible to
+//     the clone): FieldValidation (the whole *FieldValidationConfig struct)
+//   - Shared values: FatalHandler, WriteErrorHandler (function values)
 //   - ContextExtractors slice is copied but extractor instances are shared
 //
 // MAINTENANCE: When adding new pointer/slice/map fields to Config, you MUST

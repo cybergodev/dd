@@ -71,6 +71,11 @@ func (e AuditEventType) String() string {
 // AuditEvent represents a security audit event.
 type AuditEvent struct {
 	// Type is the type of audit event.
+	// Type serializes as a BARE INTEGER in JSON (only Severity has a custom
+	// string MarshalJSON). This is intentional and test-pinned
+	// (audit_test.go: "JSON output uses numeric type values"); human-readable
+	// names are available via AuditEventType.String(). Do not "fix" one side
+	// without a format migration.
 	Type AuditEventType `json:"type"`
 	// Timestamp is when the event occurred.
 	Timestamp time.Time `json:"timestamp"`
@@ -126,12 +131,15 @@ type AuditConfig struct {
 	// Enabled determines if audit logging is enabled.
 	Enabled bool
 	// Output is the destination for audit logs.
-	// If nil, audit events are only available via the Events channel.
+	// If nil, audit events are accepted and counted but produce no output.
 	Output *os.File
 	// BufferSize is the size of the async event buffer.
 	// Default: 1000 events
 	BufferSize int
 	// IncludeTimestamp determines if timestamps are included.
+	// Note: this applies to TEXT output only — JSON output always includes
+	// the timestamp field (the JSON tag has no omitempty), matching the
+	// schema consumers of the default JSON format rely on.
 	IncludeTimestamp bool
 	// JSONFormat determines if output should be JSON formatted.
 	JSONFormat bool
@@ -150,13 +158,17 @@ func (c AuditConfig) Validate() error {
 	return nil
 }
 
+// defaultAuditBufferSize is the buffer size applied when an enabled
+// AuditConfig leaves BufferSize at zero (see newAuditLoggerWithConfig).
+const defaultAuditBufferSize = 1000
+
 // DefaultAuditConfig returns an AuditConfig with sensible defaults.
 // Note: Audit logging is enabled by default for security monitoring.
 func DefaultAuditConfig() AuditConfig {
 	return AuditConfig{
 		Enabled:          true,
 		Output:           os.Stderr,
-		BufferSize:       1000,
+		BufferSize:       defaultAuditBufferSize,
 		IncludeTimestamp: true,
 		JSONFormat:       true,
 		MinimumSeverity:  AuditSeverityInfo,
@@ -184,11 +196,17 @@ type auditEncoder struct {
 // It uses a buffered channel for event processing to avoid blocking
 // the hot path in the logger.
 type AuditLogger struct {
-	config  *AuditConfig
-	events  chan AuditEvent
-	done    chan struct{}
-	wg      sync.WaitGroup
-	closed  atomic.Bool
+	config *AuditConfig
+	events chan AuditEvent
+	done   chan struct{}
+	wg     sync.WaitGroup
+	closed atomic.Bool
+	// sendMu closes the Log/Close race: Log re-checks closed and sends under
+	// the read lock, Close takes the write lock before signaling done, so no
+	// event can land in the channel after the drain loop has exited (where it
+	// would be counted as logged by Stats but never written — the worst
+	// failure mode for a security audit trail).
+	sendMu  sync.RWMutex
 	dropped atomic.Int64 // Count of dropped events due to full buffer
 
 	// Statistics
@@ -215,6 +233,18 @@ func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
 		return nil, err
 	}
 
+	// SECURITY: clamp a zero BufferSize to the documented default instead of
+	// building an UNBUFFERED channel. With an unbuffered channel the
+	// non-blocking send in Log succeeds only when the worker happens to be
+	// parked in its receive at that instant — any time it is inside
+	// writeEvent (a file write, i.e. essentially always under load) events
+	// are silently dropped. The zero value of AuditConfig{} (the natural
+	// `&AuditConfig{Enabled: true}` usage) hits exactly this, discarding most
+	// security events with no signal beyond a counter nobody polls.
+	if config.Enabled && config.BufferSize <= 0 {
+		config.BufferSize = defaultAuditBufferSize
+	}
+
 	al := &AuditLogger{
 		config: &config,
 		events: make(chan AuditEvent, config.BufferSize),
@@ -232,7 +262,7 @@ func newAuditLoggerWithConfig(config AuditConfig) (*AuditLogger, error) {
 // Log records an audit event asynchronously.
 // If the buffer is full, the event is dropped and the dropped counter is incremented.
 func (al *AuditLogger) Log(event AuditEvent) {
-	if al == nil || !al.config.Enabled || al.closed.Load() {
+	if al == nil || !al.config.Enabled {
 		return
 	}
 
@@ -244,6 +274,16 @@ func (al *AuditLogger) Log(event AuditEvent) {
 	// Set timestamp if not set
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
+	}
+
+	// Send under the read lock, re-checking closed inside: Close takes the
+	// write lock BEFORE signaling done, so once we hold the read lock and
+	// still see closed == false, the drain loop cannot exit before our send
+	// lands in the channel.
+	al.sendMu.RLock()
+	defer al.sendMu.RUnlock()
+	if al.closed.Load() {
+		return
 	}
 
 	// Try to send without blocking
@@ -321,7 +361,6 @@ func (al *AuditLogger) LogPathTraversalAttempt(path, message string) {
 // processEvents processes audit events asynchronously.
 func (al *AuditLogger) processEvents() {
 	defer al.wg.Done()
-
 	for {
 		select {
 		case <-al.done:
@@ -329,15 +368,30 @@ func (al *AuditLogger) processEvents() {
 			for {
 				select {
 				case event := <-al.events:
-					al.writeEvent(event)
+					al.writeEventSafe(event)
 				default:
 					return
 				}
 			}
 		case event := <-al.events:
-			al.writeEvent(event)
+			al.writeEventSafe(event)
 		}
 	}
+}
+
+// writeEventSafe processes one audit event with panic recovery. It runs on
+// the background event-processing goroutine, where no caller can recover
+// (SEC-003): encoding the event, the optional IntegritySigner, and the
+// configured output can all fail in ways that panic, and a panic here would
+// take down the host process. The offending event is dropped with a stderr
+// note and processing continues with the next event.
+func (al *AuditLogger) writeEventSafe(event AuditEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "dd: audit event panic: %v\n", r)
+		}
+	}()
+	al.writeEvent(event)
 }
 
 // writeEvent writes an event to the configured output.
@@ -472,7 +526,21 @@ func (al *AuditLogger) Stats() AuditStats {
 // Close stops the audit logger and flushes remaining events.
 // Releases internal statistics maps to free memory.
 func (al *AuditLogger) Close() error {
-	if al == nil || al.closed.Swap(true) {
+	if al == nil {
+		return nil
+	}
+
+	// Mark closed under the write lock: any Log holding the read lock either
+	// completed its channel send before we got here, or sees closed == true
+	// and returns without sending. Either way the drain loop below is
+	// guaranteed to observe every event Stats already counted. Without this
+	// exclusion, a send that raced past an unlocked closed check could land
+	// after the drain loop saw an empty channel and exited — the event would
+	// sit in the channel forever, reported as logged but never written.
+	al.sendMu.Lock()
+	alreadyClosed := al.closed.Swap(true)
+	al.sendMu.Unlock()
+	if alreadyClosed {
 		return nil
 	}
 

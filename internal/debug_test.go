@@ -81,17 +81,24 @@ func TestIsSimpleType(t *testing.T) {
 }
 
 func TestFormatSimpleValue(t *testing.T) {
+	val := 42
+	var nilPtr *int
+	var nilErr error
+
 	tests := []struct {
 		name     string
 		value    any
 		expected string
 	}{
 		{"nil", nil, "nil"},
+		{"nil error", nilErr, "nil"},
 		{"string", "hello", "hello"},
 		{"int", 42, "42"},
 		{"bool true", true, "true"},
 		{"bool false", false, "false"},
 		{"error", errorStub("test error"), "test error"},
+		{"*int dereferenced", &val, "42"},
+		{"nil *int", nilPtr, "nil"},
 	}
 
 	for _, tt := range tests {
@@ -101,31 +108,6 @@ func TestFormatSimpleValue(t *testing.T) {
 				t.Errorf("FormatSimpleValue(%T) = %q, want %q", tt.value, result, tt.expected)
 			}
 		})
-	}
-}
-
-func TestFormatSimpleValueNilError(t *testing.T) {
-	// Test nil error interface separately
-	var nilErr error = nil
-	result := FormatSimpleValue(nilErr)
-	if result != "nil" {
-		t.Errorf("FormatSimpleValue(nil error) = %q, want 'nil'", result)
-	}
-}
-
-func TestFormatSimpleValuePointer(t *testing.T) {
-	// Test pointer handling
-	val := 42
-	result := FormatSimpleValue(&val)
-	if result != "42" {
-		t.Errorf("FormatSimpleValue(*int) = %q, want '42'", result)
-	}
-
-	// Test nil pointer
-	var nilPtr *int
-	result = FormatSimpleValue(nilPtr)
-	if result != "nil" {
-		t.Errorf("FormatSimpleValue(nil *int) = %q, want 'nil'", result)
 	}
 }
 
@@ -298,7 +280,8 @@ func TestOutputText(t *testing.T) {
 			caller: "test.go:30",
 			data:   []any{map[string]int{"a": 1}},
 			check: func(s string) bool {
-				return strings.Contains(s, "test.go:30")
+				return strings.Contains(s, "test.go:30") &&
+					strings.Contains(s, `"a": 1`)
 			},
 		},
 	}
@@ -318,15 +301,6 @@ func TestOutputText(t *testing.T) {
 func TestMaxDebugBufferSize(t *testing.T) {
 	if MaxDebugBufferSize != 64*1024 {
 		t.Errorf("MaxDebugBufferSize = %d, want %d", MaxDebugBufferSize, 64*1024)
-	}
-}
-
-func TestDebugBufferPool(t *testing.T) {
-	// Test concurrent buffer usage
-	for i := 0; i < 100; i++ {
-		buf := NewDebugBuffer()
-		buf.WriteString("test")
-		buf.Release()
 	}
 }
 
@@ -356,5 +330,23 @@ func TestOutputTextDataEncodingError(t *testing.T) {
 	// Should not panic and produce some output
 	if buf.Len() == 0 {
 		t.Error("Should produce output even for unencodable types")
+	}
+}
+
+// TestOutputTextUnifiedItemFormatting locks the exact byte layout produced by
+// the shared item writer behind OutputTextData/OutputText, so the unification
+// cannot drift: items separated by single spaces, one leading space only when
+// a caller prefix precedes the list, and a trailing newline.
+func TestOutputTextUnifiedItemFormatting(t *testing.T) {
+	var buf bytes.Buffer
+	OutputTextData(&buf, "a", 42, true)
+	if got, want := buf.String(), "a 42 true\n"; got != want {
+		t.Errorf("OutputTextData output = %q, want %q", got, want)
+	}
+
+	buf.Reset()
+	OutputText(&buf, "c:1", "a", 42)
+	if got, want := buf.String(), "c:1 a 42\n"; got != want {
+		t.Errorf("OutputText output = %q, want %q", got, want)
 	}
 }

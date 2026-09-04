@@ -3,6 +3,7 @@ package dd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -184,7 +185,7 @@ func trimNewline(s string) string {
 	return s
 }
 
-// parseKeyValueFields parses "key=value key2=value2" format
+// parseKeyValueFields parses "key=value key2=value2" format.
 func parseKeyValueFields(s string) []Field {
 	var fields []Field
 	// Simple parsing - split by space, then by =
@@ -192,33 +193,73 @@ func parseKeyValueFields(s string) []Field {
 	for _, part := range parts {
 		if eq := strings.IndexByte(part, '='); eq > 0 {
 			key := part[:eq]
-			value := part[eq+1:]
+			value := unquoteFieldValue(part[eq+1:])
 			fields = append(fields, Field{Key: key, Value: value})
 		}
 	}
 	return fields
 }
 
-// splitFields splits by space but handles quoted values
+// splitFields splits by space but handles quoted values.
+// Escaped quotes (\", as emitted by the text formatter's quoting) do not
+// toggle the quote state — without this, a value like `x "y" z` swallowed the
+// following field's token, silently dropping that field from the parsed entry.
 func splitFields(s string) []string {
 	var result []string
 	inQuote := false
 	start := 0
 
 	for i := 0; i < len(s); i++ {
-		if s[i] == '"' {
-			inQuote = !inQuote
-		} else if s[i] == ' ' && !inQuote {
-			if i > start {
-				result = append(result, s[start:i])
+		switch s[i] {
+		case '\\':
+			// Escaped character inside a quoted value: the next byte belongs
+			// to the value (the formatter escapes '"' and '\') and must not
+			// affect quote state or splitting.
+			if inQuote && i+1 < len(s) {
+				i++
 			}
-			start = i + 1
+		case '"':
+			inQuote = !inQuote
+		case ' ':
+			if !inQuote {
+				if i > start {
+					result = append(result, s[start:i])
+				}
+				start = i + 1
+			}
 		}
 	}
 	if start < len(s) {
 		result = append(result, s[start:])
 	}
 	return result
+}
+
+// unquoteFieldValue reverses the formatter's quoting of values containing
+// spaces/quotes/backslashes: strips the surrounding quotes and unescapes \"
+// and \\, so GetFieldValue returns the value the caller logged rather than a
+// formatter artifact. Control-character escapes (\n, \xNN) are left as
+// visible text, mirroring how message sanitization is displayed. Values that
+// were never quoted are returned as-is.
+func unquoteFieldValue(v string) string {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return v
+	}
+	inner := v[1 : len(v)-1]
+	if !strings.ContainsAny(inner, "\\\"") {
+		return inner
+	}
+	var b strings.Builder
+	b.Grow(len(inner))
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if c == '\\' && i+1 < len(inner) && (inner[i+1] == '"' || inner[i+1] == '\\') {
+			i++
+			c = inner[i]
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // parseLevelString converts a level string to LogLevel
@@ -247,6 +288,15 @@ func extractFieldsFromJSON(data map[string]any) []Field {
 		"time": true, "caller": true, "file": true, "line": true,
 	}
 
+	// dd's JSON output nests structured fields under the "fields" key;
+	// flatten that object instead of recording it as a single field.
+	if nested, ok := data["fields"].(map[string]any); ok {
+		for k, v := range nested {
+			fields = append(fields, Field{Key: k, Value: v})
+		}
+		return fields
+	}
+
 	for k, v := range data {
 		if reserved[k] {
 			continue
@@ -258,7 +308,8 @@ func extractFieldsFromJSON(data map[string]any) []Field {
 
 // NewLogger creates a new Logger configured to write to this recorder.
 // This is a convenience method for quickly creating a test logger.
-// Returns an error if logger creation fails.
+// Returns ErrMultipleConfigs when more than one config is provided (matching
+// dd.New), or an error if logger creation fails.
 //
 // Example:
 //
@@ -269,8 +320,11 @@ func extractFieldsFromJSON(data map[string]any) []Field {
 //	}
 //	logger.Info("test")
 func (r *LoggerRecorder) NewLogger(cfg ...Config) (*Logger, error) {
+	if len(cfg) > 1 {
+		return nil, fmt.Errorf("%w: %d configs provided, expected 0 or 1", ErrMultipleConfigs, len(cfg))
+	}
 	var c Config
-	if len(cfg) > 0 {
+	if len(cfg) == 1 {
 		c = cfg[0]
 	} else {
 		c = DefaultConfig()
@@ -280,13 +334,21 @@ func (r *LoggerRecorder) NewLogger(cfg ...Config) (*Logger, error) {
 }
 
 // Entries returns all captured log entries.
-// Returns a copy to prevent modification of internal state.
+// Returns a copy to prevent modification of internal state: the entry structs
+// AND their Fields slices are duplicated — a plain struct copy would still
+// share each entry's Fields backing array, letting callers mutate the
+// recorder's internal entries through it.
 func (r *LoggerRecorder) Entries() []LogEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	result := make([]LogEntry, len(r.entries))
 	copy(result, r.entries)
+	for i := range result {
+		if result[i].Fields != nil {
+			result[i].Fields = append([]Field(nil), result[i].Fields...)
+		}
+	}
 	return result
 }
 
@@ -312,6 +374,8 @@ func (r *LoggerRecorder) HasEntries() bool {
 }
 
 // LastEntry returns the most recent log entry, or nil if no entries exist.
+// The returned entry (including its Fields slice) is a copy; mutating it does
+// not affect the recorder's internal state.
 func (r *LoggerRecorder) LastEntry() *LogEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -320,6 +384,9 @@ func (r *LoggerRecorder) LastEntry() *LogEntry {
 		return nil
 	}
 	entry := r.entries[len(r.entries)-1]
+	if entry.Fields != nil {
+		entry.Fields = append([]Field(nil), entry.Fields...)
+	}
 	return &entry
 }
 
@@ -343,7 +410,8 @@ func (r *LoggerRecorder) ContainsMessage(msg string) bool {
 	defer r.mu.Unlock()
 
 	for _, entry := range r.entries {
-		if entry.Message == msg || strings.Contains(entry.Message, msg) {
+		// Contains subsumes equality: x == msg implies Contains(x, msg).
+		if strings.Contains(entry.Message, msg) {
 			return true
 		}
 	}

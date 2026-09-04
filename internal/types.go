@@ -34,6 +34,25 @@ func MapKeyToString(key reflect.Value) string {
 // DefaultJSONIndent is the default indentation string for JSON output.
 const DefaultJSONIndent = "  "
 
+// JSONFieldName returns the output name for a struct field: the name portion of
+// its `json` struct tag when present (options after the comma are ignored, and
+// the "-" drop marker keeps the Go field name), otherwise the Go field name.
+// Shared by ConvertValue and the root package's recursive sensitive-data filter
+// so both honor identical tag semantics.
+func JSONFieldName(field reflect.StructField) string {
+	name := field.Name
+	if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
+		if tagName, _, found := strings.Cut(tag, ","); found {
+			if tagName != "" {
+				name = tagName
+			}
+		} else {
+			name = tag
+		}
+	}
+	return name
+}
+
 // MaxConvertDepth is the maximum recursion depth for ConvertValue.
 // This prevents stack overflow when converting deeply nested structures.
 const MaxConvertDepth = 100
@@ -278,13 +297,16 @@ func convertValueWithDepth(v any, depth int) any {
 				if v == nil {
 					return nil
 				}
-				return v.Error()
+				// SEC-003: user Error method — ConvertValue also feeds the debug
+				// Text/JSON helpers, which run outside any recover.
+				return SafeErrorString(v)
 			case time.Time:
 				return v.Format(time.RFC3339)
 			case time.Duration:
 				return v.String()
 			case fmt.Stringer:
-				return v.String()
+				// SEC-003: user String method, same rationale as error above.
+				return SafeStringerString(v)
 			}
 		}
 
@@ -357,13 +379,16 @@ func convertStructWithDepth(val reflect.Value, depth int) any {
 			if v == nil {
 				return nil
 			}
-			return v.Error()
+			// SEC-003: user Error method — ConvertValue also feeds the debug
+			// Text/JSON helpers, which run outside any recover.
+			return SafeErrorString(v)
 		case time.Time:
 			return v.Format(time.RFC3339)
 		case time.Duration:
 			return v.String()
 		case fmt.Stringer:
-			return v.String()
+			// SEC-003: user String method, same rationale as error above.
+			return SafeStringerString(v)
 		}
 	}
 
@@ -377,18 +402,7 @@ func convertStructWithDepth(val reflect.Value, depth int) any {
 			continue
 		}
 
-		fieldName := fieldType.Name
-		if tag := fieldType.Tag.Get("json"); tag != "" && tag != "-" {
-			tagName, _, found := strings.Cut(tag, ",")
-			if found && tagName != "" {
-				fieldName = tagName
-			} else if !found && tag != "" {
-				fieldName = tag
-			}
-			if fieldName == "" {
-				fieldName = fieldType.Name
-			}
-		}
+		fieldName := JSONFieldName(fieldType)
 
 		if fieldName != "" {
 			result[fieldName] = convertValueWithDepth(field.Interface(), depth+1)

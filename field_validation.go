@@ -22,10 +22,12 @@ const (
 	// the configured naming convention, but still accepts them.
 	FieldValidationWarn
 
-	// FieldValidationStrict rejects field keys that don't match the configured
-	// naming convention by returning an error from the logging method.
-	// Note: For performance reasons, validation errors are logged rather than
-	// returned from logging methods, as they don't return errors.
+	// FieldValidationStrict treats field keys that don't match the configured
+	// naming convention as errors.
+	// Note: logging methods do not return errors, so BOTH Warn and Strict only
+	// emit a diagnostic to stderr (validateFields in logger.go); Strict differs
+	// from Warn only in the wording of that diagnostic, and the offending field
+	// is still logged.
 	FieldValidationStrict
 )
 
@@ -139,11 +141,14 @@ func StrictCamelCaseConfig() *FieldValidationConfig {
 
 // ValidateFieldKey validates a field key against the configured naming convention.
 // Returns an error describing the validation failure, or nil if valid.
-// Security validation is always performed when Mode is not FieldValidationNone.
+// Security validation (Log4Shell detection, homograph attack detection,
+// overlong UTF-8 checks) runs only when BOTH Mode is not FieldValidationNone
+// AND EnableSecurityValidation is true — the flag's zero value (false) skips
+// it even in strict mode, and Mode None short-circuits before it runs.
 //
 // Returns errors:
 //   - Empty key error: when the key is an empty string
-//   - Security validation errors: Log4Shell detection, homograph attack, overlong UTF-8
+//   - Security validation errors (when enabled): Log4Shell detection, homograph attack, overlong UTF-8
 //   - Convention mismatch: when the key doesn't match the configured naming convention
 func (c *FieldValidationConfig) ValidateFieldKey(key string) error {
 	if c == nil || c.Mode == FieldValidationNone {

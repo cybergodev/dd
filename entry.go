@@ -2,6 +2,8 @@ package dd
 
 import (
 	"fmt"
+
+	"github.com/cybergodev/dd/internal"
 )
 
 // LoggerEntry represents a logger with pre-set fields.
@@ -46,7 +48,8 @@ func mergeFieldSlices(existingFields, newFields []Field) []Field {
 	newLen := len(newFields)
 
 	// SECURITY: Enforce maximum field count to prevent CPU exhaustion.
-	// Cap both slices so the merged result never exceeds maxFieldCount.
+	// Each input slice is capped at maxFieldCount, which bounds the merged
+	// result at 2×maxFieldCount and the O(n×m) linear-search work accordingly.
 	if existingLen > maxFieldCount {
 		existingFields = existingFields[:maxFieldCount]
 		existingLen = maxFieldCount
@@ -56,9 +59,10 @@ func mergeFieldSlices(existingFields, newFields []Field) []Field {
 		newLen = maxFieldCount
 	}
 
-	// For small field counts, use linear search to avoid map allocation
-	// Threshold determined by benchmarking: map allocation overhead exceeds
-	// linear search cost around 8-10 fields
+	// For small field counts, use linear search to avoid map allocation.
+	// Threshold: the linear scan must stay short on both sides, so the small
+	// path is capped at newLen <= 4 AND existingLen <= 8 (the O(n×m) work is
+	// then bounded); anything larger takes the map-based path below.
 	if newLen <= 4 && existingLen <= 8 {
 		return mergeFieldSlicesSmall(existingFields, newFields)
 	}
@@ -153,128 +157,173 @@ func (e *LoggerEntry) mergeFields(fields []Field) []Field {
 	return mergeFieldSlices(e.fields, fields)
 }
 
-// logWithDepth logs a message at the specified level with the entry's fields,
-// using an increased caller depth to correctly report the caller location.
-// This is the internal implementation that handles the extra stack frames from LoggerEntry.
-func (e *LoggerEntry) logWithDepth(level LogLevel, msg string, fields []Field) {
+// entryLogDispatch is the LoggerEntry twin of (*Logger).logDispatch: the
+// single funnel for the entry's non-structured methods (Log, the level
+// wrappers, and the Print family), which must all call it DIRECTLY so the
+// entry-dispatch caller capture keeps its fixed frame shape (see
+// internal.EntryCaller).
+func (e *LoggerEntry) entryLogDispatch(level LogLevel, args ...any) {
 	if e == nil || e.logger == nil {
 		return
 	}
-	if !e.logger.shouldLog(level) {
+	l := e.logger
+	if !l.shouldLog(level) {
 		return
 	}
 
-	// Copy original fields if hooks are registered
-	var originalFields []Field
-	if e.logger.hooks.Load() != nil && len(fields) > 0 {
-		originalFields = make([]Field, len(fields))
-		copy(originalFields, fields)
+	// Entry-dispatch caller capture (see internal.EntryCaller).
+	var caller string
+	if l.dynamicCaller {
+		caller = internal.EntryCaller(l.formatter.FullPath())
+	}
+	l.logWithLazyMessage(level, func() string {
+		return l.formatter.FormatArgsToString(args...)
+	}, e.fields, caller, entryCallerDepth)
+}
+
+// entryLogfDispatch is entryLogDispatch for the formatted-message family.
+// Same frame-shape requirement.
+func (e *LoggerEntry) entryLogfDispatch(level LogLevel, format string, args ...any) {
+	if e == nil || e.logger == nil {
+		return
+	}
+	l := e.logger
+	if !l.shouldLog(level) {
+		return
 	}
 
-	msg = e.logger.applyMessageSecurity(msg)
-	processedFields := e.logger.processFields(fields)
+	// Entry-dispatch caller capture (see internal.EntryCaller).
+	var caller string
+	if l.dynamicCaller {
+		caller = internal.EntryCaller(l.formatter.FullPath())
+	}
+	l.logWithLazyMessage(level, func() string {
+		return fmt.Sprintf(format, args...)
+	}, e.fields, caller, entryCallerDepth)
+}
 
-	e.logger.logCoreWithDepth(level, logEntry{
-		msg:            msg,
-		fields:         processedFields,
-		originalFields: originalFields,
-	}, entryCallerDepth)
+// entryLogWithDispatch is entryLogDispatch for the structured family.
+// Same frame-shape requirement.
+func (e *LoggerEntry) entryLogWithDispatch(level LogLevel, msg string, fields ...Field) {
+	if e == nil || e.logger == nil {
+		return
+	}
+	l := e.logger
+	if !l.shouldLog(level) {
+		return
+	}
+
+	// Entry-dispatch caller capture (see internal.EntryCaller).
+	var caller string
+	if l.dynamicCaller {
+		caller = internal.EntryCaller(l.formatter.FullPath())
+	}
+	l.logFiltered(level, msg, e.mergeFields(fields), caller, entryCallerDepth)
 }
 
 // Log logs a message at the specified level with the entry's fields.
-func (e *LoggerEntry) Log(level LogLevel, args ...any) {
-	if e == nil || e.logger == nil {
-		return
-	}
-	e.logWithDepth(level, e.logger.formatter.FormatArgsToString(args...), e.fields)
-}
+// The arguments are formatted only after the level gate passes (matching
+// (*Logger).Log), so user String()/Error() methods are not invoked when the
+// entry is filtered out.
+func (e *LoggerEntry) Log(level LogLevel, args ...any) { e.entryLogDispatch(level, args...) }
 
 // Logf logs a formatted message at the specified level with the entry's fields.
+// Formatting is deferred until the level gate passes (matching (*Logger).Logf),
+// so the format string is not evaluated for filtered-out entries.
 func (e *LoggerEntry) Logf(level LogLevel, format string, args ...any) {
-	if e == nil || e.logger == nil {
-		return
-	}
-	msg := fmt.Sprintf(format, args...)
-	e.logWithDepth(level, msg, e.fields)
+	e.entryLogfDispatch(level, format, args...)
 }
 
 // LogWith logs a structured message with the entry's fields plus additional fields.
 func (e *LoggerEntry) LogWith(level LogLevel, msg string, fields ...Field) {
-	if e == nil || e.logger == nil {
-		return
-	}
-	e.logWithDepth(level, msg, e.mergeFields(fields))
+	e.entryLogWithDispatch(level, msg, fields...)
 }
 
 // Convenience methods for each log level
 
 // Debug logs a message at DEBUG level with the entry's pre-set fields.
-func (e *LoggerEntry) Debug(args ...any) { e.Log(LevelDebug, args...) }
+func (e *LoggerEntry) Debug(args ...any) { e.entryLogDispatch(LevelDebug, args...) }
 
 // Info logs a message at INFO level with the entry's pre-set fields.
-func (e *LoggerEntry) Info(args ...any) { e.Log(LevelInfo, args...) }
+func (e *LoggerEntry) Info(args ...any) { e.entryLogDispatch(LevelInfo, args...) }
 
 // Warn logs a message at WARN level with the entry's pre-set fields.
-func (e *LoggerEntry) Warn(args ...any) { e.Log(LevelWarn, args...) }
+func (e *LoggerEntry) Warn(args ...any) { e.entryLogDispatch(LevelWarn, args...) }
 
 // Error logs a message at ERROR level with the entry's pre-set fields.
-func (e *LoggerEntry) Error(args ...any) { e.Log(LevelError, args...) }
+func (e *LoggerEntry) Error(args ...any) { e.entryLogDispatch(LevelError, args...) }
 
-// Fatal logs a message at FATAL level and terminates the program via os.Exit(1).
+// Fatal logs a message at FATAL level with the entry's pre-set fields and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute.
-func (e *LoggerEntry) Fatal(args ...any) { e.Log(LevelFatal, args...) }
+func (e *LoggerEntry) Fatal(args ...any) { e.entryLogDispatch(LevelFatal, args...) }
 
 // Debugf logs a formatted message at DEBUG level with the entry's pre-set fields.
-func (e *LoggerEntry) Debugf(format string, args ...any) { e.Logf(LevelDebug, format, args...) }
+func (e *LoggerEntry) Debugf(format string, args ...any) {
+	e.entryLogfDispatch(LevelDebug, format, args...)
+}
 
 // Infof logs a formatted message at INFO level with the entry's pre-set fields.
-func (e *LoggerEntry) Infof(format string, args ...any) { e.Logf(LevelInfo, format, args...) }
+func (e *LoggerEntry) Infof(format string, args ...any) {
+	e.entryLogfDispatch(LevelInfo, format, args...)
+}
 
 // Warnf logs a formatted message at WARN level with the entry's pre-set fields.
-func (e *LoggerEntry) Warnf(format string, args ...any) { e.Logf(LevelWarn, format, args...) }
+func (e *LoggerEntry) Warnf(format string, args ...any) {
+	e.entryLogfDispatch(LevelWarn, format, args...)
+}
 
 // Errorf logs a formatted message at ERROR level with the entry's pre-set fields.
-func (e *LoggerEntry) Errorf(format string, args ...any) { e.Logf(LevelError, format, args...) }
+func (e *LoggerEntry) Errorf(format string, args ...any) {
+	e.entryLogfDispatch(LevelError, format, args...)
+}
 
-// Fatalf logs a formatted message at FATAL level and terminates the program via os.Exit(1).
+// Fatalf logs a formatted message at FATAL level with the entry's pre-set fields and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute.
-func (e *LoggerEntry) Fatalf(format string, args ...any) { e.Logf(LevelFatal, format, args...) }
+func (e *LoggerEntry) Fatalf(format string, args ...any) {
+	e.entryLogfDispatch(LevelFatal, format, args...)
+}
 
 // DebugWith logs a structured message with additional fields at DEBUG level.
-func (e *LoggerEntry) DebugWith(msg string, fields ...Field) { e.LogWith(LevelDebug, msg, fields...) }
+func (e *LoggerEntry) DebugWith(msg string, fields ...Field) {
+	e.entryLogWithDispatch(LevelDebug, msg, fields...)
+}
 
 // InfoWith logs a structured message with additional fields at INFO level.
-func (e *LoggerEntry) InfoWith(msg string, fields ...Field) { e.LogWith(LevelInfo, msg, fields...) }
+func (e *LoggerEntry) InfoWith(msg string, fields ...Field) {
+	e.entryLogWithDispatch(LevelInfo, msg, fields...)
+}
 
 // WarnWith logs a structured message with additional fields at WARN level.
-func (e *LoggerEntry) WarnWith(msg string, fields ...Field) { e.LogWith(LevelWarn, msg, fields...) }
+func (e *LoggerEntry) WarnWith(msg string, fields ...Field) {
+	e.entryLogWithDispatch(LevelWarn, msg, fields...)
+}
 
 // ErrorWith logs a structured message with additional fields at ERROR level.
-func (e *LoggerEntry) ErrorWith(msg string, fields ...Field) { e.LogWith(LevelError, msg, fields...) }
+func (e *LoggerEntry) ErrorWith(msg string, fields ...Field) {
+	e.entryLogWithDispatch(LevelError, msg, fields...)
+}
 
 // FatalWith logs a structured message at FATAL level and terminates the program via os.Exit(1).
 // WARNING: defer statements will NOT execute.
-func (e *LoggerEntry) FatalWith(msg string, fields ...Field) { e.LogWith(LevelFatal, msg, fields...) }
+func (e *LoggerEntry) FatalWith(msg string, fields ...Field) {
+	e.entryLogWithDispatch(LevelFatal, msg, fields...)
+}
 
 // Print methods - output via logger's writers with caller info and entry's fields.
 // These methods use LevelInfo for filtering and apply sensitive data filtering.
 
 // Print writes to configured writers with caller info and the entry's fields.
 // Uses LevelInfo for filtering. Arguments are joined with spaces.
-func (e *LoggerEntry) Print(args ...any) {
-	e.Log(LevelInfo, args...)
-}
+func (e *LoggerEntry) Print(args ...any) { e.entryLogDispatch(LevelInfo, args...) }
 
 // Println writes to configured writers with caller info and the entry's fields.
 // Uses LevelInfo for filtering. Note: Behaves identically to Print() because Log() already adds a newline.
-func (e *LoggerEntry) Println(args ...any) {
-	e.Log(LevelInfo, args...)
-}
+func (e *LoggerEntry) Println(args ...any) { e.entryLogDispatch(LevelInfo, args...) }
 
 // Printf formats according to a format specifier and writes to configured writers
 // with caller info and the entry's fields. Uses LevelInfo for filtering.
 func (e *LoggerEntry) Printf(format string, args ...any) {
-	e.Logf(LevelInfo, format, args...)
+	e.entryLogfDispatch(LevelInfo, format, args...)
 }
 
 // Logger methods for WithFields

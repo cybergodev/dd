@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -24,15 +23,9 @@ var jsonEncoderPool = sync.Pool{
 	},
 }
 
-// jsonBuilderPool pools bytes.Buffer objects for fast JSON building.
-// Initial capacity of 1024 bytes covers most common JSON log entries.
-var jsonBuilderPool = sync.Pool{
-	New: func() any {
-		buf := &bytes.Buffer{}
-		buf.Grow(1024) // optimized for typical JSON entries
-		return buf
-	},
-}
+// (The former jsonBuilderPool is gone: the JSON fast path writes directly
+// into the caller's line buffer — see formatJSONFastInto — so there is no
+// intermediate builder buffer to pool or zero.)
 
 // pooledEncoder holds a buffer and encoder pair for reuse.
 type pooledEncoder struct {
@@ -102,66 +95,71 @@ func MergeWithDefaults(f *JSONFieldNames) *JSONFieldNames {
 // FormatJSON formats a map as JSON using a fast path for simple types
 // and falling back to encoding/json for complex types.
 func FormatJSON(entry map[string]any, opts *JSONOptions) string {
+	var buf bytes.Buffer
+	FormatJSONInto(&buf, entry, opts)
+	return buf.String()
+}
+
+// FormatJSONInto writes the JSON encoding of entry into dst, taking the same
+// fast/standard paths as FormatJSON but writing bytes straight into dst so
+// hot callers (the log formatter) avoid materializing an intermediate string
+// per entry. On the standard-path encode error dst is reset and an error
+// object is written instead.
+func FormatJSONInto(dst *bytes.Buffer, entry map[string]any, opts *JSONOptions) {
 	if opts == nil {
 		opts = &JSONOptions{PrettyPrint: false, Indent: "  "}
 	}
 
 	// Use standard encoder for pretty print
 	if opts.PrettyPrint {
-		return formatJSONStandard(entry, opts)
+		formatJSONStandardInto(dst, entry, opts)
+		return
 	}
 
 	// Try fast path for simple entries
-	if result, ok := formatJSONFast(entry); ok {
-		return result
+	if formatJSONFastInto(dst, entry) {
+		return
 	}
 
 	// Fall back to standard encoder for complex entries
-	return formatJSONStandard(entry, opts)
+	formatJSONStandardInto(dst, entry, opts)
 }
 
-// formatJSONFast attempts to build JSON without reflection.
-// Returns (json string, true) if successful, or ("", false) if fallback needed.
-// SECURITY: Clears buffer contents before returning to pool to prevent
-// sensitive data from remaining in pooled memory.
-func formatJSONFast(entry map[string]any) (string, bool) {
+// formatJSONFastInto attempts to build compact JSON without reflection,
+// writing directly into dst (which must be empty on entry).
+// Returns true on success; on a complex type it resets dst and returns false
+// so the caller can retry via the standard encoder.
+// SECURITY: Uses no pooled buffers, so there is nothing to clear on exit —
+// dst's lifecycle (including zeroing) belongs to the caller.
+func formatJSONFastInto(dst *bytes.Buffer, entry map[string]any) bool {
 	// SECURITY: Handle nil map gracefully
 	if entry == nil {
-		return "{}", true
+		dst.WriteString("{}")
+		return true
 	}
 
-	buf := jsonBuilderPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// SECURITY: Clear buffer contents before returning to pool
-	defer func() {
-		// Zero the buffer contents for security before returning to pool
-		zeroBuffer(buf)
-		jsonBuilderPool.Put(buf)
-	}()
-
-	buf.WriteByte('{')
+	dst.WriteByte('{')
 	first := true
 
 	for k, v := range entry {
 		if !first {
-			buf.WriteByte(',')
+			dst.WriteByte(',')
 		}
 		first = false
 
 		// Write key
-		writeJSONString(buf, k)
-		buf.WriteByte(':')
+		writeJSONString(dst, k)
+		dst.WriteByte(':')
 
 		// Write value - fast path for common types
-		if !writeJSONValueFast(buf, v) {
-			return "", false // Need fallback for complex type
+		if !writeJSONValueFast(dst, v) {
+			dst.Reset()  // partial line: discard before the caller's fallback
+			return false // Need fallback for complex type
 		}
 	}
 
-	buf.WriteByte('}')
-	// Return a copy of the string - the buffer will be cleared in defer
-	return buf.String(), true
+	dst.WriteByte('}')
+	return true
 }
 
 // writeJSONValueFast writes a JSON value without reflection for common types.
@@ -188,40 +186,40 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 		writeJSONString(buf, val)
 		return true
 	case int:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 		return true
 	case int64:
-		buf.WriteString(strconv.FormatInt(val, 10))
+		appendInt(buf, val)
 		return true
 	case int32:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 		return true
 	case int16:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 		return true
 	case int8:
-		buf.WriteString(strconv.FormatInt(int64(val), 10))
+		appendInt(buf, int64(val))
 		return true
 	case uint:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 		return true
 	case uint64:
-		buf.WriteString(strconv.FormatUint(val, 10))
+		appendUint(buf, val)
 		return true
 	case uint32:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 		return true
 	case uint16:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 		return true
 	case uint8:
-		buf.WriteString(strconv.FormatUint(uint64(val), 10))
+		appendUint(buf, uint64(val))
 		return true
 	case float64:
-		buf.WriteString(strconv.FormatFloat(val, 'g', -1, 64))
+		appendFloat64(buf, val)
 		return true
 	case float32:
-		buf.WriteString(strconv.FormatFloat(float64(val), 'g', -1, 32))
+		appendFloat32(buf, val)
 		return true
 	case bool:
 		if val {
@@ -274,7 +272,7 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			buf.WriteString(strconv.FormatInt(int64(n), 10))
+			appendInt(buf, int64(n))
 		}
 		buf.WriteByte(']')
 		return true
@@ -285,7 +283,7 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			buf.WriteString(strconv.FormatInt(n, 10))
+			appendInt(buf, n)
 		}
 		buf.WriteByte(']')
 		return true
@@ -296,7 +294,7 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			buf.WriteString(strconv.FormatFloat(f, 'g', -1, 64))
+			appendFloat64(buf, f)
 		}
 		buf.WriteByte(']')
 		return true
@@ -334,20 +332,21 @@ func writeJSONValueFastWithDepth(buf *bytes.Buffer, v any, depth int) bool {
 	}
 }
 
-// needsJSONEscaped reports whether s contains bytes that need JSON escaping.
+// needsJSONEscape is the combined lookup table for writeJSONString's bulk scan.
 // Characters requiring escape: 0x00-0x1F (control chars), '"', '\\', '<', '>', '&'.
-var needsJSONEscape = [256]bool{
-	'"': true, '\\': true,
-	'<': true, '>': true, '&': true,
-	'\n': true, '\r': true, '\t': true,
-}
-var needsJSONEscapeControl [256]bool
-
-func init() {
+// A single table (previously two, OR-ed per byte) halves the loads in the scan,
+// which is the path every clean string takes.
+var needsJSONEscape = func() (t [256]bool) {
 	for i := range 0x20 {
-		needsJSONEscapeControl[i] = true
+		t[i] = true
 	}
-}
+	t['"'] = true
+	t['\\'] = true
+	t['<'] = true
+	t['>'] = true
+	t['&'] = true
+	return t
+}()
 
 // writeJSONString writes a JSON-escaped string.
 // SECURITY: Also escapes HTML special characters (<, >, &) to prevent
@@ -359,7 +358,7 @@ func writeJSONString(buf *bytes.Buffer, s string) {
 	// Bulk scan first to avoid byte-by-byte switch overhead for clean strings.
 	needsEscape := false
 	for i := 0; i < len(s); i++ {
-		if needsJSONEscape[s[i]] || needsJSONEscapeControl[s[i]] {
+		if needsJSONEscape[s[i]] {
 			needsEscape = true
 			break
 		}
@@ -406,8 +405,10 @@ func writeJSONString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
 }
 
-// formatJSONStandard uses the standard library encoder.
-func formatJSONStandard(entry map[string]any, opts *JSONOptions) string {
+// formatJSONStandardInto encodes entry with the standard library encoder into
+// dst (which must be empty on entry), using a pooled encoder+buffer pair and
+// copying the encoded bytes over — no intermediate string allocation.
+func formatJSONStandardInto(dst *bytes.Buffer, entry map[string]any, opts *JSONOptions) {
 	// Use pooled encoder (includes buffer) for better performance
 	pe := jsonEncoderPool.Get().(*pooledEncoder)
 	pe.buf.Reset()
@@ -430,16 +431,16 @@ func formatJSONStandard(entry map[string]any, opts *JSONOptions) string {
 	}
 
 	if err := pe.enc.Encode(entry); err != nil {
-		return fmt.Sprintf(`{"error":"json marshal failed: %v"}`, err)
+		dst.Reset()
+		fmt.Fprintf(dst, `{"error":"json marshal failed: %v"}`, err)
+		return
 	}
 
-	// Get bytes and convert to string
 	// json.Encoder adds a trailing newline, remove it
 	data := pe.buf.Bytes()
 	if len(data) > 0 && data[len(data)-1] == '\n' {
 		data = data[:len(data)-1]
 	}
 
-	// Convert to string - this is the only allocation in the hot path
-	return string(data)
+	dst.Write(data)
 }

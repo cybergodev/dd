@@ -97,11 +97,7 @@ func (c Config) toInternalConfig() *internalConfig {
 	if c.Format == FormatJSON && c.JSON != nil {
 		ic.json = c.JSON
 	} else if c.Format == FormatJSON {
-		ic.json = &internal.JSONOptions{
-			PrettyPrint: false,
-			Indent:      defaultJSONIndent,
-			FieldNames:  internal.DefaultJSONFieldNames(),
-		}
+		ic.json = DefaultJSONOptions()
 	}
 
 	return ic
@@ -166,7 +162,15 @@ func (c Config) Validate() error {
 			return fmt.Errorf("OutputTarget with OutputCustom type has nil Writer")
 		}
 		if t.Type == OutputFile && t.Path == "" {
-			return fmt.Errorf("OutputTarget with OutputFile type has empty Path")
+			return fmt.Errorf("OutputTarget with OutputFile type: %w", ErrEmptyFilePath)
+		}
+	}
+
+	// Validate audit configuration so an invalid Audit config fails at New()
+	// instead of being silently dropped when the audit logger is created.
+	if c.Audit != nil {
+		if err := c.Audit.Validate(); err != nil {
+			return fmt.Errorf("invalid audit config: %w", err)
 		}
 	}
 

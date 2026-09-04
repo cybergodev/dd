@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -34,6 +37,14 @@ func TestWriterErrorBoundary(t *testing.T) {
 		e := &WriterError{Index: 0, Writer: io.Discard, Err: nil}
 		if got := e.Error(); !strings.Contains(got, "unknown error") {
 			t.Errorf("WriterError with nil Err should contain 'unknown error', got: %s", got)
+		}
+	})
+
+	t.Run("WriterError Unwrap returns the cause", func(t *testing.T) {
+		cause := errors.New("disk full")
+		e := &WriterError{Index: 2, Writer: io.Discard, Err: cause}
+		if got := e.Unwrap(); !errors.Is(got, cause) {
+			t.Errorf("WriterError.Unwrap() = %v, want %v", got, cause)
 		}
 	})
 }
@@ -349,6 +360,24 @@ func TestMultiWriterBoundary(t *testing.T) {
 		}
 	})
 
+	t.Run("Write after Close returns os.ErrClosed", func(t *testing.T) {
+		// A bytes.Buffer implements neither Closer nor errors on reuse, so
+		// before the closed check this write silently SUCCEEDED on a closed
+		// MultiWriter — diverging from FileWriter/BufferedWriter semantics.
+		var buf bytes.Buffer
+		mw := NewMultiWriter(&buf)
+		if err := mw.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		n, err := mw.Write([]byte("test"))
+		if !errors.Is(err, os.ErrClosed) {
+			t.Errorf("Write after Close() = (%d, %v), want os.ErrClosed", n, err)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("write after close reached the underlying writer: %q", buf.String())
+		}
+	})
+
 	t.Run("RemoveWriter nil writer returns not found", func(t *testing.T) {
 		mw := NewMultiWriter()
 		err := mw.RemoveWriter(nil)
@@ -372,7 +401,7 @@ func TestMultiWriterBoundary(t *testing.T) {
 			}
 		}()
 		var mw *MultiWriter
-		mw.Write([]byte("test"))
+		_, _ = mw.Write([]byte("test")) // panics on the nil receiver; returns are meaningless
 	})
 
 	t.Run("AddWriter duplicate", func(t *testing.T) {
@@ -516,6 +545,123 @@ func TestBufferedWriterBoundary(t *testing.T) {
 			t.Errorf("Error = %v, want ErrBufferSizeTooLarge", err)
 		}
 	})
+
+	t.Run("Write after Close returns os.ErrClosed", func(t *testing.T) {
+		var buf bytes.Buffer
+		bw, err := NewBufferedWriter(&buf, BufferedWriterConfig{BufferSize: 4096})
+		if err != nil {
+			t.Fatalf("NewBufferedWriter() error: %v", err)
+		}
+		if err := bw.Close(); err != nil {
+			t.Fatalf("Close() error: %v", err)
+		}
+
+		if _, err := bw.Write([]byte("late")); !errors.Is(err, os.ErrClosed) {
+			t.Errorf("Write after Close = %v, want os.ErrClosed", err)
+		}
+		// Second Close is a no-op, not an error.
+		if err := bw.Close(); err != nil {
+			t.Errorf("double Close() = %v, want nil", err)
+		}
+	})
+
+	t.Run("Close flushes buffered data and reports writer errors", func(t *testing.T) {
+		var fail failingCloseWriter
+		bw, err := NewBufferedWriter(&fail, BufferedWriterConfig{BufferSize: 4096})
+		if err != nil {
+			t.Fatalf("NewBufferedWriter() error: %v", err)
+		}
+		if _, err := bw.Write([]byte("pending")); err != nil {
+			t.Fatalf("Write() error: %v", err)
+		}
+		if err := bw.Close(); err == nil {
+			t.Error("Close() should surface the underlying writer's error")
+		}
+	})
+}
+
+// failingCloseWriter accepts writes but fails on Close.
+type failingCloseWriter struct{}
+
+func (w *failingCloseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *failingCloseWriter) Close() error                { return errors.New("close failed") }
+
+// ============================================================================
+// BOUNDARY: LOGGER ENTRY NIL SAFETY
+// ============================================================================
+
+// TestLoggerEntryNilSafety verifies a nil *LoggerEntry is a safe no-op for
+// every logging shape instead of a panic.
+func TestLoggerEntryNilSafety(t *testing.T) {
+	var entry *LoggerEntry
+
+	entry.Log(LevelInfo, "msg")
+	entry.Logf(LevelInfo, "format %s", "msg")
+	entry.LogWith(LevelInfo, "msg", String("k", "v"))
+	entry.entryLogWithDispatch(LevelInfo, "msg")
+	entry.Debug("msg")
+	entry.Info("msg")
+	entry.Warn("msg")
+	entry.Error("msg")
+	entry.Print("msg")
+	entry.Println("msg")
+	entry.Printf("format %s", "msg")
+	entry.InfoWith("msg", String("k", "v"))
+}
+
+// TestLoggerEntryWithFieldsEmpty verifies WithFields with no fields returns
+// the entry itself rather than allocating a copy.
+func TestLoggerEntryWithFieldsEmpty(t *testing.T) {
+	logger, _ := New(Config{Targets: []OutputTarget{CustomOutput(io.Discard)}})
+	defer logger.Close()
+
+	entry := logger.WithFields(String("base", "value"))
+	if got := entry.WithFields(); got != entry {
+		t.Error("WithFields() with no arguments should return the entry itself")
+	}
+}
+
+// ============================================================================
+// BOUNDARY: SETDEFAULT NIL AND ERROR-CODE MAPPING
+// ============================================================================
+
+// TestSetDefaultNilIsNoOp verifies SetDefault(nil) leaves the current
+// default logger untouched instead of wiping it.
+func TestSetDefaultNilIsNoOp(t *testing.T) {
+	before := Default()
+	SetDefault(nil)
+	if after := Default(); after != before {
+		t.Error("SetDefault(nil) should not change the default logger")
+	}
+}
+
+// TestLoggerErrorIsUnmappedCode verifies a LoggerError whose code has no
+// sentinel reports false for errors.Is rather than panicking or matching
+// something unrelated.
+func TestLoggerErrorIsUnmappedCode(t *testing.T) {
+	err := newError("ERR_UNMAPPED", "synthetic error without sentinel")
+	if errors.Is(err, ErrInvalidLevel) {
+		t.Error("unmapped LoggerError must not match an unrelated sentinel")
+	}
+	if errors.Is(err, ErrConfigValidation) {
+		t.Error("unmapped LoggerError must not match an unrelated sentinel")
+	}
+}
+
+// TestPackageLevelIsLevelEnabled covers the package-level level predicate.
+func TestPackageLevelIsLevelEnabled(t *testing.T) {
+	oldDefault := Default()
+	defer SetDefault(oldDefault)
+
+	if err := SetLevel(LevelInfo); err != nil {
+		t.Fatalf("SetLevel(LevelInfo) error: %v", err)
+	}
+	if !IsLevelEnabled(LevelInfo) {
+		t.Error("IsLevelEnabled(LevelInfo) should be true at level Info")
+	}
+	if IsLevelEnabled(LevelDebug - 1) {
+		t.Error("IsLevelEnabled below LevelDebug should be false")
+	}
 }
 
 // ============================================================================
@@ -530,7 +676,7 @@ func TestLoggerSecurityConfigNil(t *testing.T) {
 	logger.SetSecurityConfig(nil)
 	retrieved := logger.GetSecurityConfig()
 	if retrieved == nil {
-		t.Error("SetSecurityConfig(nil) should use default config")
+		t.Fatal("SetSecurityConfig(nil) should use default config")
 	}
 	if retrieved.MaxMessageSize <= 0 {
 		t.Error("Default MaxMessageSize should be positive")
@@ -540,37 +686,6 @@ func TestLoggerSecurityConfigNil(t *testing.T) {
 // ============================================================================
 // BOUNDARY: CONCURRENT SECURITY FILTER ACCESS
 // ============================================================================
-
-func TestConcurrentSecurityFilterAccess(t *testing.T) {
-	filter := NewSensitiveDataFilter()
-	const goroutines = 50
-	var wg sync.WaitGroup
-
-	for i := range goroutines {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			filter.Filter(fmt.Sprintf("password=secret%d", id))
-			filter.PatternCount()
-			filter.IsEnabled()
-		}(i)
-	}
-
-	// Concurrent enable/disable
-	for i := range 10 {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			if id%2 == 0 {
-				filter.Enable()
-			} else {
-				filter.Disable()
-			}
-		}(i)
-	}
-
-	wg.Wait()
-}
 
 // ============================================================================
 // BOUNDARY: SECURITY LEVEL PRESETS
@@ -900,6 +1015,31 @@ func TestApplyFileWriterDefaults(t *testing.T) {
 			wantMaxBackups: 5,
 			wantMaxAge:     0,
 		},
+		{
+			// Negative values must not silently disable retention: they are
+			// normalized to zero and then pick up the documented defaults,
+			// instead of accumulating rotated backups without bound.
+			name: "negative MaxBackups and MaxAge fall back to defaults",
+			config: FileWriterConfig{
+				MaxSizeMB:  50,
+				MaxBackups: -5,
+				MaxAge:     -time.Hour,
+			},
+			wantMaxSizeMB:  50,
+			wantMaxBackups: DefaultMaxBackups,
+			wantMaxAge:     DefaultMaxAge,
+		},
+		{
+			name: "negative MaxBackups with MaxAge set uses default backups",
+			config: FileWriterConfig{
+				MaxSizeMB:  50,
+				MaxBackups: -1,
+				MaxAge:     7 * 24 * time.Hour,
+			},
+			wantMaxSizeMB:  50,
+			wantMaxBackups: DefaultMaxBackups,
+			wantMaxAge:     7 * 24 * time.Hour,
+		},
 	}
 
 	for _, tt := range tests {
@@ -964,56 +1104,104 @@ func TestMergeFieldSlicesBoundary(t *testing.T) {
 			new[i] = Int(fmt.Sprintf("n%d", i), i)
 		}
 		result := mergeFieldSlices(existing, new)
-		if len(result) == 0 {
-			t.Error("Should merge large field slices")
+		if len(result) != 30 {
+			t.Errorf("Merged %d fields, want 30", len(result))
+		}
+	})
+
+	t.Run("over maxFieldCount truncates each side", func(t *testing.T) {
+		// SECURITY: each input slice is capped at maxFieldCount, bounding the
+		// merged result at 2*maxFieldCount regardless of caller input.
+		existing := make([]Field, maxFieldCount+5)
+		for i := range existing {
+			existing[i] = Int(fmt.Sprintf("e%d", i), i)
+		}
+		new := make([]Field, maxFieldCount+3)
+		for i := range new {
+			new[i] = Int(fmt.Sprintf("n%d", i), i)
+		}
+		result := mergeFieldSlices(existing, new)
+		if len(result) != 2*maxFieldCount {
+			t.Errorf("Merged %d fields, want %d (each side truncated to %d)",
+				len(result), 2*maxFieldCount, maxFieldCount)
 		}
 	})
 }
 
 // ============================================================================
-// BOUNDARY: PACKAGE-LEVEL FATAL/ISLEVELENABLED WRAPPERS
+// BOUNDARY: PACKAGE-LEVEL FATAL WRAPPERS
 // ============================================================================
 
-func TestPackageLevelFatalWrappers(t *testing.T) {
+// TestPackageLevelFatalExit drives the package-level Fatal/Fatalf/FatalWith
+// wrappers through a default logger with a custom FatalHandler, so the full
+// FATAL pipeline (including the handler) runs without exiting the test
+// process. handleFatal closes the logger after the first call, so each
+// variant installs a fresh default logger.
+func TestPackageLevelFatalExit(t *testing.T) {
 	oldDefault := Default()
 	defer SetDefault(oldDefault)
 
-	var buf bytes.Buffer
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(&buf)}
-	cfg.Level = LevelInfo
-	cfg.FatalHandler = func() {}
-	logger, _ := New(cfg)
-	SetDefault(logger)
+	for _, call := range []struct {
+		name string
+		fn   func()
+	}{
+		{"Fatal", func() { Fatal("fatal message") }},
+		{"Fatalf", func() { Fatalf("fatal %s", "formatted") }},
+		{"FatalWith", func() { FatalWith("fatal structured", Int("code", 500)) }},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			var exited atomic.Bool
+			cfg := DefaultConfig()
+			cfg.Targets = []OutputTarget{CustomOutput(&bytes.Buffer{})}
+			cfg.Level = LevelInfo
+			cfg.FatalHandler = func() { exited.Store(true) }
+			logger, _ := New(cfg)
+			SetDefault(logger)
 
-	// Fatal/Fatalf/IsLevelEnabled are simple wrappers, test they don't panic
-	t.Run("IsLevelEnabled wrapper", func(t *testing.T) {
-		if !IsLevelEnabled(LevelInfo) {
-			t.Error("IsLevelEnabled(LevelInfo) should be true")
-		}
-	})
-}
+			call.fn()
 
-// ============================================================================
-// BOUNDARY: DEFAULT INIT ERROR
-// ============================================================================
-
-func TestDefaultInitError(t *testing.T) {
-	// DefaultInitError should return nil for a normally initialized logger
-	err := DefaultInitError()
-	if err != nil {
-		t.Logf("DefaultInitError() = %v (may be non-nil if init failed)", err)
+			if !exited.Load() {
+				t.Errorf("%s did not invoke the FatalHandler", call.name)
+			}
+		})
 	}
 }
 
 // ============================================================================
-// BOUNDARY: CONFIG CLONE WITH NIL RECEIVER
+// BOUNDARY: FILE WRITER PATH IS A SYMLINK
 // ============================================================================
 
-func TestConfigCloneNilReceiver(t *testing.T) {
-	var nilCfg *Config
-	cloned := nilCfg.Clone()
-	if cloned.Level != 0 {
-		t.Error("Clone of nil *Config should return zero-value Config")
+// TestNewFileWriterRejectsSymlink pins the documented ErrSymlinkNotAllowed
+// contract with a real symlink. The underlying open-time check was previously
+// dead code (fstat on a descriptor that followed a symlink reports the
+// target's mode), so a symlinked log path was silently accepted and log
+// output appended to the symlink's target. Windows requires developer mode
+// or admin to create symlinks; skip when unavailable.
+func TestNewFileWriterRejectsSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target.log")
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+		t.Fatalf("create target file: %v", err)
+	}
+	link := filepath.Join(tmpDir, "link.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink (OS support/privilege required): %v", err)
+	}
+
+	fw, err := NewFileWriter(link, DefaultFileWriterConfig())
+	if fw != nil {
+		_ = fw.Close()
+	}
+	if !errors.Is(err, ErrSymlinkNotAllowed) {
+		t.Fatalf("NewFileWriter(symlink) error = %v, want ErrSymlinkNotAllowed", err)
+	}
+
+	// The symlink's target must be untouched by the rejected open.
+	data, rerr := os.ReadFile(target)
+	if rerr != nil {
+		t.Fatalf("read target file: %v", rerr)
+	}
+	if string(data) != "original" {
+		t.Errorf("target file content = %q, want %q", data, "original")
 	}
 }

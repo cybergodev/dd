@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -19,33 +20,140 @@ func TestValidateAndSecurePath(t *testing.T) {
 	tests := []struct {
 		name    string
 		path    string
+		maxLen  int
 		wantErr error
 	}{
-		{"empty path", "", errEmptyPath},
-		{"null byte", "test\x00.log", errNullByte},
-		{"simple traversal", "../secret", errPathTraversal},
-		{"nested traversal", "logs/../../../etc/passwd", errPathTraversal},
-		{"url encoded traversal", "%2e%2e%2fsecret", errPathTraversal},
-		{"double encoded", "%252e%252e%252fsecret", errPathTraversal},
-		{"backslash encoded", "%2e%2e%5csecret", errPathTraversal},
-		{"mixed encoding", "..%2fsecret", errPathTraversal},
+		{"empty path", "", 4096, errEmptyPath},
+		{"null byte", "test\x00.log", 4096, errNullByte},
+		{"simple traversal", "../secret", 4096, errPathTraversal},
+		{"nested traversal", "logs/../../../etc/passwd", 4096, errPathTraversal},
+		{"url encoded traversal", "%2e%2e%2fsecret", 4096, errPathTraversal},
+		{"double encoded", "%252e%252e%252fsecret", 4096, errPathTraversal},
+		{"backslash encoded", "%2e%2e%5csecret", 4096, errPathTraversal},
+		{"mixed encoding", "..%2fsecret", 4096, errPathTraversal},
+		{"invalid url escape", "%zzsecret", 4096, errInvalidPath},
 		// UTF-8 overlong encoding tests
-		{"overlong dot 2-byte", string([]byte{0xC0, 0xAE}), errOverlong},   // overlong '.'
-		{"overlong slash 2-byte", string([]byte{0xC0, 0xAF}), errOverlong}, // overlong '/'
-		{"overlong path with dot", "logs" + string([]byte{0xC0, 0xAE}), errOverlong},
-		{"overlong 3-byte", string([]byte{0xE0, 0x80, 0xAF}), errOverlong},       // overlong '/'
-		{"overlong 4-byte", string([]byte{0xF0, 0x80, 0x80, 0xAF}), errOverlong}, // overlong '/'
+		{"overlong dot 2-byte", string([]byte{0xC0, 0xAE}), 4096, errOverlong},   // overlong '.'
+		{"overlong slash 2-byte", string([]byte{0xC0, 0xAF}), 4096, errOverlong}, // overlong '/'
+		{"overlong path with dot", "logs" + string([]byte{0xC0, 0xAE}), 4096, errOverlong},
+		{"overlong 3-byte", string([]byte{0xE0, 0x80, 0xAF}), 4096, errOverlong},       // overlong '/'
+		{"overlong 4-byte", string([]byte{0xF0, 0x80, 0x80, 0xAF}), 4096, errOverlong}, // overlong '/'
+		// Windows Alternate Data Stream: hidden payload after a colon
+		{"ADS payload", "file.log:hidden.exe", 4096, ErrAlternateDataStream},
+		{"ADS $DATA", "file.log:$DATA", 4096, ErrAlternateDataStream},
+		// Windows reserved device names cannot be filenames
+		{"reserved name CON", "CON.log", 4096, ErrReservedName},
+		{"reserved name NUL", "logs/NUL", 4096, ErrReservedName},
+		// Length limits: raw input and the cleaned absolute path
+		{"raw path too long", strings.Repeat("a", 5000), 4096, errPathTooLong},
+		{"cleaned path too long", "logs", 10, errPathTooLong},
+		// Plain valid path must survive the whole pipeline.
+		{"valid path", "logs/app.log", 4096, nil},
+		{"valid drive letter path", `C:\logs\app.log`, 4096, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ValidateAndSecurePath(tt.path, 4096, errEmptyPath, errNullByte, errPathTooLong, errPathTraversal, errInvalidPath, errOverlong)
-			if err == nil {
-				if tt.wantErr != nil {
-					t.Errorf("ValidateAndSecurePath(%q) expected error %v, got nil", tt.path, tt.wantErr)
+			_, err := ValidateAndSecurePath(tt.path, tt.maxLen, errEmptyPath, errNullByte, errPathTooLong, errPathTraversal, errInvalidPath, errOverlong)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Errorf("ValidateAndSecurePath(%q) unexpected error: %v", tt.path, err)
 				}
-			} else if tt.wantErr != nil && !errors.Is(err, tt.wantErr) && !errors.Is(err, errInvalidPath) {
-				t.Errorf("ValidateAndSecurePath(%q) expected error %v, got %v", tt.path, tt.wantErr, err)
+				return
+			}
+			// Each row pins its exact sentinel — no generic-error escape hatch,
+			// so a check that silently degrades to errInvalidPath fails here.
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("ValidateAndSecurePath(%q) error = %v, want %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateNoADS pins the colon disambiguation: drive letters, MSYS-style
+// drive paths, and URL schemes are legitimate; everything else with a colon
+// is treated as an Alternate Data Stream.
+func TestValidateNoADS(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"no colon", "logs/app.log", false},
+		{"windows drive", `C:\logs\app.log`, false},
+		{"windows drive forward slash", "C:/logs/app.log", false},
+		{"msys drive path", "/c:/logs/app.log", false},
+		{"url scheme", "http://example.com/log", false},
+		{"ADS after extension", "app.log:hidden.exe", true},
+		{"ADS $DATA", "app.log:$DATA", true},
+		{"drive-relative colon still flagged", "C:logs", true},
+		// A colon at position 0 is NOT treated as ADS (colonIdx <= 0 guard);
+		// pinned here so a tightening of that guard is a conscious change.
+		{"leading colon currently allowed", ":stream", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateNoADS(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateNoADS(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+			if tt.wantErr && !errors.Is(err, ErrAlternateDataStream) {
+				t.Errorf("validateNoADS(%q) error = %v, want %v", tt.path, err, ErrAlternateDataStream)
+			}
+		})
+	}
+}
+
+// TestValidateWindowsReservedName pins the reserved-device-name check,
+// including extension stripping (CON.log is CON).
+func TestValidateWindowsReservedName(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"regular name", "app.log", false},
+		{"reserved CON", "CON", true},
+		{"reserved con lowercase", "con.log", true},
+		{"reserved COM1", "logs/COM1.log", true},
+		{"reserved LPT1", "LPT1", true},
+		{"reserved-like but longer", "CONSOLE.log", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWindowsReservedName(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateWindowsReservedName(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateTimeFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		format  string
+		wantErr bool
+	}{
+		// Empty is valid (the caller falls back to the default format).
+		{"empty", "", false},
+		// Standard layouts round-trip cleanly through Format/Parse.
+		{"RFC3339", time.RFC3339, false},
+		{"Kitchen", time.Kitchen, false},
+		{"DateOnly", "2006-01-02", false},
+		// "1_2" cannot round-trip: Format renders month+day with no separator
+		// ("616" for June 16) and Parse then reads a two-digit month (61),
+		// which is out of range. This is exactly the malformed-format case
+		// ValidateTimeFormat exists to reject.
+		{"non-roundtripping", "1_2", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTimeFormat(tt.format)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateTimeFormat(%q) error = %v, wantErr %v", tt.format, err, tt.wantErr)
 			}
 		})
 	}

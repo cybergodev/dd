@@ -48,113 +48,177 @@ func TestOpenFile(t *testing.T) {
 	}
 }
 
-func TestOpenFileRejectsHardlink(t *testing.T) {
-	tmpDir := t.TempDir()
-	originalFile := filepath.Join(tmpDir, "original.log")
-	hardlinkFile := filepath.Join(tmpDir, "hardlink.log")
-
-	// Create the original file
-	err := os.WriteFile(originalFile, []byte("test data"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create original file: %v", err)
-	}
-
-	// Create a hard link to the original file
-	err = os.Link(originalFile, hardlinkFile)
-	if err != nil {
-		// On some systems (like Windows without admin rights), hard links may not be supported
-		// Skip the test in this case
-		t.Skipf("Cannot create hard link (may not be supported on this system): %v", err)
-	}
-
-	// Attempt to open the hardlinked file - should be rejected
-	file, _, err := OpenFile(hardlinkFile, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
+func TestOpenFileMissingDirectory(t *testing.T) {
+	// Opening a path in a non-existent directory must fail cleanly rather
+	// than creating the directory.
+	path := filepath.Join(t.TempDir(), "missing", "test.log")
+	file, _, err := OpenFile(path, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if file != nil {
 		file.Close()
 	}
 	if err == nil {
-		t.Error("OpenFile() should reject hardlinked files")
-	}
-	// The error should mention hardlinks
-	if err != nil && !containsString(err.Error(), "hardlink") {
-		t.Errorf("OpenFile() error should mention 'hardlink', got: %v", err)
+		t.Error("OpenFile() should fail for a path in a missing directory")
 	}
 }
 
-func TestIsHardlink(t *testing.T) {
+// TestSymlinkDetection pins symlink rejection of both secure open paths with
+// REAL symlinks. The historical ModeSymlink-on-file.Stat() check could never
+// fire (fstat on a descriptor that followed a symlink reports the target's
+// regular-file mode), so both scenarios below previously opened — and for the
+// dangling case, created — the attacker's target. Creating symlinks requires
+// OS support and privilege (Windows needs developer mode or admin), so each
+// subtest skips when os.Symlink fails.
+func TestSymlinkDetection(t *testing.T) {
 	tmpDir := t.TempDir()
-	testFile := filepath.Join(tmpDir, "test.log")
+	targetFile := filepath.Join(tmpDir, "target.log")
+	if err := os.WriteFile(targetFile, []byte("target data"), 0o644); err != nil {
+		t.Fatalf("create target file: %v", err)
+	}
+	missingTarget := filepath.Join(tmpDir, "does-not-exist.log")
 
-	// Create a normal file
-	err := os.WriteFile(testFile, []byte("test data"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
+	openers := []struct {
+		name string
+		open func(path string) (*os.File, int64, error)
+	}{
+		{"OpenFile", func(p string) (*os.File, int64, error) {
+			return OpenFile(p, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
+		}},
+		{"OpenFileExclusive", func(p string) (*os.File, int64, error) {
+			return OpenFileExclusive(p, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
+		}},
 	}
 
-	// Open the file
-	file, err := os.Open(testFile)
-	if err != nil {
-		t.Fatalf("Failed to open file: %v", err)
+	scenarios := []struct {
+		name   string
+		target string
+	}{
+		{"existing target", targetFile},
+		{"dangling target", missingTarget},
 	}
-	defer file.Close()
 
-	// A normal file should not be detected as a hardlink
-	isHardlinked, err := isHardlink(file)
+	for _, opener := range openers {
+		for _, scenario := range scenarios {
+			t.Run(opener.name+" "+scenario.name, func(t *testing.T) {
+				linkPath := filepath.Join(tmpDir,
+					"link_"+opener.name+"_"+scenario.name+".log")
+				if err := os.Symlink(scenario.target, linkPath); err != nil {
+					t.Skipf("cannot create symlink (OS support/privilege required): %v", err)
+				}
+
+				file, _, err := opener.open(linkPath)
+				if file != nil {
+					file.Close()
+				}
+				if !errors.Is(err, testErrSymlinkNotAllowed) {
+					t.Fatalf("%s(symlink) error = %v, want testErrSymlinkNotAllowed", opener.name, err)
+				}
+
+				// The dangling case must not create the symlink's target as a
+				// side effect of the (rejected) open attempt.
+				if _, serr := os.Lstat(missingTarget); scenario.target == missingTarget && serr == nil {
+					t.Error("open through dangling symlink created the target file")
+				}
+			})
+		}
+	}
+
+	// The existing-target scenario must also leave the target's content
+	// untouched (rejection happens before any write).
+	data, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("read target file: %v", err)
+	}
+	if string(data) != "target data" {
+		t.Errorf("target file content = %q, want %q", data, "target data")
+	}
+}
+
+// TestHardlinkDetection consolidates the hardlink scenarios: a normal file
+// opens cleanly through both secure open paths, a hardlinked file is
+// rejected by both, and the underlying isHardlink check agrees. Creating
+// hard links requires OS support (not always available on Windows), so the
+// hardlink half is skipped when os.Link fails.
+func TestHardlinkDetection(t *testing.T) {
+	tmpDir := t.TempDir()
+	originalFile := filepath.Join(tmpDir, "original.log")
+	if err := os.WriteFile(originalFile, []byte("test data"), 0o644); err != nil {
+		t.Fatalf("create original file: %v", err)
+	}
+
+	openers := []struct {
+		name string
+		open func(path string) (*os.File, int64, error)
+	}{
+		{"OpenFile", func(p string) (*os.File, int64, error) {
+			return OpenFile(p, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
+		}},
+		{"OpenFileExclusive", func(p string) (*os.File, int64, error) {
+			return OpenFileExclusive(p, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
+		}},
+	}
+
+	for _, opener := range openers {
+		t.Run(opener.name+" normal file", func(t *testing.T) {
+			normalFile := filepath.Join(tmpDir, "normal_"+opener.name+".log")
+			if err := os.WriteFile(normalFile, []byte("12345"), 0o644); err != nil {
+				t.Fatalf("create normal file: %v", err)
+			}
+
+			file, size, err := opener.open(normalFile)
+			if err != nil {
+				t.Fatalf("open normal file: %v", err)
+			}
+			file.Close()
+			if size != 5 {
+				t.Errorf("normal file size = %d, want 5", size)
+			}
+		})
+	}
+
+	// Unit level: a normal file must NOT be flagged.
+	normalHandle, err := os.Open(originalFile)
+	if err != nil {
+		t.Fatalf("open original file: %v", err)
+	}
+	isHardlinked, err := isHardlink(normalHandle)
+	normalHandle.Close()
 	if err != nil {
 		t.Fatalf("isHardlink() error = %v", err)
 	}
 	if isHardlinked {
 		t.Error("Normal file should not be detected as hardlinked")
 	}
-}
 
-func TestIsHardlinkWithHardlink(t *testing.T) {
-	tmpDir := t.TempDir()
-	originalFile := filepath.Join(tmpDir, "original.log")
 	hardlinkFile := filepath.Join(tmpDir, "hardlink.log")
-
-	// Create the original file
-	err := os.WriteFile(originalFile, []byte("test data"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create original file: %v", err)
+	if err := os.Link(originalFile, hardlinkFile); err != nil {
+		t.Skipf("cannot create hard link (not supported on this system): %v", err)
 	}
 
-	// Create a hard link
-	err = os.Link(originalFile, hardlinkFile)
+	// Unit level: Nlink > 1 is detected.
+	linkHandle, err := os.Open(hardlinkFile)
 	if err != nil {
-		t.Skipf("Cannot create hard link: %v", err)
+		t.Fatalf("open hardlinked file: %v", err)
 	}
-
-	// Open the hardlinked file
-	file, err := os.Open(hardlinkFile)
-	if err != nil {
-		t.Fatalf("Failed to open hardlinked file: %v", err)
-	}
-	defer file.Close()
-
-	// A hardlinked file should be detected
-	isHardlinked, err := isHardlink(file)
+	defer linkHandle.Close()
+	isHardlinked, err = isHardlink(linkHandle)
 	if err != nil {
 		t.Fatalf("isHardlink() error = %v", err)
 	}
 	if !isHardlinked {
 		t.Error("Hardlinked file should be detected as having multiple links")
 	}
-}
 
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	for _, opener := range openers {
+		t.Run(opener.name+" rejects hardlink", func(t *testing.T) {
+			file, _, err := opener.open(hardlinkFile)
+			if file != nil {
+				file.Close()
+			}
+			if !errors.Is(err, testErrHardlinkNotAllowed) {
+				t.Errorf("open hardlinked file error = %v, want %v", err, testErrHardlinkNotAllowed)
+			}
+		})
 	}
-	return false
 }
 
 func TestNeedsRotation(t *testing.T) {
@@ -260,70 +324,84 @@ func TestGetBackupPath(t *testing.T) {
 	}
 }
 
-func TestRotateBackups(t *testing.T) {
+// TestOpenFileExclusive covers the rotation-reopen path: a fresh path is
+// created exclusively (O_EXCL, size 0), while a pre-existing path falls back
+// to OpenFile and reports the existing size.
+func TestOpenFileExclusive(t *testing.T) {
 	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
+	fresh := filepath.Join(tmpDir, "fresh.log")
 
-	// Create some backup files with new naming scheme
-	backup1 := GetBackupPath(basePath, 1, false)
-	backup2 := GetBackupPath(basePath, 2, false)
-
-	// Create files
-	err := os.WriteFile(backup1, []byte("backup1"), 0644)
+	// Fresh path: exclusive create succeeds, reports a new (size-0) file.
+	file, size, err := OpenFileExclusive(fresh, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if err != nil {
-		t.Fatalf("Failed to create backup1: %v", err)
+		t.Fatalf("OpenFileExclusive(fresh) error = %v", err)
 	}
+	if size != 0 {
+		t.Errorf("fresh file size = %d, want 0", size)
+	}
+	if _, err := file.Write([]byte("payload")); err != nil {
+		t.Fatalf("write error = %v", err)
+	}
+	file.Close()
 
-	err = os.WriteFile(backup2, []byte("backup2"), 0644)
+	// Pre-existing file: O_EXCL fails, falls back to OpenFile, which reports
+	// the existing size.
+	file2, size2, err := OpenFileExclusive(fresh, testErrSymlinkNotAllowed, testErrHardlinkNotAllowed)
 	if err != nil {
-		t.Fatalf("Failed to create backup2: %v", err)
+		t.Fatalf("OpenFileExclusive(existing) error = %v", err)
+	}
+	file2.Close()
+	if size2 != 7 {
+		t.Errorf("existing file size = %d, want 7", size2)
+	}
+}
+
+// TestRotateBackupsCleanup consolidates the excess-backup scenarios: when
+// backups exceed maxBackups the oldest are removed and the newest are kept;
+// at or under the limit nothing is removed; maxBackups=0 disables cleanup
+// entirely.
+func TestRotateBackupsCleanup(t *testing.T) {
+	tests := []struct {
+		name        string
+		createCount int // backups to create before rotating
+		maxBackups  int // limit passed to RotateBackups (0 = unlimited)
+		compress    bool
+		wantDeleted int // number of oldest backups that must be gone; the rest must remain
+	}{
+		{"under limit keeps all", 2, 5, false, 0},
+		{"over limit removes oldest", 5, 3, false, 2},
+		{"compressed over limit removes oldest", 7, 3, true, 4},
+		{"shrunk limit prunes backlog", 10, 5, true, 5},
+		{"zero means unlimited", 3, 0, false, 0},
 	}
 
-	// Rotate with max 3 backups (should not remove anything yet)
-	RotateBackups(basePath, 3, false)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			basePath := filepath.Join(tmpDir, "test.log")
 
-	// Check that existing files still exist
-	if _, err := os.Stat(backup1); err != nil {
-		t.Errorf("backup1 should still exist")
-	}
+			for i := 1; i <= tt.createCount; i++ {
+				backupPath := GetBackupPath(basePath, i, tt.compress)
+				if err := os.WriteFile(backupPath, []byte("backup"), 0o644); err != nil {
+					t.Fatalf("create backup %d: %v", i, err)
+				}
+			}
 
-	if _, err := os.Stat(backup2); err != nil {
-		t.Errorf("backup2 should still exist")
-	}
+			RotateBackups(basePath, tt.maxBackups, tt.compress)
 
-	// Create more backups to exceed maxBackups
-	backup3 := GetBackupPath(basePath, 3, false)
-	backup4 := GetBackupPath(basePath, 4, false)
-
-	err = os.WriteFile(backup3, []byte("backup3"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create backup3: %v", err)
-	}
-
-	err = os.WriteFile(backup4, []byte("backup4"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create backup4: %v", err)
-	}
-
-	// Rotate with max 3 backups (should remove oldest)
-	RotateBackups(basePath, 3, false)
-
-	// Check that oldest backup was removed
-	if _, err := os.Stat(backup1); !os.IsNotExist(err) {
-		t.Errorf("backup1 should be removed (oldest)")
-	}
-
-	// Check that newer backups still exist
-	if _, err := os.Stat(backup2); err != nil {
-		t.Errorf("backup2 should still exist")
-	}
-
-	if _, err := os.Stat(backup3); err != nil {
-		t.Errorf("backup3 should still exist")
-	}
-
-	if _, err := os.Stat(backup4); err != nil {
-		t.Errorf("backup4 should still exist")
+			for i := 1; i <= tt.wantDeleted; i++ {
+				backupPath := GetBackupPath(basePath, i, tt.compress)
+				if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+					t.Errorf("backup %d should be deleted (oldest, beyond maxBackups)", i)
+				}
+			}
+			for i := tt.wantDeleted + 1; i <= tt.createCount; i++ {
+				backupPath := GetBackupPath(basePath, i, tt.compress)
+				if _, err := os.Stat(backupPath); err != nil {
+					t.Errorf("backup %d should exist after rotation", i)
+				}
+			}
+		})
 	}
 }
 
@@ -439,21 +517,25 @@ func TestCleanupOldFilesZeroAge(t *testing.T) {
 	tmpDir := t.TempDir()
 	basePath := filepath.Join(tmpDir, "test.log")
 
-	// Create a file
-	testFile := basePath + ".1"
-	err := os.WriteFile(testFile, []byte("test"), 0644)
-	if err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
+	// A genuinely old backup that WOULD match the cleanup glob: maxAge <= 0
+	// disables age-based cleanup entirely, so even this file must survive.
+	// (The previous version created "test.log.1", which never matches the
+	// backup naming scheme and could not fail under any maxAge behavior.)
+	backup := GetBackupPath(basePath, 1, false)
+	if err := os.WriteFile(backup, []byte("test"), 0o644); err != nil {
+		t.Fatalf("Failed to create backup file: %v", err)
+	}
+	oldTime := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(backup, oldTime, oldTime); err != nil {
+		t.Fatalf("Failed to age backup file: %v", err)
 	}
 
-	// Cleanup with zero age (should not remove anything)
 	if err := CleanupOldFiles(basePath, 0); err != nil {
 		t.Fatalf("CleanupOldFiles failed: %v", err)
 	}
 
-	// File should still exist
-	if _, err := os.Stat(testFile); err != nil {
-		t.Error("File should not be removed with zero maxAge")
+	if _, err := os.Stat(backup); err != nil {
+		t.Error("Old backup should survive when maxAge=0 (cleanup disabled)")
 	}
 }
 
@@ -484,7 +566,7 @@ func TestFindNextBackupIndex(t *testing.T) {
 	basePath := filepath.Join(tmpDir, "test.log")
 
 	// Test with no existing backups
-	index := FindNextBackupIndex(basePath, false)
+	index := FindNextBackupIndex(basePath)
 	if index != 1 {
 		t.Errorf("FindNextBackupIndex() with no backups = %d, want 1", index)
 	}
@@ -510,173 +592,56 @@ func TestFindNextBackupIndex(t *testing.T) {
 	}
 
 	// Test with existing backups (should return 6, next after highest)
-	index = FindNextBackupIndex(basePath, false)
+	index = FindNextBackupIndex(basePath)
 	if index != 6 {
 		t.Errorf("FindNextBackupIndex() with backups 1,2,5 = %d, want 6", index)
 	}
 
-	// Test with compressed files
+	// A settled .gz backup alongside the uncompressed ones must not lower the
+	// answer: the uncompressed pattern also matches ".gz" names, so index 5
+	// stays the highest live index (never reuse a live index).
 	backup1gz := GetBackupPath(basePath, 1, true)
 	err = os.WriteFile(backup1gz, []byte("backup1gz"), 0644)
 	if err != nil {
 		t.Fatalf("Failed to create backup1gz: %v", err)
 	}
 
-	index = FindNextBackupIndex(basePath, true)
-	if index != 2 {
+	index = FindNextBackupIndex(basePath)
+	if index != 6 {
+		t.Errorf("FindNextBackupIndex() with mixed .log and .gz backups = %d, want 6", index)
+	}
+
+	// Compressed-only directory: .gz backups alone are also counted.
+	tmpDir2 := t.TempDir()
+	basePath2 := filepath.Join(tmpDir2, "test.log")
+	onlyGz := GetBackupPath(basePath2, 1, true)
+	if err := os.WriteFile(onlyGz, []byte("backup1gz"), 0644); err != nil {
+		t.Fatalf("Failed to create onlyGz: %v", err)
+	}
+
+	if index = FindNextBackupIndex(basePath2); index != 2 {
 		t.Errorf("FindNextBackupIndex() with compressed backup 1 = %d, want 2", index)
 	}
-}
 
-// ============================================================================
-// ROTATION CLEANUP TESTS (Consolidated from rotation_cleanup_test.go)
-// ============================================================================
-
-func TestRotateBackupsCleanupExcess(t *testing.T) {
-	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
-
-	// Create 5 backup files
-	for i := 1; i <= 5; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		err := os.WriteFile(backupPath, []byte("backup"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create backup file %d: %v", i, err)
+	// Regression for the compress-mode index-reuse race: settled .gz backups
+	// (1, 2) plus an IN-FLIGHT uncompressed backup (3, still being compressed).
+	// Scanning with the .gz pattern alone returned 3, so the next rotation
+	// renamed onto test_log_3.log — clobbering the file the compression
+	// goroutine was about to read. The highest live index must win.
+	tmpDir3 := t.TempDir()
+	basePath3 := filepath.Join(tmpDir3, "test.log")
+	for _, i := range []int{1, 2} {
+		gz := GetBackupPath(basePath3, i, true)
+		if err := os.WriteFile(gz, []byte("gz"), 0644); err != nil {
+			t.Fatalf("Failed to create gz backup %d: %v", i, err)
 		}
 	}
-
-	// Rotate with maxBackups=3 (should remove oldest 2 files)
-	RotateBackups(basePath, 3, false)
-
-	// Files 1 and 2 should be deleted (oldest)
-	for i := 1; i <= 2; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-			t.Errorf("Backup file %d should be deleted (oldest, beyond maxBackups)", i)
-		}
+	inFlight := GetBackupPath(basePath3, 3, false)
+	if err := os.WriteFile(inFlight, []byte("in-flight"), 0644); err != nil {
+		t.Fatalf("Failed to create in-flight backup: %v", err)
 	}
 
-	// Files 3, 4, and 5 should still exist (newest 3)
-	for i := 3; i <= 5; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		if _, err := os.Stat(backupPath); err != nil {
-			t.Errorf("Backup file %d should exist after rotation", i)
-		}
-	}
-}
-
-func TestRotateBackupsCleanupExcessCompressed(t *testing.T) {
-	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
-
-	// Create 7 compressed backup files
-	for i := 1; i <= 7; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		err := os.WriteFile(backupPath, []byte("backup"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create backup file %d: %v", i, err)
-		}
-	}
-
-	// Rotate with maxBackups=3 (should keep newest 3)
-	RotateBackups(basePath, 3, true)
-
-	// Files 1-4 should be deleted (oldest)
-	for i := 1; i <= 4; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-			t.Errorf("Compressed backup file %d should be deleted (oldest, beyond maxBackups)", i)
-		}
-	}
-
-	// Files 5, 6, and 7 should exist (newest 3)
-	for i := 5; i <= 7; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		if _, err := os.Stat(backupPath); err != nil {
-			t.Errorf("Compressed backup file %d should exist after rotation", i)
-		}
-	}
-}
-
-func TestRotateBackupsReducedMaxBackups(t *testing.T) {
-	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
-
-	// Simulate previous run with maxBackups=10
-	for i := 1; i <= 10; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		err := os.WriteFile(backupPath, []byte("backup"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create backup file %d: %v", i, err)
-		}
-	}
-
-	// Now rotate with reduced maxBackups=5 (should keep newest 5)
-	RotateBackups(basePath, 5, true)
-
-	// Files 1-5 should be deleted (oldest)
-	for i := 1; i <= 5; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
-			t.Errorf("Backup file %d should be deleted after reducing maxBackups (oldest)", i)
-		}
-	}
-
-	// Files 6-10 should exist (newest 5)
-	for i := 6; i <= 10; i++ {
-		backupPath := GetBackupPath(basePath, i, true)
-		if _, err := os.Stat(backupPath); err != nil {
-			t.Errorf("Backup file %d should exist after rotation", i)
-		}
-	}
-}
-
-func TestRotateBackupsNoExcessFiles(t *testing.T) {
-	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
-
-	// Create only 2 backup files (less than maxBackups)
-	for i := 1; i <= 2; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		err := os.WriteFile(backupPath, []byte("backup"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create backup file %d: %v", i, err)
-		}
-	}
-
-	// Rotate with maxBackups=5 (no cleanup needed)
-	RotateBackups(basePath, 5, false)
-
-	// Both files should still exist (no cleanup needed)
-	for i := 1; i <= 2; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		if _, err := os.Stat(backupPath); err != nil {
-			t.Errorf("Backup file %d should exist after rotation", i)
-		}
-	}
-}
-
-func TestRotateBackupsMaxBackupsZero(t *testing.T) {
-	tmpDir := t.TempDir()
-	basePath := filepath.Join(tmpDir, "test.log")
-
-	// Create some backup files
-	for i := 1; i <= 3; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		err := os.WriteFile(backupPath, []byte("backup"), 0644)
-		if err != nil {
-			t.Fatalf("Failed to create backup file %d: %v", i, err)
-		}
-	}
-
-	// Rotate with maxBackups=0 (unlimited)
-	RotateBackups(basePath, 0, false)
-
-	// All files should still exist (no cleanup when maxBackups=0)
-	for i := 1; i <= 3; i++ {
-		backupPath := GetBackupPath(basePath, i, false)
-		if _, err := os.Stat(backupPath); err != nil {
-			t.Errorf("Backup file %d should still exist with maxBackups=0", i)
-		}
+	if index = FindNextBackupIndex(basePath3); index != 4 {
+		t.Errorf("FindNextBackupIndex() with in-flight uncompressed backup = %d, want 4", index)
 	}
 }

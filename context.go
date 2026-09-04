@@ -23,25 +23,28 @@ import (
 type ContextKey string
 
 const (
-	// ContextKeyTraceID is the context key for trace ID.
-	// This key is used by default context extractors to retrieve
-	// the trace ID from context.
+	// ContextKeyTraceID is the context key for trace ID, used with the
+	// WithTraceID/GetTraceID helpers below.
 	ContextKeyTraceID ContextKey = "trace_id"
 
-	// ContextKeySpanID is the context key for span ID.
-	// This key is used by default context extractors to retrieve
-	// the span ID from context.
+	// ContextKeySpanID is the context key for span ID, used with the
+	// WithSpanID/GetSpanID helpers below.
 	ContextKeySpanID ContextKey = "span_id"
 
-	// ContextKeyRequestID is the context key for request ID.
-	// This key is used by default context extractors to retrieve
-	// the request ID from context.
+	// ContextKeyRequestID is the context key for request ID, used with the
+	// WithRequestID/GetRequestID helpers below.
 	ContextKeyRequestID ContextKey = "request_id"
 )
 
+// IMPORTANT: dd's log methods do not accept a context.Context, and configured
+// ContextExtractors are invoked with context.Background() (they cannot see the
+// caller's request context). Values stored by With* are therefore storage
+// helpers for YOUR OWN retrieval — pass them as fields at the call site, as
+// the examples below do. See also the Context Integration section in doc.go.
+
 // WithTraceID adds a trace ID to the context.
-// This is the type-safe way to store trace IDs that will be
-// automatically extracted by the logger's context extractors.
+// This is the type-safe way to store trace IDs for later retrieval with
+// GetTraceID (see the note above: nothing is extracted automatically).
 //
 // Example:
 //
@@ -52,8 +55,8 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 }
 
 // WithSpanID adds a span ID to the context.
-// This is the type-safe way to store span IDs that will be
-// automatically extracted by the logger's context extractors.
+// This is the type-safe way to store span IDs for later retrieval with
+// GetSpanID (see the note above: nothing is extracted automatically).
 //
 // Example:
 //
@@ -64,8 +67,8 @@ func WithSpanID(ctx context.Context, spanID string) context.Context {
 }
 
 // WithRequestID adds a request ID to the context.
-// This is the type-safe way to store request IDs that will be
-// automatically extracted by the logger's context extractors.
+// This is the type-safe way to store request IDs for later retrieval with
+// GetRequestID (see the note above: nothing is extracted automatically).
 //
 // Example:
 //
@@ -78,6 +81,11 @@ func WithRequestID(ctx context.Context, requestID string) context.Context {
 // getContextString retrieves a string value from context by key.
 // This is an internal helper to reduce code duplication in getter functions.
 func getContextString(ctx context.Context, key ContextKey) string {
+	if ctx == nil {
+		// Match the registry's Extract/HookRegistry.Trigger nil tolerance:
+		// ctx.Value on a nil interface would panic.
+		return ""
+	}
 	if v := ctx.Value(key); v != nil {
 		if s, ok := v.(string); ok {
 			return s

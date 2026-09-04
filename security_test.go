@@ -1,6 +1,7 @@
 package dd
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -310,89 +311,87 @@ func TestNilFilterClone(t *testing.T) {
 // REDOS PROTECTION TESTS
 // ============================================================================
 
-func TestFilterValueRecursiveCircularReference(t *testing.T) {
+// TestFilterValueRecursiveCircularReferences consolidates the three
+// per-container-kind circular-reference tests: every cycle must terminate
+// and be marked [CIRCULAR_REFERENCE] at the point it closes.
+func TestFilterValueRecursiveCircularReferences(t *testing.T) {
 	filter := NewSensitiveDataFilter()
 
-	type Node struct {
+	type node struct {
 		Value int
-		Next  *Node
+		Next  *node
+	}
+	type container struct {
+		Items []*container
 	}
 
-	a := &Node{Value: 1}
-	b := &Node{Value: 2}
-	a.Next = b
-	b.Next = a // Circular reference
-
-	// Should not panic or hang
-	result := filter.FilterValueRecursive("", a)
-	if result == nil {
-		t.Error("Should handle circular reference without returning nil")
+	cases := []struct {
+		name  string
+		build func() any
+		mark  func(t *testing.T, result any)
+	}{
+		{
+			name: "struct chain",
+			build: func() any {
+				a := &node{Value: 1}
+				b := &node{Value: 2}
+				a.Next = b
+				b.Next = a
+				return a
+			},
+			mark: func(t *testing.T, result any) {
+				next := result.(map[string]any)["Next"].(map[string]any)
+				if next["Next"] != "[CIRCULAR_REFERENCE]" {
+					t.Errorf("Next.Next = %v, want [CIRCULAR_REFERENCE]", next["Next"])
+				}
+			},
+		},
+		{
+			name: "slice container",
+			build: func() any {
+				a := &container{}
+				b := &container{}
+				a.Items = []*container{b}
+				b.Items = []*container{a}
+				return a
+			},
+			mark: func(t *testing.T, result any) {
+				items := result.(map[string]any)["Items"].([]any)
+				first := items[0].(map[string]any)
+				// The marker sits inside the (converted) slice field.
+				inner, ok := first["Items"].([]any)
+				if !ok || len(inner) != 1 || inner[0] != "[CIRCULAR_REFERENCE]" {
+					t.Errorf("Items[0].Items = %v, want [CIRCULAR_REFERENCE]", first["Items"])
+				}
+			},
+		},
+		{
+			name: "map reference",
+			build: func() any {
+				mapA := make(map[string]any)
+				mapB := make(map[string]any)
+				mapA["ref"] = mapB
+				mapB["ref"] = mapA
+				return mapA
+			},
+			mark: func(t *testing.T, result any) {
+				ref := result.(map[string]any)["ref"].(map[string]any)
+				if ref["ref"] != "[CIRCULAR_REFERENCE]" {
+					t.Errorf("ref.ref = %v, want [CIRCULAR_REFERENCE]", ref["ref"])
+				}
+			},
+		},
 	}
 
-	// Check that circular reference is detected
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got %T", result)
-	}
-
-	next, ok := resultMap["Next"].(map[string]any)
-	if !ok {
-		t.Fatalf("Expected Next to be a map, got %T", resultMap["Next"])
-	}
-
-	// The circular reference should be marked
-	if next["Next"] != "[CIRCULAR_REFERENCE]" {
-		t.Errorf("Expected [CIRCULAR_REFERENCE], got %v", next["Next"])
-	}
-}
-
-func TestFilterValueRecursiveSliceCircularReference(t *testing.T) {
-	filter := NewSensitiveDataFilter()
-
-	type Container struct {
-		Items []*Container
-	}
-
-	a := &Container{}
-	b := &Container{}
-	a.Items = []*Container{b}
-	b.Items = []*Container{a} // Circular reference
-
-	// Should not panic or hang
-	result := filter.FilterValueRecursive("", a)
-	if result == nil {
-		t.Error("Should handle circular reference without returning nil")
-	}
-}
-
-func TestFilterValueRecursiveMapCircularReference(t *testing.T) {
-	filter := NewSensitiveDataFilter()
-
-	// Create maps with circular references
-	mapA := make(map[string]any)
-	mapB := make(map[string]any)
-	mapA["ref"] = mapB
-	mapB["ref"] = mapA // Circular reference
-
-	// Should not panic or hang
-	result := filter.FilterValueRecursive("", mapA)
-	if result == nil {
-		t.Error("Should handle circular reference without returning nil")
-	}
-
-	resultMap, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("Expected map result, got %T", result)
-	}
-
-	ref, ok := resultMap["ref"].(map[string]any)
-	if !ok {
-		t.Fatalf("Expected ref to be a map, got %T", resultMap["ref"])
-	}
-
-	// The circular reference should be marked
-	if ref["ref"] != "[CIRCULAR_REFERENCE]" {
-		t.Errorf("Expected [CIRCULAR_REFERENCE], got %v", ref["ref"])
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Must not panic or hang on the cycle.
+			result := filter.FilterValueRecursive("", tc.build())
+			if result == nil {
+				t.Fatal("FilterValueRecursive(cyclic) = nil, want a marked structure")
+			}
+			tc.mark(t, result)
+		})
 	}
 }
 
@@ -588,16 +587,28 @@ func TestConcurrentFilterAccess(t *testing.T) {
 		}(i)
 	}
 
-	// Concurrent pattern count
+	// Concurrent introspection and toggling
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
-		go func() {
+		go func(id int) {
 			defer wg.Done()
 			_ = filter.PatternCount()
-		}()
+			_ = filter.IsEnabled()
+			if id%2 == 0 {
+				filter.Enable()
+			} else {
+				filter.Disable()
+			}
+		}(i)
 	}
 
 	wg.Wait()
+
+	// After the dust settles the filter must still be usable.
+	filter.Enable()
+	if got := filter.Filter("password=secret123"); !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("filter unusable after concurrent access: %q", got)
+	}
 }
 
 // ============================================================================
@@ -1526,6 +1537,44 @@ func TestSecurityConfigClone(t *testing.T) {
 	}
 }
 
+// TestFilterCacheBoundaries covers the filter result cache's safety limits
+// directly: a nil cache is a no-op, long inputs are never cached (hash
+// collision defense), and the cache evicts once full instead of growing.
+func TestFilterCacheBoundaries(t *testing.T) {
+	t.Run("nil cache is a no-op", func(t *testing.T) {
+		f := &SensitiveDataFilter{}
+		f.cacheResult(1, "input", "result", time.Now()) // must not panic
+	})
+
+	t.Run("long inputs are never cached", func(t *testing.T) {
+		f := newSensitiveDataFilterWithPatterns(nil, nil, emptyFilterTimeout)
+		long := strings.Repeat("a", cacheInputMaxLen+1)
+		f.cacheResult(2, long, "r", time.Now())
+
+		f.cacheMu.Lock()
+		cached := len(f.cache)
+		f.cacheMu.Unlock()
+		if cached != 0 {
+			t.Errorf("input of %d bytes was cached, want skipped (cache len %d)", len(long), cached)
+		}
+	})
+
+	t.Run("evicts when full", func(t *testing.T) {
+		f := newSensitiveDataFilterWithPatterns(nil, nil, emptyFilterTimeout)
+		f.maxCacheSz = 2
+		for i := 0; i < 4; i++ {
+			f.cacheResult(uint64(i), fmt.Sprintf("input-%d", i), "r", time.Now())
+		}
+
+		f.cacheMu.Lock()
+		cached := len(f.cache)
+		f.cacheMu.Unlock()
+		if cached != f.maxCacheSz {
+			t.Errorf("cache holds %d entries after overflow, want capped at %d", cached, f.maxCacheSz)
+		}
+	})
+}
+
 func TestPresetConfigsHaveMaxWriters(t *testing.T) {
 	configs := []struct {
 		name   string
@@ -1547,5 +1596,129 @@ func TestPresetConfigsHaveMaxWriters(t *testing.T) {
 				t.Errorf("%s should have MaxMessageSize > 0", tc.name)
 			}
 		})
+	}
+}
+
+// boomStringer is a fmt.Stringer whose String method panics — simulating a
+// misbehaving user type inside a logged structure.
+type boomStringer struct{}
+
+func (boomStringer) String() string { panic("boom") }
+
+// TestFilterValueRecursiveStringerPanicFailClosed pins the fail-CLOSED
+// behavior of a panicking Stringer inside a filtered structure. The struct
+// fast path used to call v.String() directly; the panic then unwound to
+// FilterValueRecursive's coarse recover, whose fallback returns the ENTIRE
+// structure unfiltered — a "password"-keyed sibling entry bypassed redaction
+// (fail-open). The panic-safe helper now degrades only the panicking value to
+// a placeholder while the rest of the structure stays filtered.
+func TestFilterValueRecursiveStringerPanicFailClosed(t *testing.T) {
+	f := DefaultSecurityConfig().SensitiveFilter
+
+	value := map[string]any{
+		"password": "hunter2-secret-value",
+		"note":     boomStringer{},
+	}
+	got := f.FilterValueRecursive("data", value)
+	rendered := fmt.Sprintf("%v", got)
+	if strings.Contains(rendered, "hunter2-secret-value") {
+		t.Errorf("fail-open redaction bypass: sensitive field leaked around panicking Stringer: %q", rendered)
+	}
+}
+
+// TestCredentialKeywordPreGateSeparatorForms pins that the digit-less
+// separator spellings of credential keywords reach the regex filter. The
+// password/token patterns match digit-less values, so the
+// couldContainSensitiveData hard pre-gate can only admit them through the
+// credential-keyword list — which lacked "pwd" and "api-key" while the
+// patterns accepted them, so these messages were returned unchanged without
+// any regex ever running.
+func TestCredentialKeywordPreGateSeparatorForms(t *testing.T) {
+	f := DefaultSecurityConfig().SensitiveFilter
+
+	inputs := []string{
+		"pwd: hunterXX",        // no digits: only the keyword can pass the pre-gate
+		"api-key: abcdefghXYZ", // ditto; api_key/apikey were listed, api-key was not
+	}
+	for _, in := range inputs {
+		if got := f.Filter(in); got == in {
+			t.Errorf("Filter(%q) returned input unchanged — credential keyword missing from pre-gate", in)
+		}
+	}
+}
+
+// ============================================================================
+// Rate Limiting (public configuration surface) — GEN-001
+// ============================================================================
+
+// TestRateLimitConfigPublicSurface pins the exported rate-limit configuration
+// surface: SecurityConfig.RateLimitConfig was previously typed
+// *internal.RateLimitConfig — publicly visible but unconstructible outside
+// the module. The RateLimitConfig alias and DefaultRateLimitConfig must make
+// it externally usable.
+func TestRateLimitConfigPublicSurface(t *testing.T) {
+	cfg := DefaultRateLimitConfig()
+	if cfg == nil {
+		t.Fatal("DefaultRateLimitConfig() = nil, want non-nil")
+	}
+	if cfg.MaxMessagesPerSecond != 10000 || cfg.MaxBytesPerSecond != 10*1024*1024 ||
+		cfg.BurstSize != 1000 || cfg.Strategy != RateLimitStrategyDrop || cfg.SamplingRate != 100 {
+		t.Errorf("DefaultRateLimitConfig() = %+v, want documented defaults", cfg)
+	}
+
+	// External-style construction via struct literal.
+	custom := &RateLimitConfig{
+		MaxMessagesPerSecond: 5,
+		Strategy:             RateLimitStrategySample,
+		SamplingRate:         2,
+	}
+	if custom.Strategy != RateLimitStrategySample || custom.MaxMessagesPerSecond != 5 {
+		t.Errorf("custom RateLimitConfig = %+v", custom)
+	}
+
+	// SecurityConfig.Clone must deep-copy the rate limit config.
+	sc := DefaultSecurityConfig()
+	sc.RateLimitConfig = custom
+	clone := sc.Clone()
+	if clone.RateLimitConfig == sc.RateLimitConfig {
+		t.Fatal("SecurityConfig.Clone() aliased RateLimitConfig instead of deep-copying")
+	}
+	if clone.RateLimitConfig.MaxMessagesPerSecond != 5 || clone.RateLimitConfig.Strategy != RateLimitStrategySample {
+		t.Errorf("cloned RateLimitConfig = %+v, want field values preserved", clone.RateLimitConfig)
+	}
+}
+
+// TestRateLimitConfigWiringDropsMessages verifies end-to-end that a configured
+// RateLimitConfig actually gates the log path: New wires it into the internal
+// RateLimiter and over-limit messages are dropped.
+func TestRateLimitConfigWiringDropsMessages(t *testing.T) {
+	w := &countWriter{}
+
+	cfg := DefaultConfig()
+	cfg.Security.RateLimitConfig = &RateLimitConfig{
+		MaxMessagesPerSecond: 10,
+		BurstSize:            0,
+		Strategy:             RateLimitStrategyDrop,
+	}
+	cfg.Targets = []OutputTarget{CustomOutput(w)}
+
+	logger, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() { _ = logger.Close() }()
+
+	const total = 100
+	for i := 0; i < total; i++ {
+		logger.Info("flood")
+	}
+
+	// All calls complete within one or two wall-clock seconds: the per-second
+	// budget (10) may refill once on a boundary crossing, but the vast
+	// majority of the 100 messages must be dropped.
+	if n := w.n.Load(); n >= total {
+		t.Fatalf("rate limiter did not drop any message: %d/%d written", n, total)
+	} else if n < 10 {
+		t.Errorf("expected at least the per-second budget (10) to pass, got %d", n)
 	}
 }
