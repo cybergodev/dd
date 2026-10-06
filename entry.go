@@ -162,6 +162,13 @@ func (e *LoggerEntry) mergeFields(fields []Field) []Field {
 // wrappers, and the Print family), which must all call it DIRECTLY so the
 // entry-dispatch caller capture keeps its fixed frame shape (see
 // internal.EntryCaller).
+//
+// The gate below is the authoritative shouldLog, run exactly once per entry
+// log — each call consumes exactly one rate-limit/sampling slot, matching the
+// (*Logger) families. Formatting happens only after the gate passes, so user
+// String()/Error() methods never run for entries the gate rejects (the former
+// logWithLazyMessage closure provided the same guarantee at the cost of one
+// heap-allocated closure per log call).
 func (e *LoggerEntry) entryLogDispatch(level LogLevel, args ...any) {
 	if e == nil || e.logger == nil {
 		return
@@ -176,13 +183,11 @@ func (e *LoggerEntry) entryLogDispatch(level LogLevel, args ...any) {
 	if l.dynamicCaller {
 		caller = internal.EntryCaller(l.formatter.FullPath())
 	}
-	l.logWithLazyMessage(level, func() string {
-		return l.formatter.FormatArgsToString(args...)
-	}, e.fields, caller, entryCallerDepth)
+	l.logFiltered(level, l.formatter.FormatArgsToString(args...), e.fields, caller, entryCallerDepth)
 }
 
 // entryLogfDispatch is entryLogDispatch for the formatted-message family.
-// Same frame-shape requirement.
+// Same frame-shape requirement; same single authoritative gate.
 func (e *LoggerEntry) entryLogfDispatch(level LogLevel, format string, args ...any) {
 	if e == nil || e.logger == nil {
 		return
@@ -197,9 +202,7 @@ func (e *LoggerEntry) entryLogfDispatch(level LogLevel, format string, args ...a
 	if l.dynamicCaller {
 		caller = internal.EntryCaller(l.formatter.FullPath())
 	}
-	l.logWithLazyMessage(level, func() string {
-		return fmt.Sprintf(format, args...)
-	}, e.fields, caller, entryCallerDepth)
+	l.logFiltered(level, fmt.Sprintf(format, args...), e.fields, caller, entryCallerDepth)
 }
 
 // entryLogWithDispatch is entryLogDispatch for the structured family.

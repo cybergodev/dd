@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -13,8 +11,11 @@ import (
 // Topics covered:
 // 1. Basic capture and assertion
 // 2. Filtering by level
-// 3. Field inspection
+// 3. Field inspection (JSON format for reliable parsing)
 // 4. Dependency injection via CoreLogger (swap in a recorder-backed logger)
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Testing with LoggerRecorder ===")
 
@@ -78,14 +79,14 @@ func section2LevelFiltering() {
 	logger.Error("error msg")
 
 	// Filter by level
-	errors := recorder.EntriesAtLevel(dd.LevelError)
+	errs := recorder.EntriesAtLevel(dd.LevelError)
 	warns := recorder.EntriesAtLevel(dd.LevelWarn)
 
-	fmt.Printf("  Error entries: %d\n", len(errors))
+	fmt.Printf("  Error entries: %d\n", len(errs))
 	fmt.Printf("  Warn entries: %d\n", len(warns))
 
-	if len(errors) > 0 {
-		fmt.Printf("  First error: %s\n", errors[0].Message)
+	if len(errs) > 0 {
+		fmt.Printf("  First error: %s\n", errs[0].Message)
 	}
 
 	fmt.Println()
@@ -97,10 +98,9 @@ func section3FieldInspection() {
 	fmt.Println("--------------------")
 
 	// Use JSON format for reliable field parsing
-	cfg := dd.JSONConfig()
 	recorder := dd.NewLoggerRecorder()
 	recorder.SetFormat(dd.FormatJSON) // must match the logger's format for parsing
-	logger, _ := recorder.NewLogger(cfg)
+	logger, _ := recorder.NewLogger(dd.JSONConfig())
 	defer logger.Close()
 
 	// Log structured data
@@ -119,10 +119,11 @@ func section3FieldInspection() {
 		fmt.Printf("  Status field value: %v\n", val)
 	}
 
-	// Show raw output
-	last := recorder.LastEntry()
-	if last != nil {
-		fmt.Printf("  Raw output: %s", last.RawOutput)
+	// Walk all parsed fields of the last entry
+	if last := recorder.LastEntry(); last != nil {
+		for _, f := range last.Fields {
+			fmt.Printf("  field %s=%v\n", f.Key, f.Value)
+		}
 	}
 
 	fmt.Println()

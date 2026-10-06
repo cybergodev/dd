@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -16,8 +14,12 @@ import (
 // Topics covered:
 // 1. Audit logger for security events
 // 2. Log integrity signing with HMAC
-// 3. Signature verification
-// 4. Integration patterns
+// 3. Signature verification and tamper detection
+// 4. Integration: automatic audit events on logger redactions (Config.Audit)
+// 5. Signed audit trail: IntegritySigner wired into AuditConfig
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Audit & Integrity ===")
 
@@ -25,6 +27,7 @@ func main() {
 	section2IntegritySigning()
 	section3Verification()
 	section4AuditIntegration()
+	section5SignedAuditTrail()
 
 	fmt.Println("\n✅ Audit & Integrity examples completed!")
 }
@@ -194,5 +197,72 @@ func section4AuditIntegration() {
 	time.Sleep(100 * time.Millisecond)
 
 	fmt.Println("✓ Redaction above also emitted an audit event")
+	fmt.Println()
+}
+
+// Section 5: Signed audit trail — wire an IntegritySigner into AuditConfig so
+// every audit line carries an HMAC signature, then verify the trail end-to-end
+// and detect tampering.
+func section5SignedAuditTrail() {
+	fmt.Println("5. Signed Audit Trail (Audit + IntegritySigner)")
+	fmt.Println("-----------------------------------------------")
+
+	// In production, load this key from a secret manager instead
+	integrityCfg, err := dd.DefaultIntegrityConfigSafe()
+	if err != nil {
+		fmt.Printf("  Error creating integrity config: %v\n", err)
+		return
+	}
+	signer, err := dd.NewIntegritySigner(integrityCfg)
+	if err != nil {
+		fmt.Printf("  Error creating signer: %v\n", err)
+		return
+	}
+
+	// Capture signed audit output in a temp file for verification
+	tmp, err := os.CreateTemp("", "dd-audit-*.log")
+	if err != nil {
+		fmt.Printf("  Error creating temp file: %v\n", err)
+		return
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // best-effort cleanup
+
+	audit := dd.DefaultAuditConfig()
+	audit.Output = tmp
+	audit.IntegritySigner = signer // signs every audit line
+
+	auditLogger, err := dd.NewAuditLogger(audit)
+	if err != nil {
+		fmt.Printf("  Error creating audit logger: %v\n", err)
+		return
+	}
+
+	auditLogger.LogSecurityViolation(
+		"BRUTE_FORCE",
+		"5 failed logins for admin",
+		map[string]any{"source_ip": "10.0.0.9"},
+	)
+	_ = auditLogger.Close() // Close drains the async event buffer
+	_ = tmp.Close()         // best-effort: flush the OS handle before reading
+
+	data, err := os.ReadFile(tmp.Name())
+	if err != nil {
+		fmt.Printf("  Error reading audit trail: %v\n", err)
+		return
+	}
+	line := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)[0]
+
+	// Verify the signed line
+	result := dd.VerifyAuditEvent(line, signer)
+	eventType := "unparsed"
+	if result.Event != nil {
+		eventType = result.Event.Type.String()
+	}
+	fmt.Printf("  Signed line: valid=%v, event=%s\n", result.Valid, eventType)
+
+	// Tamper with the content and re-verify
+	tampered := strings.Replace(line, "failed", "successful", 1)
+	result = dd.VerifyAuditEvent(tampered, signer)
+	fmt.Printf("  Tampered line: valid=%v (tampering detected)\n", result.Valid)
 	fmt.Println()
 }

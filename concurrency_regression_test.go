@@ -326,10 +326,11 @@ func TestConcurrentSingleWriterLineIntegrity(t *testing.T) {
 
 // TestFilterVsCloseCacheRace guards the Filter/Close cache data race: the two
 // post-scan cacheResult sites in Filter used to re-read f.cache without the
-// lock, racing with Close()'s `f.cache = nil` (written under cacheMu). Filter
-// now consults a cachePresent snapshot taken under the lookup's RLock. Inputs
-// are unique per call to force cache misses — on a cache hit Filter returns
-// from the lookup block and never reaches the raced read.
+// lock, racing with Close()'s `f.cache = nil` (written under cacheMu). Filter's
+// cache traffic now goes through per-shard sync.Maps, and cacheResult re-checks
+// the closed flag before touching them, so a Close racing the sweep is benign.
+// Inputs are unique per call to force cache misses — on a cache hit Filter
+// returns from the lookup block and never reaches the raced insert.
 func TestFilterVsCloseCacheRace(t *testing.T) {
 	for round := 0; round < 50; round++ {
 		f := NewSensitiveDataFilter()
@@ -593,8 +594,8 @@ func TestMultiWriterLifecycleStress(t *testing.T) {
 }
 
 // TestDefaultLoggerSwapStorm guards the package-level default-logger globals
-// (defaultLogger atomic pointer, defaultInitErr atomic.Value, defaultOnce)
-// against simultaneous Default()/SetDefault()/InitDefault() traffic —
+// (defaultLogger atomic pointer, defaultInitErr atomic.Pointer[error],
+// defaultOnce) against simultaneous Default()/SetDefault()/InitDefault() traffic —
 // including Default()'s CAS install path, which must never overwrite a
 // SetDefault-installed logger. The pre-probe default is restored afterwards
 // so later tests observe an untouched default logger.

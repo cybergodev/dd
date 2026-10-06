@@ -6,6 +6,34 @@ import (
 )
 
 // ============================================================================
+// LOGGERERROR TEST CONSTRUCTORS
+// ============================================================================
+
+// newError creates a new LoggerError with the given code and message.
+// Test-only constructor: production code returns plain sentinel-wrapped
+// errors (fmt.Errorf + %w), so these helpers live with the tests that
+// exercise LoggerError's Is/Unwrap behavior directly.
+func newError(code, message string) *LoggerError {
+	return &LoggerError{
+		Code:    code,
+		Message: message,
+	}
+}
+
+// wrapError wraps an existing error with a code and message.
+// If the error is nil, returns nil. Test-only (see newError).
+func wrapError(code, message string, cause error) *LoggerError {
+	if cause == nil {
+		return nil
+	}
+	return &LoggerError{
+		Code:    code,
+		Message: message,
+		Cause:   cause,
+	}
+}
+
+// ============================================================================
 // COMMON TEST CONFIGURATIONS
 // ============================================================================
 
@@ -15,16 +43,6 @@ func NewTestConfigWithBuffer(buf *bytes.Buffer) Config {
 	cfg := DefaultConfig()
 	cfg.Targets = []OutputTarget{CustomOutput(buf)}
 	cfg.Level = LevelDebug
-	return cfg
-}
-
-// NewTestJSONConfigWithBuffer returns a JSON format config with output set to the buffer.
-func NewTestJSONConfigWithBuffer(buf *bytes.Buffer) Config {
-	cfg := DefaultConfig()
-	cfg.Targets = []OutputTarget{CustomOutput(buf)}
-	cfg.Level = LevelDebug
-	cfg.Format = FormatJSON
-	cfg.JSON = DefaultJSONOptions()
 	return cfg
 }
 

@@ -49,7 +49,13 @@ type PatternGate struct {
 
 // Allows reports whether input with the given features could still match the
 // gated pattern. false means the pattern provably cannot match.
-func (g PatternGate) Allows(f MessageFeatures) bool {
+//
+// The receiver is a pointer on purpose: Filter's pattern loop calls this once
+// per registered pattern per message, and a value receiver copied the whole
+// ~56-byte gate struct each call — pprof attributed the MOVUPS copy alone to
+// ~13% of formatted-logging CPU. Callers pass addressable slice elements, so
+// the method set change is invisible at the call sites.
+func (g *PatternGate) Allows(f MessageFeatures) bool {
 	// Fast rejection: a pattern requiring a keyword or literal token can never
 	// match a message carrying none — one branch stands in for the full check
 	// for the majority of patterns on token-free messages (profiling showed

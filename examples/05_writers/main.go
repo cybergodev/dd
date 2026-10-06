@@ -1,11 +1,10 @@
-//go:build examples
-
 package main
 
 import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/dd"
@@ -14,24 +13,29 @@ import (
 // Writers - Advanced Output Management
 //
 // Topics covered:
-// 1. FileWriter with rotation
-// 2. BufferedWriter for high throughput
-// 3. MultiWriter for multiple outputs
-// 4. Dynamic writer management
-// 5. Error handling
+// 1. FileWriter with rotation settings
+// 2. Rotation in action (backup files created live)
+// 3. BufferedWriter for high throughput
+// 4. MultiWriter for multiple outputs
+// 5. Dynamic writer management
+// 6. Error handling
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Writers Management ===")
 
 	section1FileWriter()
-	section2BufferedWriter()
-	section3MultiWriter()
-	section4DynamicManagement()
-	section5WriterErrors()
+	section2Rotation()
+	section3BufferedWriter()
+	section4MultiWriter()
+	section5DynamicManagement()
+	section6WriterErrors()
 
 	fmt.Println("\n✅ Writers examples completed!")
 }
 
-// Section 1: FileWriter with rotation
+// Section 1: FileWriter creation and configuration
 func section1FileWriter() {
 	fmt.Println("1. FileWriter")
 	fmt.Println("--------------")
@@ -62,9 +66,60 @@ func section1FileWriter() {
 	fmt.Println()
 }
 
-// Section 2: BufferedWriter for high throughput
-func section2BufferedWriter() {
-	fmt.Println("2. BufferedWriter (High Throughput)")
+// Section 2: Rotation in action - write past MaxSizeMB and watch the
+// backup files appear (rotate.log -> rotate_log_1.log, rotate_log_2.log, ...)
+func section2Rotation() {
+	fmt.Println("2. Rotation in Action")
+	fmt.Println("----------------------")
+
+	// 1MB is the smallest rotation unit; keep only 2 backups for the demo.
+	// Remove leftovers from previous runs so the listing below is stable.
+	for _, old := range []string{"logs/rotate.log", "logs/rotate_log_1.log", "logs/rotate_log_2.log"} {
+		_ = os.Remove(old) // best-effort: missing files are fine
+	}
+	fw, err := dd.NewFileWriter("logs/rotate.log", dd.FileWriterConfig{
+		MaxSizeMB:  1,
+		MaxBackups: 2,
+	})
+	if err != nil {
+		fmt.Printf("Failed: %v\n", err)
+		return
+	}
+
+	cfg := dd.DefaultConfig()
+	cfg.Targets = []dd.OutputTarget{dd.CustomOutput(fw)}
+
+	logger, _ := dd.New(cfg)
+	defer fw.Close() // no-op if the logger below already closed it
+
+	// ~600-byte lines x 4000 = ~2.4MB -> rotations at ~1MB and ~2MB
+	payload := strings.Repeat("d", 512)
+	for i := 0; i < 4000; i++ {
+		logger.Infof("rotation demo %04d %s", i, payload)
+	}
+
+	// Close before listing so sizes are final: on Windows the directory
+	// entry of a still-open file can report a stale size.
+	_ = logger.Close()
+
+	entries, err := os.ReadDir("logs")
+	if err != nil {
+		fmt.Printf("Failed to list logs/: %v\n", err)
+		return
+	}
+	fmt.Println("  Files after ~2.4MB of logs (MaxSizeMB=1, MaxBackups=2):")
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "rotate") {
+			info, _ := e.Info()
+			fmt.Printf("    %-22s %9d bytes\n", e.Name(), info.Size())
+		}
+	}
+	fmt.Println()
+}
+
+// Section 3: BufferedWriter for high throughput
+func section3BufferedWriter() {
+	fmt.Println("3. BufferedWriter (High Throughput)")
 	fmt.Println("-------------------------------------")
 
 	// Create underlying file writer
@@ -75,7 +130,7 @@ func section2BufferedWriter() {
 	}
 	defer fileWriter.Close()
 
-	// Wrap with buffer (default 4KB buffer)
+	// Wrap with buffer (default 1KB buffer, 100ms flush interval)
 	bufferedWriter, err := dd.NewBufferedWriter(fileWriter, dd.DefaultBufferedWriterConfig())
 	if err != nil {
 		fmt.Printf("Failed: %v\n", err)
@@ -103,9 +158,9 @@ func section2BufferedWriter() {
 	fmt.Println()
 }
 
-// Section 3: MultiWriter for multiple outputs
-func section3MultiWriter() {
-	fmt.Println("3. MultiWriter (Multiple Outputs)")
+// Section 4: MultiWriter for multiple outputs
+func section4MultiWriter() {
+	fmt.Println("4. MultiWriter (Multiple Outputs)")
 	fmt.Println("-----------------------------------")
 
 	// Create MultiWriter combining outputs
@@ -128,12 +183,31 @@ func section3MultiWriter() {
 		dd.String("source", "multiwriter"),
 	)
 
+	// MultiWriter also supports dynamic membership (deduplicated: adding an
+	// already-registered writer is a no-op)
+	extra, err := os.Create("logs/multi-extra.log")
+	if err != nil {
+		fmt.Printf("Failed to create extra file: %v\n", err)
+		return
+	}
+	if err := multiWriter.AddWriter(extra); err != nil {
+		fmt.Printf("Failed to add writer: %v\n", err)
+		_ = extra.Close() // best-effort cleanup on the error path
+		return
+	}
+	logger.Info("Now on THREE outputs (console + file + extra)")
+
+	// Remove it again so this demo alone owns the extra file's lifecycle
+	// (the logger's Close would otherwise close it via MultiWriter.Close)
+	multiWriter.RemoveWriter(extra)
+	_ = extra.Close() // best-effort cleanup: demo owns the file now
+
 	fmt.Println()
 }
 
-// Section 4: Dynamic writer management
-func section4DynamicManagement() {
-	fmt.Println("4. Dynamic Writer Management")
+// Section 5: Dynamic writer management
+func section5DynamicManagement() {
+	fmt.Println("5. Dynamic Writer Management")
 	fmt.Println("-----------------------------")
 
 	logger, _ := dd.New()
@@ -169,9 +243,9 @@ func section4DynamicManagement() {
 	fmt.Println()
 }
 
-// Section 5: Writer error handling
-func section5WriterErrors() {
-	fmt.Println("5. Writer Error Handling")
+// Section 6: Writer error handling
+func section6WriterErrors() {
+	fmt.Println("6. Writer Error Handling")
 	fmt.Println("-------------------------")
 
 	// A failing writer guarantees the handler is invoked on every write.

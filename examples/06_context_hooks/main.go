@@ -1,11 +1,10 @@
-//go:build examples
-
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/dd"
@@ -15,10 +14,13 @@ import (
 //
 // Topics covered:
 // 1. Type-safe context keys (trace_id, span_id, request_id)
-// 2. Context extraction via configured extractors
-// 3. Custom context extractors
-// 4. Hook system for lifecycle events
-// 5. OpenTelemetry-style integration
+// 2. Request-scoped logging via the WithFields pattern
+// 3. Context extractors (global fields only!)
+// 4. Hook system: BeforeLog/AfterLog, error handling, entry suppression
+// 5. OnRotate hook (fired by actual file rotation)
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Context & Hooks ===")
 
@@ -26,7 +28,8 @@ func main() {
 	section2ContextLogging()
 	section3CustomExtractors()
 	section4Hooks()
-	section5RequestScopedLogging()
+	section5RotationHook()
+	section6RequestScopedLogging()
 
 	fmt.Println("\n✅ Context & Hooks examples completed!")
 }
@@ -108,7 +111,7 @@ func extractTraceFields(ctx context.Context) []dd.Field {
 // IMPORTANT: Context extractors registered via Config are called with
 // context.Background() since logging methods do not accept a context parameter.
 // Use extractors for GLOBAL/static data (hostname, PID, deployment info).
-// For REQUEST-SCOPED data, use the WithFields pattern shown in sections 2 & 5.
+// For REQUEST-SCOPED data, use the WithFields pattern shown in sections 2 & 6.
 func section3CustomExtractors() {
 	fmt.Println("3. Context Extractors (Global Fields)")
 	fmt.Println("--------------------------------------")
@@ -138,6 +141,13 @@ func section3CustomExtractors() {
 		dd.String("action", "data_access"),
 	)
 
+	// Extractors can also be added at runtime (the registry is cloned, so
+	// this is safe concurrent with logging)
+	logger.AddContextExtractor(func(ctx context.Context) []dd.Field {
+		return []dd.Field{dd.Int("pid", os.Getpid())}
+	})
+	logger.Info("Runtime-added extractor: pid attached automatically")
+
 	// For REQUEST-SCOPED data (trace_id, user_id, etc.), use WithFields:
 	ctx := dd.WithTraceID(context.Background(), "trace-xyz")
 	ctx = dd.WithSpanID(ctx, "span-789")
@@ -150,11 +160,13 @@ func section3CustomExtractors() {
 	)
 
 	fmt.Println("  Global extractors: hostname, service, env (auto-added)")
+	fmt.Println("  (extractor output is security-filtered too — a hostname matching")
+	fmt.Println("   a sensitive pattern renders as [REDACTED])")
 	fmt.Println("  Request-scoped: trace_id, span_id (via WithFields)")
 	fmt.Println()
 }
 
-// Section 4: Hook system
+// Section 4: Hook system - lifecycle events, error handling, suppression
 func section4Hooks() {
 	fmt.Println("4. Hook System")
 	fmt.Println("---------------")
@@ -165,6 +177,14 @@ func section4Hooks() {
 			func(ctx context.Context, hctx *dd.HookContext) error {
 				fmt.Printf("  [BeforeLog] Level: %s, Msg: %s\n",
 					hctx.Level.String(), hctx.Message)
+				return nil
+			},
+			// A BeforeLog hook that returns an error DROPS the entry —
+			// use for policy enforcement (e.g., suppress debug in prod)
+			func(ctx context.Context, hctx *dd.HookContext) error {
+				if hctx.Level == dd.LevelDebug {
+					return fmt.Errorf("debug suppressed by policy")
+				}
 				return nil
 			},
 		},
@@ -183,6 +203,7 @@ func section4Hooks() {
 	})
 
 	cfg := dd.DefaultConfig()
+	cfg.Level = dd.LevelDebug // let Debug entries past the level gate...
 	cfg.Format = dd.FormatJSON
 	cfg.Hooks = hooks
 
@@ -191,6 +212,10 @@ func section4Hooks() {
 
 	// Log messages trigger hooks
 	logger.Info("This triggers BeforeLog and AfterLog hooks")
+
+	// ...so the policy hook below is what drops this one (no output,
+	// no AfterLog — BeforeLog errors abort the entry)
+	logger.Debug("This entry is DROPPED by the policy BeforeLog hook")
 
 	// Add hooks at runtime
 	logger.AddHook(dd.HookOnFilter, func(ctx context.Context, hctx *dd.HookContext) error {
@@ -218,9 +243,40 @@ func section4Hooks() {
 //	    }
 //	}
 
-// Section 5: Request-scoped logging pattern
-func section5RequestScopedLogging() {
-	fmt.Println("5. Request-Scoped Logging")
+// Section 5: OnRotate hook - fired automatically when a FileWriter target
+// exceeds MaxSizeMB (rotation itself is demonstrated in 05_writers).
+func section5RotationHook() {
+	fmt.Println("5. OnRotate Hook (Live Rotation)")
+	fmt.Println("---------------------------------")
+
+	cfg := dd.DefaultConfig()
+	fileTarget := dd.FileOutput("logs/hook-rotate.log")
+	fileTarget.MaxSizeMB = 1  // smallest rotation unit
+	fileTarget.MaxBackups = 2 // cap demo leftovers across repeated runs
+	cfg.Targets = []dd.OutputTarget{fileTarget}
+
+	logger, _ := dd.New(cfg)
+	defer logger.Close()
+
+	// The hook fires with the rotated file's path in Metadata
+	logger.AddHook(dd.HookOnRotate, func(ctx context.Context, hctx *dd.HookContext) error {
+		fmt.Printf("  [OnRotate] rotated: %v\n", hctx.Metadata["path"])
+		return nil
+	})
+
+	// ~600-byte lines x 2200 = ~1.3MB -> one rotation at ~1MB
+	payload := strings.Repeat("r", 512)
+	for i := 0; i < 2200; i++ {
+		logger.Infof("hook rotation %04d %s", i, payload)
+	}
+
+	fmt.Println("✓ OnRotate hook fired when the file rotated")
+	fmt.Println()
+}
+
+// Section 6: Request-scoped logging pattern
+func section6RequestScopedLogging() {
+	fmt.Println("6. Request-Scoped Logging")
 	fmt.Println("---------------------------")
 
 	cfg := dd.DefaultConfig()

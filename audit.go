@@ -126,6 +126,31 @@ func (s AuditSeverity) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.String())
 }
 
+// UnmarshalJSON implements json.Unmarshaler for AuditSeverity, accepting the
+// string form emitted by MarshalJSON ("INFO", "WARNING", "ERROR", "CRITICAL").
+// Without it, json.Unmarshal cannot decode AuditEvent back from the library's
+// own JSON output — a JSON string cannot unmarshal into the int underlying
+// type — so VerifyAuditEvent's parsed Event field was always nil.
+func (s *AuditSeverity) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err != nil {
+		return fmt.Errorf("audit severity must be a string, got %s", data)
+	}
+	switch name {
+	case "INFO":
+		*s = AuditSeverityInfo
+	case "WARNING":
+		*s = AuditSeverityWarning
+	case "ERROR":
+		*s = AuditSeverityError
+	case "CRITICAL":
+		*s = AuditSeverityCritical
+	default:
+		return fmt.Errorf("unknown audit severity %q", name)
+	}
+	return nil
+}
+
 // AuditConfig configures the audit logger.
 type AuditConfig struct {
 	// Enabled determines if audit logging is enabled.
@@ -403,18 +428,22 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 
 	var output string
 	if al.config.JSONFormat {
-		// Use pooled encoder for better performance than json.Marshal
+		// Use pooled encoder for better performance than json.Marshal.
+		// SECURITY: the deferred cleanup zeroes the buffer before it returns
+		// to the pool on every path (encode failure included), so encoded
+		// event data never lingers in pooled memory.
 		pe := auditEncoderPool.Get().(*auditEncoder)
 		pe.buf.Reset()
-
-		if err := pe.enc.Encode(event); err != nil {
-			// SECURITY: Zero buffer before returning to pool
+		defer func() {
 			b := pe.buf.Bytes()
 			for i := range b {
 				b[i] = 0
 			}
 			pe.buf.Reset()
 			auditEncoderPool.Put(pe)
+		}()
+
+		if err := pe.enc.Encode(event); err != nil {
 			fmt.Fprintf(os.Stderr, "dd: failed to marshal audit event: %v\n", err)
 			return
 		}
@@ -425,14 +454,6 @@ func (al *AuditLogger) writeEvent(event AuditEvent) {
 			data = data[:len(data)-1]
 		}
 		output = string(data)
-
-		// SECURITY: Zero buffer before returning to pool
-		b := pe.buf.Bytes()
-		for i := range b {
-			b[i] = 0
-		}
-		pe.buf.Reset()
-		auditEncoderPool.Put(pe)
 	} else {
 		if al.config.IncludeTimestamp {
 			output = fmt.Sprintf("[%s] %s: %s",

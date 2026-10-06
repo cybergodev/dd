@@ -281,12 +281,3 @@ func (r *contextExtractorRegistry) count() int {
 	}
 	return len(*extractorsPtr)
 }
-
-// clear removes all registered extractors.
-func (r *contextExtractorRegistry) clear() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	emptySlice := make([]ContextExtractor, 0)
-	r.extractorsPtr.Store(&emptySlice)
-}

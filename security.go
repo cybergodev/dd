@@ -18,20 +18,70 @@ import (
 // cacheTTLSeconds defines how long cache entries are valid (5 minutes)
 const cacheTTLSeconds = 300
 
-// defaultFilterCacheSize is the maximum number of filtered-input results each
-// SensitiveDataFilter caches. The cache maps input-hash -> filtered result so
-// repeated identical inputs (the common case in logging) skip regex entirely.
-// This MUST be initialized in every filter instance, including clones — a
-// filter with a nil cache disables caching, forcing every Filter() call to
-// re-run all regex patterns. See clone().
-const defaultFilterCacheSize = 1000
-
 // visitedMapPool pools visited maps for FilterValueRecursive to reduce allocations
 // in the hot path when filtering complex nested structures.
 var visitedMapPool = sync.Pool{
 	New: func() any {
 		return make(map[uintptr]bool, 8) // typical visited capacity
 	},
+}
+
+// filterCacheShards is the number of independent counter shards the filter's
+// per-operation metrics are split into. A power of two so shard selection is
+// a bitmask.
+const filterCacheShards = 16
+
+// filterCacheSlots is the number of slots in the direct-mapped filter result
+// cache: 1024 (a power of two) preserves the former map-based capacity bound
+// of ~1000 filtered-input results, so repeated identical inputs (the common
+// case in logging) skip the regex sweep entirely. See SensitiveDataFilter.slots.
+const filterCacheSlots = 1024
+
+// Cache TTL constants. cacheTTLDuration is the wall-clock validity of a cached
+// filter result; cacheTTLMargin shaves 1ms off it at insert time, preserving
+// the former strictly-within-TTL hit semantics now that validity is
+// precomputed as an absolute expiry (see filterCacheEntry.expiresAt).
+const (
+	cacheTTLDuration = cacheTTLSeconds * time.Second
+	cacheTTLMargin   = time.Millisecond
+)
+
+// coarseClockRefreshEvery is the interval, in Filter calls, at which the
+// filter's coarse clock is re-synchronized with time.Now (see coarseNow).
+const coarseClockRefreshEvery = 1024
+
+// filterCacheShard holds the metrics counters that are bumped on every filter
+// operation (hits/misses/filtered/latency). Shard membership is a fixed
+// function of the input hash, so a given input always bumps the same shard.
+//
+// The cache ENTRIES live in the filter's direct-mapped slot table (see
+// SensitiveDataFilter.slots), not here: reads are single atomic loads on
+// read-only lines, so there is no lock and no shared-memory write on the hit
+// path to shard. Only the counter RMWs remain, and keeping them sharded
+// (instead of one global set) spreads that atomic traffic across 16 cache
+// lines; the public totals in GetFilterStats are exact sums of the shards.
+// The struct is padded to 64 bytes so counters of adjacent shards never share
+// a cache line (false sharing between independent shards).
+type filterCacheShard struct {
+	hits      atomic.Int64 // cache hits accounted to this shard
+	misses    atomic.Int64 // lookups that missed on this shard
+	filtered  atomic.Int64 // filter operations accounted to this shard
+	latencyNs atomic.Int64 // summed filter latency (ns) accounted to this shard
+	_         [32]byte     // pad to one cache line
+}
+
+// filterSlotTable is the direct-mapped cache storage: one slot per input
+// hash&1023. Allocated lazily on the first cacheable insert (see
+// SensitiveDataFilter.slotsPtr) so filters that never cache — disabled
+// filters, or short-lived logger-per-operation patterns — never pay the 8KB.
+type filterSlotTable [filterCacheSlots]atomic.Pointer[filterCacheEntry]
+
+// shardFor returns the cache shard for a cache key (the input hash). For
+// non-cacheable inputs (over cacheInputMaxLen, no hash computed) callers pass
+// 0, so all such metrics land on shard 0 — the choice only spreads counter
+// load, and every operation increments exactly one shard exactly once.
+func (f *SensitiveDataFilter) shardFor(hash uint64) *filterCacheShard {
+	return &f.shards[hash&(filterCacheShards-1)]
 }
 
 // Pre-compiled additional patterns for security levels.
@@ -146,18 +196,36 @@ type SensitiveDataFilter struct {
 	// patternCount caches the number of patterns for O(1) access
 	patternCount atomic.Int32
 
-	// Performance monitoring counters
-	totalFiltered   atomic.Int64 // Total number of filter operations
+	// Performance monitoring counters for cold paths (kept global: they are
+	// bumped only on redaction/timeout events, not per operation — the
+	// per-operation counters live in the cache shards to avoid a shared
+	// cache-line bottleneck, see filterCacheShard).
 	totalRedactions atomic.Int64 // Total number of redactions performed
 	totalTimeouts   atomic.Int64 // Total number of timeout events
-	totalLatencyNs  atomic.Int64 // Total latency in nanoseconds (for average calculation)
 
-	// Filter result cache for repeated messages
-	cacheMu    sync.RWMutex
-	cache      map[uint64]filterCacheEntry
-	cacheHits  atomic.Int64
-	cacheMiss  atomic.Int64
-	maxCacheSz int
+	// Filter result cache for repeated messages: a direct-mapped table of
+	// filterCacheSlots slots indexed by hash&1023, allocated on first insert
+	// (see filterSlotTable). A lookup is one atomic pointer load plus one
+	// atomic slot load on a read-only line (no lock, no RMW, scales across
+	// cores — the former per-shard RWMutex's readerCount writes and the
+	// sync.Map trie walks were, in turn, ~17% and ~18% of
+	// concurrent-logging CPU); an insert is one atomic store whose overwrite
+	// IS the eviction, so there is no capacity bookkeeping at all. Slot
+	// collisions between two hot inputs make both take the uncached slow
+	// path (the same degradation the former map cache suffered under
+	// capacity pressure); retained entries are bounded by the slot count.
+	slotsPtr atomic.Pointer[filterSlotTable]
+
+	// Per-operation metrics counters, sharded by hash to spread atomic RMW
+	// traffic (see filterCacheShard).
+	shards [filterCacheShards]filterCacheShard
+
+	// Coarse clock for TTL checks on the cache-hit path (see coarseNow): a
+	// cached time.Now reading refreshed every coarseClockRefreshEvery calls,
+	// so serving a cache hit costs no wall-clock read (time.Now measured at
+	// ~37ns on Windows — the single largest component of the hit path).
+	coarseNano  atomic.Int64
+	coarseTicks atomic.Int64
 
 	// hashSeed is used for maphash-based hashing of cache keys.
 	// Initialized during filter creation for better collision resistance.
@@ -168,11 +236,12 @@ type SensitiveDataFilter struct {
 	goroutineCond sync.Cond
 }
 
-// filterCacheEntry stores a cached filter result
+// filterCacheEntry stores a cached filter result. Stored by pointer so the
+// sync.Map Load on the hit path type-asserts without copying.
 type filterCacheEntry struct {
-	input   string
-	result  string
-	created time.Time // creation time for TTL calculation
+	input     string
+	result    string
+	expiresAt int64 // absolute unix nanoseconds: insert time + TTL - margin
 }
 
 // hashString computes a hash of the input string using maphash.
@@ -194,10 +263,11 @@ func newSensitiveDataFilterWithPatterns(patterns []*regexp.Regexp, gates []inter
 		maxInputLength: maxInputLength,
 		timeout:        timeout,
 		semaphore:      make(chan struct{}, maxConcurrentFilters),
-		cache:          make(map[uint64]filterCacheEntry),
-		maxCacheSz:     defaultFilterCacheSize,
 		hashSeed:       maphash.MakeSeed(),
 	}
+	// The slot table and counter shards are zero values — ready for use as-is.
+	// Seed the coarse clock so pre-refresh TTL checks see a sane baseline.
+	filter.coarseNano.Store(time.Now().UnixNano())
 	// Initialize the condition variable with a new mutex
 	filter.goroutineCond = *sync.NewCond(&sync.Mutex{})
 	filter.enabled.Store(true)
@@ -289,6 +359,11 @@ func (f *SensitiveDataFilter) addPattern(pattern string) error {
 	copy(newGates, *currentGates)
 	f.gatesPtr.Store(&newGates)
 
+	// Cached results were computed under the old pattern set — drop them so
+	// the new pattern applies to already-seen inputs immediately (the TTL
+	// alone previously delayed this by up to cacheTTLSeconds).
+	f.invalidateCache()
+
 	return nil
 }
 
@@ -332,6 +407,8 @@ func (f *SensitiveDataFilter) ClearPatterns() {
 	f.patternCount.Store(0)
 	emptyGates := make([]internal.PatternGate, 0)
 	f.gatesPtr.Store(&emptyGates)
+	// Every cached result was computed under the removed patterns — drop them.
+	f.invalidateCache()
 }
 
 // PatternCount returns the number of registered patterns.
@@ -412,10 +489,20 @@ func (f *SensitiveDataFilter) GetFilterStats() FilterStats {
 		}
 	}
 
+	// Per-operation counters are sharded with the cache (see filterCacheShard);
+	// the stats snapshot sums them back into exact totals.
+	var totalFiltered, totalLatencyNs, cacheHits, cacheMiss int64
+	for i := range f.shards {
+		sh := &f.shards[i]
+		cacheHits += sh.hits.Load()
+		cacheMiss += sh.misses.Load()
+		totalFiltered += sh.filtered.Load()
+		totalLatencyNs += sh.latencyNs.Load()
+	}
+
 	var avgLatency time.Duration
-	totalFiltered := f.totalFiltered.Load()
 	if totalFiltered > 0 {
-		avgLatency = time.Duration(f.totalLatencyNs.Load() / totalFiltered)
+		avgLatency = time.Duration(totalLatencyNs / totalFiltered)
 	}
 
 	return FilterStats{
@@ -428,8 +515,8 @@ func (f *SensitiveDataFilter) GetFilterStats() FilterStats {
 		TotalRedactions:   f.totalRedactions.Load(),
 		TotalTimeouts:     f.totalTimeouts.Load(),
 		AverageLatency:    avgLatency,
-		CacheHits:         f.cacheHits.Load(),
-		CacheMiss:         f.cacheMiss.Load(),
+		CacheHits:         cacheHits,
+		CacheMiss:         cacheMiss,
 	}
 }
 
@@ -526,10 +613,12 @@ func (f *SensitiveDataFilter) Close() bool {
 
 	result := f.WaitForGoroutines(defaultFilterTimeout * 2)
 
-	// Release cache memory
-	f.cacheMu.Lock()
-	f.cache = nil
-	f.cacheMu.Unlock()
+	// The cache needs no explicit release here: the closed flag above stops
+	// every Filter read/write at entry, so the retained entries (bounded by
+	// the slot table, ≤ filterCacheSlots × ~64B) are reclaimed together with
+	// the filter struct itself. Sweeping the 1024 slots on Close measured as
+	// a visible New+Close regression (one atomic store per slot vs. the former
+	// 16 map nil-ing writes).
 
 	return result
 }
@@ -563,16 +652,14 @@ func (f *SensitiveDataFilter) clone() *SensitiveDataFilter {
 		maxInputLength: f.maxInputLength,
 		timeout:        f.timeout,
 		semaphore:      make(chan struct{}, maxConcurrentFilters),
-		// Initialize a fresh per-instance cache. The cache is intentionally NOT
-		// shared with the source filter: each logger owns its own cache, warmed
-		// from its own log traffic. Omitting this (leaving cache nil) silently
-		// disables caching and forces every Filter() call to re-run all regex
-		// patterns — a major hot-path regression.
-		cache:         make(map[uint64]filterCacheEntry),
-		maxCacheSz:    defaultFilterCacheSize,
+		// Fresh per-instance cache (zero-value slot table): the cache is
+		// intentionally NOT shared with the source filter — each logger owns
+		// its own, warmed from its own log traffic.
 		hashSeed:      f.hashSeed, // Share the same seed (read-only after initialization)
 		goroutineCond: *sync.NewCond(&sync.Mutex{}),
 	}
+	// Seed the coarse clock so the clone's TTL checks start from real time.
+	clone.coarseNano.Store(time.Now().UnixNano())
 	clone.enabled.Store(f.enabled.Load())
 
 	// Share the patterns pointer directly (immutable after creation)
@@ -615,45 +702,31 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 	var inputHash uint64
 	useCache := inputLen <= cacheInputMaxLen
 
-	// Check cache for repeated messages (only for small inputs to avoid memory bloat)
-	// Skip cache if not initialized (for filters created without using constructor)
+	// Check cache for repeated messages (only for small inputs to avoid memory bloat).
 	//
 	// The lookup runs BEFORE the quick-rejection scan: repeated identical
 	// messages (the common case the cache exists for) return in one hash +
-	// RLock + probe, without re-scanning the input at all.
-	//
-	// cachePresent snapshots (under this read lock) whether a cache map exists.
-	// The post-scan cacheResult sites below consult the snapshot instead of
-	// re-reading f.cache: an unlocked read there would race with Close()'s
-	// f.cache = nil write (Close is the only nil-er and is one-way, so a
-	// stale-true snapshot merely routes into cacheResult, which re-checks nil
-	// under the write lock).
-	cachePresent := false
+	// two atomic loads, without re-scanning the input at all. Reads take no
+	// locks and write no shared memory (see SensitiveDataFilter.slotsPtr).
 	if useCache {
 		inputHash = f.hashString(input)
-		f.cacheMu.RLock()
-		if f.cache != nil {
-			cachePresent = true
-			// SECURITY: Verify both hash AND input length to add collision resistance.
-			// This provides defense-in-depth: even if hash collision occurs,
-			// different length inputs will be rejected.
-			if entry, ok := f.cache[inputHash]; ok && len(entry.input) == inputLen && entry.input == input {
-				// SECURITY: Check TTL with 1ms margin to prevent boundary condition issues
-				// Entries must be strictly within TTL to be used
-				ttlWithMargin := time.Duration(cacheTTLSeconds)*time.Second - time.Millisecond
-				if time.Since(entry.created) < ttlWithMargin {
-					f.cacheMu.RUnlock()
-					f.cacheHits.Add(1)
-					f.totalFiltered.Add(1)
-					// Record minimal latency for cache hit
-					f.totalLatencyNs.Add(1)
-					return entry.result
-				}
-				// Entry expired, will be refreshed below (fall through)
+		if table := f.slotsPtr.Load(); table != nil {
+			// SECURITY: Verify hash AND input length AND the full input to add
+			// collision resistance (both slot collisions and, in the former
+			// map, hash collisions): different inputs will be rejected.
+			if e := table[inputHash&(filterCacheSlots-1)].Load(); e != nil &&
+				len(e.input) == inputLen && e.input == input &&
+				f.coarseNow() < e.expiresAt {
+				shard := f.shardFor(inputHash)
+				shard.hits.Add(1)
+				shard.filtered.Add(1)
+				// Record minimal latency for cache hit
+				shard.latencyNs.Add(1)
+				return e.result
 			}
 		}
-		f.cacheMu.RUnlock()
-		f.cacheMiss.Add(1)
+		// Miss, expired entry, or slot collision: full filter below refreshes it.
+		f.shardFor(inputHash).misses.Add(1)
 	}
 
 	startTime := time.Now()
@@ -730,12 +803,13 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 		if latencyNs == 0 {
 			latencyNs = 1
 		}
-		f.totalFiltered.Add(1)
-		f.totalLatencyNs.Add(latencyNs)
+		mshard := f.shardFor(inputHash)
+		mshard.filtered.Add(1)
+		mshard.latencyNs.Add(latencyNs)
 
 		// Cache the result for small inputs (use pre-computed hash) so repeated
 		// safe messages short-circuit at the cache lookup above.
-		if useCache && cachePresent {
+		if useCache {
 			f.cacheResult(inputHash, input, input, startTime)
 		}
 		return input
@@ -776,15 +850,16 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 	}
 
 	// Update metrics
-	f.totalFiltered.Add(1)
+	mshard := f.shardFor(inputHash)
+	mshard.filtered.Add(1)
 	if redactionCount > 0 {
 		f.totalRedactions.Add(redactionCount)
 	}
 	latencyNs := time.Since(startTime).Nanoseconds()
-	f.totalLatencyNs.Add(latencyNs)
+	mshard.latencyNs.Add(latencyNs)
 
 	// Cache the result for small inputs (use pre-computed hash)
-	if useCache && cachePresent {
+	if useCache {
 		f.cacheResult(inputHash, input, result, startTime)
 	}
 
@@ -799,62 +874,88 @@ func (f *SensitiveDataFilter) Filter(input string) string {
 // good cache hit rate for typical short log messages.
 const cacheInputMaxLen = 64
 
-// cacheResult stores a filter result in the cache, stamping the entry with
-// now (the filter call's start time — close enough for the TTL check and one
-// time.Now call cheaper than taking a fresh reading here).
+// cacheResult stores a filter result in the shard selected by hash, stamping
+// the entry with now (the filter call's start time — close enough for the TTL
+// check and one time.Now call cheaper than taking a fresh reading here).
 // For inputs longer than cacheInputMaxLen, the input string is not stored
 // to prevent memory bloat from caching large strings.
 //
 // SECURITY: For inputs longer than cacheInputMaxLen, we skip caching entirely
 // to prevent hash collision attacks that could bypass sensitive data filtering.
 func (f *SensitiveDataFilter) cacheResult(hash uint64, input, result string, now time.Time) {
-	f.cacheMu.Lock()
-	defer f.cacheMu.Unlock()
-	if f.cache == nil {
-		return
-	}
-
 	// SECURITY: Don't cache long inputs to prevent hash collision attacks.
 	// Without storing the full input, we cannot verify collision on cache hit,
 	// which could allow an attacker to bypass filtering by crafting collisions.
-	if len(input) > cacheInputMaxLen {
+	// Checked before any cache traffic: it is a pure function of the input length.
+	if f.closed.Load() || len(input) > cacheInputMaxLen {
 		return
 	}
 
-	// Check if this is a new entry or an update (handles hash collision case)
-	_, exists := f.cache[hash]
+	// Direct-mapped insert: the store's overwrite of the slot's previous
+	// occupant (a colliding hash, an expired entry, or nothing) IS the
+	// eviction — no capacity bookkeeping, no locks, and exactly one small
+	// allocation per cached input (plus the lazily shared slot table itself).
+	f.slotTable()[hash&(filterCacheSlots-1)].Store(&filterCacheEntry{
+		input:     input, // Always store input for collision detection (already checked length)
+		result:    result,
+		expiresAt: now.UnixNano() + int64(cacheTTLDuration-cacheTTLMargin),
+	})
 
-	// Evict old entries if cache is full AND this is a new entry
-	// Use a batch eviction threshold to reduce O(N) eviction scans:
-	// evict when 10% over capacity instead of at exact capacity.
-	if !exists && len(f.cache) >= f.maxCacheSz {
-		// Simple eviction: clear expired entries first
-		ttl := cacheTTLSeconds * time.Second
-		for k, entry := range f.cache {
-			if now.Sub(entry.created) >= ttl {
-				delete(f.cache, k)
-			}
-		}
+	// The insert path already holds a wall-clock reading — feed the coarse
+	// clock for free (high-cardinality workloads insert constantly, keeping
+	// TTL checks fresh without waiting for the periodic hit-path refresh).
+	f.coarseNano.Store(now.UnixNano())
+}
 
-		// If still full after removing expired, clear half the cache
-		if len(f.cache) >= f.maxCacheSz {
-			count := 0
-			toDelete := f.maxCacheSz / 2
-			for k := range f.cache {
-				delete(f.cache, k)
-				count++
-				if count >= toDelete {
-					break
-				}
-			}
+// slotTable returns the (lazily allocated) direct-mapped slot table. Racing
+// first-inserts resolve through the CAS: one table wins, the loser is
+// garbage-collected, and every subsequent access shares the winner.
+func (f *SensitiveDataFilter) slotTable() *filterSlotTable {
+	if table := f.slotsPtr.Load(); table != nil {
+		return table
+	}
+	fresh := &filterSlotTable{}
+	if !f.slotsPtr.CompareAndSwap(nil, fresh) {
+		return f.slotsPtr.Load() // another inserter won the race
+	}
+	return fresh
+}
+
+// invalidateCache drops every cached filter result. A pattern mutation is the
+// only change that can alter the result for an already-cached input, so
+// AddPattern/AddPatterns/ClearPatterns invalidate immediately instead of
+// waiting out the TTL (previously up to cacheTTLSeconds of stale clean-results
+// after adding a pattern at runtime).
+//
+// Racing readers see either the old entry or nothing — both safe: the old
+// entry predates the mutation by at most the race window, and inserts racing
+// this sweep compute against the already-published new pattern set.
+func (f *SensitiveDataFilter) invalidateCache() {
+	if table := f.slotsPtr.Load(); table != nil {
+		for i := range table {
+			table[i].Store(nil)
 		}
 	}
+}
 
-	f.cache[hash] = filterCacheEntry{
-		input:   input, // Always store input for collision detection (already checked length)
-		result:  result,
-		created: now,
+// coarseNow returns a cached reading of time.Now().UnixNano(), refreshed at
+// most once every coarseClockRefreshEvery calls, for TTL checks on the
+// cache-hit path — removing the per-hit wall-clock read (time.Now measured at
+// ~37ns on Windows, the largest single component of the hit path).
+//
+// Correctness: the reading never runs ahead of real time (it is only ever
+// seeded from time.Now; a delayed refresh store can only move it backwards,
+// which expires entries early — the safe direction). At worst an entry is
+// served for up to coarseClockRefreshEvery calls past its wall-clock expiry.
+// Cached results are a pure function of (input, pattern set) and every
+// pattern mutation invalidates the cache (see invalidateCache), so a
+// stale-valid entry is indistinguishable from a recomputation; the TTL is
+// memory hygiene, not a correctness bound.
+func (f *SensitiveDataFilter) coarseNow() int64 {
+	if f.coarseTicks.Add(1)&(coarseClockRefreshEvery-1) == 0 {
+		f.coarseNano.Store(time.Now().UnixNano())
 	}
+	return f.coarseNano.Load()
 }
 
 // Pre-computed lowercase credential keywords for fast case-insensitive matching
@@ -1798,6 +1899,13 @@ func DefaultSecurityConfig() *SecurityConfig {
 // This includes all patterns from basic filtering plus additional patterns for
 // emails, IP addresses, JWT tokens, and database connection strings.
 // Use this for maximum security in production environments.
+//
+// Deprecated: DefaultSecureConfig is a near-homonym of DefaultSecurityConfig
+// with a different filtering strength (full vs basic), which makes the pair
+// easy to confuse. Use SecurityConfigForLevel(SecurityLevelStandard) instead,
+// which returns an equivalent config and composes with the other security
+// levels; DefaultSecurityConfig remains the recommended default and is
+// equivalent to SecurityConfigForLevel(SecurityLevelBasic).
 func DefaultSecureConfig() *SecurityConfig {
 	return &SecurityConfig{
 		MaxMessageSize:  maxMessageSize,

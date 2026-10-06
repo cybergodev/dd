@@ -4,6 +4,45 @@ All notable changes to the cybergodev/dd library will be documented in this file
 
 ---
 
+## v1.4.0 - API Unification, Lock-Free Filter Cache & Examples Overhaul (2026-10-07)
+
+### Added
+- `DefaultSamplingConfig()` — completes the `Default*Config()` family (Initial=100, Thereafter=100, Tick=1s)
+- `ProductionConfig()` preset — Info level, JSON format, RFC3339 timestamps, dynamic caller, default security filtering
+- `Config.LevelResolver` field — dynamic level resolution is now settable at construction time (previously runtime-only via `SetLevelResolver`)
+- Package-level `Close()` and `Shutdown(ctx)` — complete the package-layer lifecycle mirror alongside `Flush()`
+- `AuditSeverity.UnmarshalJSON` — library-emitted JSON audit events can now be decoded by `json.Unmarshal`
+- Regression coverage: entry-gate sampling/rate-limit slot pinning, API-surface golden snapshot (112 package-level functions frozen per the two-layer mirror policy)
+
+### Changed
+- `DefaultSecureConfig` deprecated (near-homonym of `DefaultSecurityConfig` with different filtering strength) — use `SecurityConfigForLevel(SecurityLevelStandard)`
+- Examples restructured into 11 standalone `main` packages compiled by the default build — `go run ./examples/01_quick_start` needs no build tag, and `go vet ./...` compile-verifies every example
+- doc.go documents the two-layer API mirror policy (logging/level/lifecycle mirrored package↔instance; runtime configuration intentionally instance-only)
+- `Config` godoc now documents the zero-value contract; `Clone` copies `LevelResolver`
+
+### Fixed
+- Fatal-level logs are no longer silently discarded by sampling or after `Close()` — the fatal handler always runs, honoring Fatal's must-exit contract
+- Entry arg-family methods (`Entry.Info`/`Infof`/`Print`/…) no longer consume two sampling/rate-limit slots per call — exactly one, matching `(*Logger)` methods
+- Runtime `AddPattern`/`AddPatterns`/`ClearPatterns` now invalidate the filter cache immediately — previously up to 5 minutes of unredacted hot messages after a pattern addition
+- `Config.build()` closes writers already resolved when a later target fails to resolve — file handles plus cleanup/compression goroutines no longer leak on failed (and retried) `New()`
+- `Default()`'s failure path could panic in `atomic.Value` on a differing error type — `defaultInitErr` is now `atomic.Pointer[error]`
+- `InitDefault` rejects multiple configs with `ErrMultipleConfigs` instead of silently using the first
+- `MultiWriter.Close` flushes `Flusher` writers before closing — buffered data no longer lost at teardown
+- Backstop failure paths in `newFromInternalConfig` close resolved writers (audit-logger failure and never-attempted remainder)
+
+### Performance
+- Filter result cache redesigned as a lock-free direct-mapped slot table (1024 slots, one atomic load pair per hit): BasicFilter/SecureFilter −40/−43%, ConcurrentLogging −31%, SimpleLogging −21%, StructuredLogging −20%
+- High-cardinality (unique-message) logging drops from ~160B/3 allocs to 32B/1 alloc per cached filter input
+- Coarse TTL clock replaces per-hit `time.Since` (~37ns on Windows — the largest single hit-path component)
+- `PatternGate.Allows` pointer receiver eliminates ~13% of formatted-logging CPU spent on struct copies
+- Entry dispatchers format inline without the closure indirection: `entry.Info` −9%, `entry.Infof` −7%
+- Logger creation reduced from 40 to 24 allocs/op (3216 → 2448 B/op)
+
+### Removed
+- Dead internal code only (unreachable registry method, test-only helpers) — no public API impact
+
+---
+
 ## v1.3.3 - Security Hardening, Correctness & Hot-Path Performance (2026-09-05)
 
 ### Fixed

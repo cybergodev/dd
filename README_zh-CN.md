@@ -109,9 +109,15 @@ logger, err := dd.New(dd.DevelopmentConfig())
 
 // 云原生 - JSON 格式，Debug 级别
 logger, err := dd.New(dd.JSONConfig())
+
+// 生产环境预设 - Info 级别，JSON 格式，RFC3339 时间戳
+logger, err := dd.New(dd.ProductionConfig())
 ```
 
 > 所有预设均默认启用基础敏感数据过滤（见[安全特性](#安全特性)）。
+>
+> 零值 `Config{}` 合法但**不**等价于 `DefaultConfig()`（Debug 级别、
+> 时间/级别/调用者修饰均关闭）——请始终从 `DefaultConfig()` 或预设出发。
 
 ### 自定义配置
 
@@ -236,7 +242,8 @@ if err != nil {
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
-// 邮箱地址需要完整过滤：cfg.Security = dd.DefaultSecureConfig()
+// 邮箱地址需要完整过滤：
+//   cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)
 ```
 
 要调整覆盖范围，可将 `cfg.Security` 替换为以下预设之一：
@@ -244,7 +251,7 @@ logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
 | 安全级别 | 过滤类型 | 覆盖范围 |
 |---------|---------|---------|
 | `DefaultSecurityConfig()` | 基础 | 密码、API Key、信用卡号、手机号、数据库连接串 |
-| `DefaultSecureConfig()` | 完整 | 所有内置模式：JWT、AWS Key、IP 地址、SSN、邮箱等 |
+| `SecurityConfigForLevel(SecurityLevelStandard)` | 完整 | 所有内置模式：JWT、AWS Key、IP 地址、SSN、邮箱等 |
 | `HealthcareConfig()` | HIPAA | 完整 + PHI 模式（诊断代码、病历号） |
 | `FinancialConfig()` | PCI-DSS | 完整 + 金融数据（SWIFT、IBAN、CVV、路由号） |
 | `GovernmentConfig()` | 政府 | 完整 + 敏感标识（护照、驾照、案件号） |
@@ -298,7 +305,7 @@ filter.PatternCount()                      // 已注册模式数量
 filter.ClearPatterns()                     // 清除所有模式
 filter.Disable() / filter.Enable()         // 开关切换（不丢失模式）
 filter.IsEnabled()
-filter.GetFilterStats()                    // dd.FilterStats: 扫描、命中、丢弃统计
+filter.GetFilterStats()                    // dd.FilterStats: TotalFiltered、TotalRedactions、TotalTimeouts、PatternCount 等
 ```
 
 ### 禁用安全过滤（最高性能）
@@ -658,13 +665,11 @@ recorder.SetFormat(dd.FormatJSON) // 以 JSON 模式解析输出
 
 ```go
 cfg := dd.DefaultConfig()
-cfg.Sampling = &dd.SamplingConfig{
-    Enabled:    true,
-    Initial:    100,              // 始终记录前 100 条
-    Thereafter: 10,               // 之后每 10 条记录 1 条
-    Tick:       time.Second,      // 每秒重置计数器
-}
+sampling := dd.DefaultSamplingConfig() // Initial=100, Thereafter=100, Tick=1s
+sampling.Thereafter = 10               // 之后每 10 条记录 1 条（按秒）
+cfg.Sampling = &sampling
 logger, err := dd.New(cfg)
+// 每秒低于 100 条的流量不会触发采样，仅突发流量被削减
 ```
 
 ### 字段验证
@@ -698,12 +703,20 @@ logger.SetFieldValidation(fv)
 ```go
 var errorCount atomic.Int64
 
-logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
+resolver := func(ctx context.Context) dd.LogLevel {
     if errorCount.Load() > 100 {
         return dd.LevelWarn  // 高错误率下降低日志量
     }
     return dd.LevelDebug
-})
+}
+
+// 构造期配置（Config.LevelResolver）
+cfg := dd.DefaultConfig()
+cfg.LevelResolver = resolver
+logger, _ := dd.New(cfg)
+
+// 或运行时设置
+logger.SetLevelResolver(resolver)
 ```
 
 ### 自定义 Fatal 处理器
@@ -744,6 +757,14 @@ defer func() {
         fmt.Fprintf(os.Stderr, "日志器关闭错误: %v\n", err)
     }
 }()
+```
+
+默认日志器也可以通过包级函数关闭：
+
+```go
+dd.InitDefault(dd.DefaultConfig())
+defer dd.Close()                 // 简单关闭
+dd.Shutdown(ctx)                 // 带超时的优雅关闭
 ```
 
 ### 调试工具
@@ -860,6 +881,8 @@ dd.GetSampling() *SamplingConfig
 
 // 生命周期
 dd.Flush() error
+dd.Close() error                       // 关闭默认日志器
+dd.Shutdown(ctx context.Context) error // 带超时的优雅关闭
 dd.AddWriter(w io.Writer) error
 dd.RemoveWriter(w io.Writer) error
 dd.WriterCount() int
@@ -971,7 +994,8 @@ dd.Any(key string, value any)        // 任意类型
 ```go
 // 预设配置
 dd.DefaultSecurityConfig() // 基础（所有预设的默认值）
-dd.DefaultSecureConfig()   // 完整
+dd.SecurityConfigForLevel(dd.SecurityLevelStandard) // 完整
+//   （DefaultSecureConfig() 已弃用：返回同样的完整过滤器）
 dd.HealthcareConfig()      // HIPAA
 dd.FinancialConfig()       // PCI-DSS
 dd.GovernmentConfig()      // 政府
@@ -1116,26 +1140,27 @@ type Service struct {
 
 ## 示例代码
 
-查看 [examples](examples) 目录获取完整可运行示例：
+查看 [examples](examples) 目录获取完整可运行示例
+（每个示例为独立包，随 `go build ./...` 一并编译验证）：
 
-| 文件 | 说明 |
+| 示例 | 说明 |
 |------|------|
-| [01_quick_start.go](examples/01_quick_start.go) | 5 分钟快速入门 |
-| [02_structured_logging.go](examples/02_structured_logging.go) | 类型安全字段，WithFields |
-| [03_configuration.go](examples/03_configuration.go) | 配置 API、预设配置、轮转 |
-| [04_security.go](examples/04_security.go) | 过滤、自定义规则 |
-| [05_writers.go](examples/05_writers.go) | 文件、缓冲、多 Writer |
-| [06_context_hooks.go](examples/06_context_hooks.go) | 追踪、钩子 |
-| [07_convenience.go](examples/07_convenience.go) | 输出目标、快速配置 |
-| [08_production.go](examples/08_production.go) | 生产环境模式 |
-| [09_advanced.go](examples/09_advanced.go) | 采样、验证、Fatal 处理器 |
-| [10_audit_integrity.go](examples/10_audit_integrity.go) | 审计、完整性 |
-| [11_testing.go](examples/11_testing.go) | 使用 LoggerRecorder 测试 |
+| [01_quick_start](examples/01_quick_start/main.go) | 5 分钟快速入门 |
+| [02_structured_logging](examples/02_structured_logging/main.go) | 类型安全字段，WithFields |
+| [03_configuration](examples/03_configuration/main.go) | 配置 API、预设配置、轮转 |
+| [04_security](examples/04_security/main.go) | 过滤、安全等级、限流 |
+| [05_writers](examples/05_writers/main.go) | 文件、轮转、缓冲、多 Writer |
+| [06_context_hooks](examples/06_context_hooks/main.go) | 追踪、钩子(含 OnRotate) |
+| [07_convenience](examples/07_convenience/main.go) | Print 族、默认 logger、错误处理 |
+| [08_production](examples/08_production/main.go) | 生产环境模式 |
+| [09_advanced](examples/09_advanced/main.go) | 采样、验证、Fatal 处理器 |
+| [10_audit_integrity](examples/10_audit_integrity/main.go) | 审计、完整性、签名审计链 |
+| [11_testing](examples/11_testing/main.go) | 使用 LoggerRecorder 测试 |
 
-使用 `examples` 构建标签运行示例：
+直接运行任意示例（无需构建标签）：
 
 ```bash
-go run -tags examples examples/01_quick_start.go
+go run ./examples/01_quick_start
 ```
 
 ---

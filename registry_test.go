@@ -542,22 +542,6 @@ func TestExtractorRegistry_Clone(t *testing.T) {
 	}
 }
 
-func TestExtractorRegistry_Clear(t *testing.T) {
-	registry := newContextExtractorRegistry()
-	registry.Add(func(ctx context.Context) []Field {
-		return []Field{String("key1", "value1")}
-	})
-
-	if registry.count() != 1 {
-		t.Fatalf("expected 1 extractor, got %d", registry.count())
-	}
-
-	registry.clear()
-	if registry.count() != 0 {
-		t.Errorf("expected 0 extractors after clear, got %d", registry.count())
-	}
-}
-
 func TestExtractorRegistry_ConcurrentAccess(t *testing.T) {
 	registry := newContextExtractorRegistry()
 

@@ -24,6 +24,7 @@ type internalConfig struct {
 	fieldValidation   *FieldValidationConfig
 	fatalHandler      FatalHandler
 	writeErrorHandler WriteErrorHandler
+	levelResolver     LevelResolver
 	contextExtractors []ContextExtractor
 	hooks             *HookRegistry
 	sampling          *SamplingConfig
@@ -47,6 +48,16 @@ func (c Config) build() (*Logger, error) {
 		for _, t := range c.Targets {
 			w, err := t.resolve()
 			if err != nil {
+				// Close writers already resolved before failing: file targets own
+				// real resources (open file handles, cleanup/compression
+				// goroutines) that would otherwise leak for the lifetime of the
+				// process — and a failed New() is exactly the kind of error a
+				// config-driven caller retries in a loop. Best-effort:
+				// teardown cannot act on individual close errors. Mirrors the
+				// AddWriter-failure cleanup in newFromInternalConfig.
+				for _, resolved := range writers {
+					_ = closeWriter(resolved) // best-effort cleanup
+				}
 				return nil, err
 			}
 			if w != nil {
@@ -87,6 +98,7 @@ func (c Config) toInternalConfig() *internalConfig {
 		fieldValidation:   c.FieldValidation,
 		fatalHandler:      c.FatalHandler,
 		writeErrorHandler: c.WriteErrorHandler,
+		levelResolver:     c.LevelResolver,
 		contextExtractors: c.ContextExtractors,
 		hooks:             c.Hooks,
 		sampling:          c.Sampling,

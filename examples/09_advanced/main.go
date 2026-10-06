@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -19,6 +17,9 @@ import (
 // 4. Custom fatal handler
 // 5. Debug utilities
 // 6. Dynamic-level logging (Log/Logf/LogWith) and package-level WithFields
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Advanced Features ===")
 
@@ -37,16 +38,15 @@ func section1LogSampling() {
 	fmt.Println("1. Log Sampling")
 	fmt.Println("----------------")
 
-	// Sampling reduces log volume in high-throughput scenarios
-	// Initial: log first N messages
-	// Thereafter: log 1 in every M messages
+	// Start from DefaultSamplingConfig and adjust — Initial messages are
+	// always logged, afterwards only 1 in Thereafter. Tick=1s resets the
+	// budget every second (burst traffic is reduced, steady traffic is not).
+	sampling := dd.DefaultSamplingConfig()
+	sampling.Initial = 10    // per second: log first 10
+	sampling.Thereafter = 10 // then 1 in 10
+
 	cfg := dd.DefaultConfig()
-	cfg.Sampling = &dd.SamplingConfig{
-		Enabled:    true,
-		Initial:    10,  // Log first 10 messages
-		Thereafter: 100, // Then log 1 in every 100
-		Tick:       time.Second,
-	}
+	cfg.Sampling = &sampling
 	cfg.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
 
 	logger, _ := dd.New(cfg)
@@ -60,10 +60,10 @@ func section1LogSampling() {
 	}
 
 	// Check sampling config
-	sampling := logger.GetSampling()
-	if sampling != nil {
+	current := logger.GetSampling()
+	if current != nil {
 		fmt.Printf("  Sampling enabled: Initial=%d, Thereafter=%d\n",
-			sampling.Initial, sampling.Thereafter)
+			current.Initial, current.Thereafter)
 	}
 
 	// Disable sampling
@@ -112,6 +112,12 @@ func section2FieldValidation() {
 		dd.Int("responseCode", 200),
 	)
 
+	// Validation can be swapped at runtime on an existing logger
+	customLogger.SetFieldValidation(dd.StrictSnakeCaseConfig())
+	customLogger.InfoWith("Back to snake_case",
+		dd.String("user_id", "123"),
+	)
+
 	fmt.Println("  Valid: snake_case, camelCase, PascalCase, kebab-case")
 	fmt.Println()
 }
@@ -121,14 +127,7 @@ func section3LevelResolver() {
 	fmt.Println("3. Dynamic Level Resolver")
 	fmt.Println("---------------------------")
 
-	// Level resolver allows dynamic level based on runtime conditions
-	cfg := dd.DefaultConfig()
-	cfg.Level = dd.LevelDebug
-
-	logger, _ := dd.New(cfg)
-	defer logger.Close()
-
-	// Set custom level resolver
+	// Level resolver allows dynamic level based on runtime conditions.
 	// Example: Adjust level based on time of day or system load
 	resolver := func(ctx context.Context) dd.LogLevel {
 		// In production, you might check:
@@ -146,14 +145,21 @@ func section3LevelResolver() {
 		return dd.LevelDebug
 	}
 
-	logger.SetLevelResolver(resolver)
+	// Install at construction time via Config.LevelResolver...
+	cfg := dd.DefaultConfig()
+	cfg.Level = dd.LevelDebug
+	cfg.LevelResolver = resolver
 
-	// Now log level is determined dynamically
+	logger, _ := dd.New(cfg)
+	defer logger.Close()
+
+	// Log level is determined dynamically for every entry and IsLevelEnabled
 	logger.Debug("This may or may not show depending on time")
 	logger.Info("Info message")
 	logger.Warn("Warning always shows")
 
-	// Remove resolver to use static level
+	// ...or manage at runtime: SetLevelResolver installs/replaces one,
+	// nil restores the static level (Debug, from cfg.Level above)
 	logger.SetLevelResolver(nil)
 	logger.Debug("Debug with static level (shows)")
 
@@ -230,6 +236,7 @@ func section5DebugUtilities() {
 
 	fmt.Println("\n  WARNING: Package-level dd.Text/JSON/etc. do NOT filter data!")
 	fmt.Println("  Logger methods (logger.Text/JSON) write to configured writers with filtering.")
+	fmt.Println("  Filtered fmt-style alternatives: dd.Print/Printf (see 07_convenience).")
 }
 
 // Section 6: Dynamic-level logging — Log/Logf/LogWith choose the level at
@@ -248,6 +255,11 @@ func section6DynamicLevels() {
 	logger.Logf(level, "Logged via Logf() with %s", "a format string")
 	logger.LogWith(level, "Logged via LogWith()",
 		dd.String("mode", "dynamic"),
+	)
+
+	// The same generic-level functions exist at package level
+	dd.LogWith(level, "Logged via package-level dd.LogWith()",
+		dd.String("layer", "package"),
 	)
 
 	// Package-level entries build on the default logger

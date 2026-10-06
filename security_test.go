@@ -1538,10 +1538,11 @@ func TestSecurityConfigClone(t *testing.T) {
 }
 
 // TestFilterCacheBoundaries covers the filter result cache's safety limits
-// directly: a nil cache is a no-op, long inputs are never cached (hash
-// collision defense), and the cache evicts once full instead of growing.
+// directly: a zero-value filter's cacheResult is safe, long inputs are never
+// cached (hash collision defense), and the direct-mapped slot table bounds
+// itself by overwriting instead of growing.
 func TestFilterCacheBoundaries(t *testing.T) {
-	t.Run("nil cache is a no-op", func(t *testing.T) {
+	t.Run("zero-value filter cacheResult is safe", func(t *testing.T) {
 		f := &SensitiveDataFilter{}
 		f.cacheResult(1, "input", "result", time.Now()) // must not panic
 	})
@@ -1551,28 +1552,50 @@ func TestFilterCacheBoundaries(t *testing.T) {
 		long := strings.Repeat("a", cacheInputMaxLen+1)
 		f.cacheResult(2, long, "r", time.Now())
 
-		f.cacheMu.Lock()
-		cached := len(f.cache)
-		f.cacheMu.Unlock()
-		if cached != 0 {
+		if cached := filterCacheLen(f); cached != 0 {
 			t.Errorf("input of %d bytes was cached, want skipped (cache len %d)", len(long), cached)
 		}
 	})
 
-	t.Run("evicts when full", func(t *testing.T) {
+	t.Run("slot table is bounded, not growing", func(t *testing.T) {
 		f := newSensitiveDataFilterWithPatterns(nil, nil, emptyFilterTimeout)
-		f.maxCacheSz = 2
-		for i := 0; i < 4; i++ {
+		// Consecutive hashes i fill slots i&1023: after filterCacheSlots+32
+		// distinct inputs the first 32 slots have been overwritten, so exactly
+		// filterCacheSlots entries remain — the direct-mapped bound.
+		n := filterCacheSlots + 32
+		for i := 0; i < n; i++ {
 			f.cacheResult(uint64(i), fmt.Sprintf("input-%d", i), "r", time.Now())
 		}
 
-		f.cacheMu.Lock()
-		cached := len(f.cache)
-		f.cacheMu.Unlock()
-		if cached != f.maxCacheSz {
-			t.Errorf("cache holds %d entries after overflow, want capped at %d", cached, f.maxCacheSz)
+		if cached := filterCacheLen(f); cached != filterCacheSlots {
+			t.Errorf("cache holds %d entries after %d inserts, want bounded at %d", cached, n, filterCacheSlots)
 		}
 	})
+
+	t.Run("colliding hash overwrites its slot", func(t *testing.T) {
+		f := newSensitiveDataFilterWithPatterns(nil, nil, emptyFilterTimeout)
+		f.cacheResult(7, "first", "r1", time.Now())
+		f.cacheResult(7, "second", "r2", time.Now())
+
+		if cached := filterCacheLen(f); cached != 1 {
+			t.Errorf("cache holds %d entries for one slot, want 1 (last writer wins)", cached)
+		}
+	})
+}
+
+// filterCacheLen counts the occupied slots of the direct-mapped cache. Test
+// helper for asserting cache capacity behavior.
+func filterCacheLen(f *SensitiveDataFilter) (n int) {
+	table := f.slotsPtr.Load()
+	if table == nil {
+		return 0
+	}
+	for i := range table {
+		if table[i].Load() != nil {
+			n++
+		}
+	}
+	return n
 }
 
 func TestPresetConfigsHaveMaxWriters(t *testing.T) {

@@ -17,13 +17,18 @@ const (
 )
 
 const (
-	// defaultCallerDepth is the number of stack frames to skip when
-	// determining the caller of a log function.
-	// Value 3 accounts for: runtime.Caller -> GetCaller -> Log method -> user code
+	// defaultCallerDepth is the base caller depth handed to the formatter's
+	// fallback resolver (ResolveCaller -> GetCaller). The hot path resolves the
+	// caller at the entry-dispatch sites via internal.EntryCaller (fixed skip,
+	// no depth arithmetic); this value only matters for the depth-based
+	// fallback paths that recover from a violated capture frame shape.
 	defaultCallerDepth = 3
 
-	// entryCallerDepth is the additional stack frames to skip when logging
-	// from a LoggerEntry. LoggerEntry adds 2 extra layers: Entry.Info -> Entry.Log
+	// entryCallerDepth is the additional caller depth LoggerEntry paths add on
+	// top of defaultCallerDepth for the formatter's fallback resolver — the
+	// entry funnel (entry dispatch -> logFiltered -> logCoreWithDepth) carries
+	// more stack layers than the (*Logger) funnels.
+	// The entry-site capture itself uses the same fixed skip for both layers.
 	entryCallerDepth = 2
 )
 

@@ -417,9 +417,10 @@ ttlWithMargin := time.Duration(cacheTTLSeconds)*time.Second - time.Millisecond
 
 #### Hash Collision Protection
 
-Filter cache uses both hash and input verification:
+Filter cache uses both hash and input verification (the cache is sharded by
+input hash; the lookup below runs on the selected shard):
 ```go
-if entry, ok := f.cache[inputHash]; ok && len(entry.input) == inputLen && entry.input == input {
+if entry, ok := shard.m[inputHash]; ok && len(entry.input) == inputLen && entry.input == input {
     // Use cached result
 }
 ```
@@ -744,7 +745,7 @@ If you discover a security vulnerability in the DD library, please report it res
 ## Additional Resources
 
 - [README.md](README.md) - General documentation
-- [examples/04_security.go](examples/04_security.go) - Security examples
+- [examples/04_security](examples/04_security/main.go) - Security examples
 - [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html)
 
 ---

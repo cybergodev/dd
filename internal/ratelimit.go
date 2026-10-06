@@ -266,7 +266,8 @@ func (rl *RateLimiter) handleRateLimited() bool {
 	}
 }
 
-// GetStats returns current rate limiter statistics.
+// RateLimitStats holds a snapshot of the rate limiter's current state for
+// monitoring.
 type RateLimitStats struct {
 	Tokens            int64 // Current message tokens
 	ByteTokens        int64 // Current byte tokens
