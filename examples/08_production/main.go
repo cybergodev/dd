@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -26,6 +24,10 @@ import (
 // 4. Concurrent logging
 // 5. Performance optimization
 // 6. Caller detection
+// 7. Package-level lifecycle (InitDefault + dd.Shutdown)
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Production Patterns ===")
 
@@ -35,6 +37,7 @@ func main() {
 	section4ConcurrentLogging()
 	section5Performance()
 	section6CallerDetection()
+	section7PackageLifecycle()
 
 	fmt.Println("\n✅ Production patterns completed!")
 }
@@ -246,7 +249,7 @@ func section4ConcurrentLogging() {
 
 	fmt.Printf("  %d workers × %d messages = %d total\n", numWorkers, msgsPerWorker, total)
 	fmt.Printf("  Duration: %v\n", duration)
-	fmt.Printf("  Throughput: %.0f ops/sec\n\n", opsPerSec)
+	fmt.Printf("  Throughput: %.0f ops/sec\n", opsPerSec)
 	fmt.Println()
 }
 
@@ -327,6 +330,32 @@ func section6CallerDetection() {
 	logger3.Info("FullPath enabled")
 
 	fmt.Println()
+}
+
+// Section 7: Package-level lifecycle — InitDefault once at startup, dd.*
+// functions everywhere, bounded teardown with dd.Shutdown at exit.
+func section7PackageLifecycle() {
+	fmt.Println("7. Package-Level Lifecycle")
+	fmt.Println("---------------------------")
+
+	cfg := dd.ProductionConfig()
+	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/global.log")}
+	if err := dd.InitDefault(cfg); err != nil {
+		fmt.Printf("  InitDefault failed: %v\n", err)
+		return
+	}
+
+	dd.Info("Global logging configured via InitDefault")
+	dd.WithField("component", "worker").Info("Package-level entry with preset field")
+
+	// defer dd.Close() is the simple teardown; dd.Shutdown is bounded:
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := dd.Shutdown(shutdownCtx); err != nil {
+		fmt.Printf("  Shutdown error: %v\n", err)
+	}
+
+	fmt.Println("✓ Global logger shut down via dd.Shutdown")
 }
 
 func computeExpensiveDebugInfo() string {

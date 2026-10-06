@@ -631,6 +631,19 @@ func TestInitDefault(t *testing.T) {
 	}
 }
 
+// TestInitDefaultRejectsMultipleConfigs pins InitDefault's misuse guard:
+// more than one config is the same developer mistake New rejects with
+// ErrMultipleConfigs, not something to resolve by silently keeping the first.
+func TestInitDefaultRejectsMultipleConfigs(t *testing.T) {
+	oldDefault := Default()
+	defer SetDefault(oldDefault)
+
+	err := InitDefault(DefaultConfig(), DefaultConfig())
+	if !errors.Is(err, ErrMultipleConfigs) {
+		t.Fatalf("InitDefault(cfg, cfg) error = %v, want ErrMultipleConfigs", err)
+	}
+}
+
 // TestSetDefaultClearsStaleInitError pins SetDefault's contract: installing a
 // caller-provided logger clears any initialization error recorded by a
 // previous (fallback) default logger, mirroring InitDefault's clear-on-success.
@@ -643,8 +656,8 @@ func TestSetDefaultClearsStaleInitError(t *testing.T) {
 	// Simulate the state Default() leaves behind when its build fails and a
 	// fallback logger is installed: an error recorded for later retrieval.
 	stale := errors.New("stale init error")
-	defaultInitErr.Store(stale)
-	t.Cleanup(func() { defaultInitErr.Store(errNoInit) })
+	defaultInitErr.Store(&stale)
+	t.Cleanup(func() { defaultInitErr.Store(nil) })
 
 	if err := DefaultInitError(); err == nil {
 		t.Fatal("precondition: DefaultInitError() should report the stored error")

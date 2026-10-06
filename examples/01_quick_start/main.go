@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -16,6 +14,9 @@ import (
 // 3. Log levels and dynamic control
 // 4. Formatted and structured logging
 // 5. Global logger management
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Logger Quick Start ===")
 
@@ -38,6 +39,9 @@ func section1PackageLevel() {
 	dd.Warn("Warn: warning conditions")
 	dd.Error("Error: error conditions")
 	// dd.Fatal("Fatal: severe errors, exits program") // Uncomment to test
+
+	// Formatted logging (fmt-style verbs)
+	dd.Infof("Formatted: user %s logged in from %s", "john", "10.0.0.1")
 
 	// Structured logging with package-level functions
 	dd.InfoWith("Request processed:",
@@ -93,8 +97,11 @@ func section3LogLevels() {
 	logger.SetLevel(dd.LevelDebug)
 	logger.Debug("Now visible! Level changed to DEBUG")
 
-	// Check current level
+	// Check current level and level gates before doing expensive work
 	fmt.Printf("Current level: %s\n", logger.GetLevel().String())
+	if logger.IsDebugEnabled() {
+		logger.Debug("IsDebugEnabled guard: skip expensive computation when false")
+	}
 
 	fmt.Println()
 }

@@ -417,3 +417,30 @@ func TestShutdownTimeoutStillClosesWriters(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildClosesWritersOnResolveFailure pins Config.build()'s error-path
+// cleanup: when a later OutputTarget fails to resolve, writers already
+// resolved from earlier targets must be closed, not leaked. The custom
+// writer (closeTrackingWriter, concurrency_regression_test.go) closes through
+// the same closeWriter funnel a file target would use — file targets own an
+// open handle plus a cleanup goroutine that would otherwise leak on every
+// retried New().
+func TestBuildClosesWritersOnResolveFailure(t *testing.T) {
+	tracked := &closeTrackingWriter{}
+	cfg := DefaultConfig()
+	// The failing target must pass Validate (which already rejects empty file
+	// paths and nil custom writers) but fail resolve: an unknown OutputType
+	// does exactly that, as does a FileOutput whose NewFileWriter fails
+	// (unwritable directory, path traversal, symlink target, ...).
+	cfg.Targets = []OutputTarget{
+		CustomOutput(tracked),  // resolves first
+		{Type: OutputType(42)}, // fails at resolve, passes Validate
+	}
+
+	if _, err := New(cfg); err == nil {
+		t.Fatal("expected New to fail on the unresolvable target")
+	}
+	if !tracked.isClosed() {
+		t.Error("writer resolved before the failing target was not closed — leaked by build()")
+	}
+}

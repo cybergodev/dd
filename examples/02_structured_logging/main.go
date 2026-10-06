@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -15,8 +13,11 @@ import (
 // Topics covered:
 // 1. All field types (String, Int, Bool, Float64, Time, Duration, Err, ErrWithKey)
 // 2. WithFields() chaining for reusable context
-// 3. LoggerEntry for contextual logging
+// 3. LoggerEntry for contextual logging (all method families)
 // 4. Best practices for production
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Structured Logging ===")
 
@@ -86,6 +87,7 @@ func section2WithFields() {
 		dd.String("request_id", "req-abc-123"),
 	)
 	requestLogger.Info("Processing request:")
+	requestLogger.Infof("Step %d of %d complete", 2, 3) // formatted variant
 	requestLogger.InfoWith("Request completed:",
 		dd.Int("status", 200),
 		dd.Duration("latency", 45*time.Millisecond),

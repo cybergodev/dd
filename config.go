@@ -78,6 +78,12 @@ func CustomOutput(w io.Writer) OutputTarget {
 // Config provides a struct-based configuration API for creating loggers.
 // Direct field modification with IDE autocomplete support.
 //
+// Zero-value contract: the zero Config (Config{}) is valid but is NOT
+// equivalent to DefaultConfig — it logs at LevelDebug with IncludeTime,
+// IncludeLevel, and DynamicCaller disabled. Always start from DefaultConfig()
+// or one of the presets (DevelopmentConfig, JSONConfig, ProductionConfig)
+// and modify fields from there.
+//
 // Example:
 //
 //	cfg := dd.DefaultConfig()
@@ -118,6 +124,13 @@ type Config struct {
 	FatalHandler      FatalHandler
 	WriteErrorHandler WriteErrorHandler
 
+	// Dynamic level resolution. When set, the resolver determines the
+	// effective log level for every log entry and every IsLevelEnabled
+	// check, overriding Level. The zero value (nil) disables dynamic
+	// resolution. Can be replaced after construction with
+	// Logger.SetLevelResolver.
+	LevelResolver LevelResolver
+
 	// Extensibility
 	ContextExtractors []ContextExtractor
 	Hooks             *HookRegistry
@@ -139,10 +152,6 @@ type Config struct {
 //	cfg.Format = dd.FormatJSON
 //	logger, _ := dd.New(cfg)
 func DefaultConfig() Config {
-	return defaultConfig()
-}
-
-func defaultConfig() Config {
 	return Config{
 		Level:         LevelInfo,
 		Format:        FormatText,
@@ -204,13 +213,40 @@ func JSONConfig() Config {
 	}
 }
 
+// ProductionConfig creates a Config with production-ready settings:
+// Info level, JSON output, RFC3339 timestamps, and dynamic caller detection.
+// Security filtering is enabled by default so accidental sensitive-data
+// logging is caught before records are shipped to aggregation systems.
+// Combine with Targets (e.g. FileOutput) and optionally Audit for
+// security-event monitoring.
+//
+// Example:
+//
+//	cfg := dd.ProductionConfig()
+//	cfg.Targets = []dd.OutputTarget{dd.FileOutput("logs/app.log")}
+//	logger, _ := dd.New(cfg)
+func ProductionConfig() Config {
+	return Config{
+		Level:         LevelInfo,
+		Format:        FormatJSON,
+		TimeFormat:    time.RFC3339,
+		IncludeTime:   true,
+		IncludeLevel:  true,
+		FullPath:      false,
+		DynamicCaller: true,
+		Security:      DefaultSecurityConfig(), // Security enabled by default
+		FatalHandler:  defaultFatalHandler,
+		JSON:          DefaultJSONOptions(),
+	}
+}
+
 // Clone creates a copy of the configuration.
 //
 // Clone behavior:
 //   - Deep copy: JSON, Sampling, Security, Hooks, Audit configs
 //   - Shared by pointer (later mutations through the original are visible to
 //     the clone): FieldValidation (the whole *FieldValidationConfig struct)
-//   - Shared values: FatalHandler, WriteErrorHandler (function values)
+//   - Shared values: FatalHandler, WriteErrorHandler, LevelResolver (function values)
 //   - ContextExtractors slice is copied but extractor instances are shared
 //
 // MAINTENANCE: When adding new pointer/slice/map fields to Config, you MUST
@@ -241,6 +277,7 @@ func (c *Config) Clone() Config {
 		FieldValidation:   c.FieldValidation,
 		FatalHandler:      c.FatalHandler,
 		WriteErrorHandler: c.WriteErrorHandler,
+		LevelResolver:     c.LevelResolver,
 		Sampling:          c.Sampling,
 	}
 
@@ -339,4 +376,30 @@ type SamplingConfig struct {
 	// Tick is the time interval after which counters are reset.
 	// This allows sampling to restart periodically for burst handling.
 	Tick time.Duration
+}
+
+// DefaultSamplingConfig returns a SamplingConfig with sensible defaults:
+// Initial=100, Thereafter=100, Tick=1s. Counters reset every second, so the
+// Initial allowance refreshes per second: traffic below 100 messages/second
+// is never sampled, and only burst traffic beyond it is reduced to 1 in 100 —
+// matching the per-second budget model of DefaultRateLimitConfig. Set Tick=0
+// for process-lifetime counters (the first 100 messages ever, then 1 in 100
+// forever). The returned config has Enabled=true, so assigning it to
+// Config.Sampling activates sampling — set Enabled=false on the returned
+// value to use it as an inert template.
+//
+// Example:
+//
+//	cfg := dd.DefaultConfig()
+//	sampling := dd.DefaultSamplingConfig()
+//	sampling.Initial = 10 // per second: log first 10, then 1 in 10
+//	cfg.Sampling = &sampling
+//	logger, _ := dd.New(cfg)
+func DefaultSamplingConfig() SamplingConfig {
+	return SamplingConfig{
+		Enabled:    true,
+		Initial:    100,
+		Thereafter: 100,
+		Tick:       time.Second,
+	}
 }

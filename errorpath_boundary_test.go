@@ -114,39 +114,43 @@ func TestVerifyLegacySignatures(t *testing.T) {
 	})
 }
 
-func TestLogWithLazyMessageGate(t *testing.T) {
+// TestEntryDispatchGate pins the gate semantics of the LoggerEntry arg-family
+// dispatchers: message formatting (user String()/Error() methods included)
+// must not run for entries the level gate rejects, and a passing gate must
+// format and write the message. Formerly exercised via the logWithLazyMessage
+// closure; the direct shouldLog in the dispatchers carries the same contract.
+// countingStringer is defined in improvements_test.go.
+func TestEntryDispatchGate(t *testing.T) {
+	t.Run("nil entry is a no-op", func(t *testing.T) {
+		var e *LoggerEntry
+		e.entryLogDispatch(LevelInfo, "boom")        // must not panic
+		e.entryLogfDispatch(LevelInfo, "boom %v", 1) // must not panic
+	})
+
 	t.Run("nil logger is a no-op", func(t *testing.T) {
-		var l *Logger
-		l.logWithLazyMessage(LevelInfo, func() string { return "boom" }, nil, "", 0)
+		e := &LoggerEntry{}
+		e.entryLogDispatch(LevelInfo, "boom")        // must not panic
+		e.entryLogfDispatch(LevelInfo, "boom %v", 1) // must not panic
 	})
 
-	t.Run("nil message func is a no-op", func(t *testing.T) {
-		l, err := New()
-		if err != nil {
-			t.Fatalf("New() error = %v", err)
-		}
-		defer l.Close()
-		l.logWithLazyMessage(LevelInfo, nil, nil, "", 0)
-	})
-
-	t.Run("gate rejection skips the lazy message", func(t *testing.T) {
+	t.Run("gate rejection skips argument formatting", func(t *testing.T) {
 		l, err := New(Config{Level: LevelWarn})
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
 		defer l.Close()
+		e := l.WithField("k", "v")
 
-		called := false
-		l.logWithLazyMessage(LevelInfo, func() string {
-			called = true
-			return "lazy"
-		}, nil, "", 0)
-		if called {
-			t.Error("message func invoked although the level gate rejects Info")
+		var count int32
+		arg := countingStringer{calls: &count}
+		e.entryLogDispatch(LevelInfo, arg)
+		e.entryLogfDispatch(LevelInfo, "%v", arg)
+		if count != 0 {
+			t.Errorf("argument formatted %d times although the level gate rejects Info", count)
 		}
 	})
 
-	t.Run("gate pass invokes the lazy message and writes it", func(t *testing.T) {
+	t.Run("gate pass formats the arguments and writes the message", func(t *testing.T) {
 		var buf bytes.Buffer
 		l, err := New(Config{
 			Level:   LevelDebug,
@@ -156,25 +160,26 @@ func TestLogWithLazyMessageGate(t *testing.T) {
 			t.Fatalf("New() error = %v", err)
 		}
 		defer l.Close()
+		e := l.WithField("k", "v")
 
-		called := false
-		l.logWithLazyMessage(LevelWarn, func() string {
-			called = true
-			return "lazy-df21"
-		}, nil, "", 0)
-		if !called {
-			t.Error("message func not invoked although the level gate passes Warn")
+		e.entryLogDispatch(LevelWarn, "lazy-df21")
+		e.entryLogfDispatch(LevelWarn, "formatted-%d", 42)
+		out := buf.String()
+		if !strings.Contains(out, "lazy-df21") {
+			t.Errorf("output %q does not contain the dispatched message", out)
 		}
-		if !strings.Contains(buf.String(), "lazy-df21") {
-			t.Errorf("output %q does not contain the lazy message", buf.String())
+		if !strings.Contains(out, "formatted-42") {
+			t.Errorf("output %q does not contain the formatted message", out)
 		}
 	})
 }
 
 func TestNewFromInternalConfigErrorPaths(t *testing.T) {
 	t.Run("invalid audit config fails with wrapped error", func(t *testing.T) {
-		cfg := defaultConfig().toInternalConfig()
+		cfg := DefaultConfig().toInternalConfig()
 		cfg.auditConfig = &AuditConfig{Enabled: true, BufferSize: -1}
+		spy := &closeSpyWriter{}
+		cfg.writers = []io.Writer{spy}
 
 		_, err := newFromInternalConfig(cfg)
 		if err == nil {
@@ -183,12 +188,16 @@ func TestNewFromInternalConfigErrorPaths(t *testing.T) {
 		if !strings.Contains(err.Error(), "failed to initialize audit logger") {
 			t.Errorf("error = %v, want it to mention the audit logger failure", err)
 		}
+		if !spy.closed {
+			t.Error("resolved writer was not closed on the audit-failure path (leak)")
+		}
 	})
 
 	t.Run("nil writer fails and closes writers added before it", func(t *testing.T) {
 		spy := &closeSpyWriter{}
-		cfg := defaultConfig().toInternalConfig()
-		cfg.writers = []io.Writer{spy, nil}
+		trailing := &closeSpyWriter{}
+		cfg := DefaultConfig().toInternalConfig()
+		cfg.writers = []io.Writer{spy, nil, trailing}
 
 		_, err := newFromInternalConfig(cfg)
 		if !errors.Is(err, ErrNilWriter) {
@@ -199,6 +208,9 @@ func TestNewFromInternalConfigErrorPaths(t *testing.T) {
 		}
 		if !spy.closed {
 			t.Error("writer added before the failure was not closed (leak)")
+		}
+		if !trailing.closed {
+			t.Error("writer never attempted after the failure was not closed (leak)")
 		}
 	})
 }

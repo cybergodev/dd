@@ -122,27 +122,6 @@ func (e *LoggerError) Is(target error) bool {
 	return false
 }
 
-// newError creates a new LoggerError with the given code and message.
-func newError(code, message string) *LoggerError {
-	return &LoggerError{
-		Code:    code,
-		Message: message,
-	}
-}
-
-// wrapError wraps an existing error with a code and message.
-// If the error is nil, returns nil.
-func wrapError(code, message string, cause error) *LoggerError {
-	if cause == nil {
-		return nil
-	}
-	return &LoggerError{
-		Code:    code,
-		Message: message,
-		Cause:   cause,
-	}
-}
-
 // WithContext adds context to a LoggerError.
 // Returns a new LoggerError with the context added.
 func (e *LoggerError) WithContext(key string, value any) *LoggerError {

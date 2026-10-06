@@ -882,6 +882,17 @@ func (mw *MultiWriter) Close() error {
 
 	errs := make([]error, 0, len(writers))
 	for _, w := range writers {
+		// Flush BEFORE closing: a writer that implements Flusher but not
+		// io.Closer (e.g. a bare *bufio.Writer registered via AddWriter) has no
+		// Close of its own to flush through, and its buffered data would
+		// otherwise be silently lost at teardown — the same data-loss window
+		// Logger.closeWritersLocked guards against. Redundant (and harmless)
+		// for writers whose Close already flushes.
+		if flusher, ok := w.(Flusher); ok {
+			if err := safeFlush(flusher); err != nil {
+				errs = append(errs, fmt.Errorf("failed to flush writer: %w", err))
+			}
+		}
 		if err := closeWriter(w); err != nil {
 			errs = append(errs, err)
 		}

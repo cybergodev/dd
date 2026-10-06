@@ -69,6 +69,13 @@
 //	// JSON preset
 //	logger, _ := dd.New(dd.JSONConfig())
 //
+//	// Production preset (Info level, JSON, RFC3339)
+//	logger, _ := dd.New(dd.ProductionConfig())
+//
+// Config presets are templates: always copy-assign and modify fields rather
+// than relying on the zero Config (Config{} is valid but NOT equivalent to
+// DefaultConfig — see the Config documentation for the zero-value contract).
+//
 // # Structured Logging
 //
 // Create type-safe fields:
@@ -178,11 +185,33 @@
 //   - Change log level dynamically
 //   - Modify context extractors and hooks
 //
+// # Two API Layers
+//
+// dd exposes a two-layer API: package-level functions (dd.Info, dd.Close, ...)
+// that operate on a process-wide default logger, and instance methods on
+// *Logger created via New(Config). The package layer mirrors the instance
+// layer for logging, level checks, and lifecycle (Flush, Close, Shutdown);
+// runtime configuration beyond that (SetSecurityConfig, AddHook,
+// SetLevelResolver, ...) is intentionally NOT mirrored — reach it through
+// dd.Default().SetSecurityConfig(...) so the package-level surface stays
+// stable.
+//
+// Rule of thumb:
+//   - Libraries, tests, and multi-logger apps: use New(Config) and inject
+//     the LogProvider interface.
+//   - Applications wanting global logging: call InitDefault(Config) once,
+//     then use the package-level functions and dd.Shutdown at exit.
+//
 // # Graceful Shutdown
 //
 // Always close the logger before exit:
 //
 //	logger.Close()
+//
+// Or, for the default logger via the package layer:
+//
+//	defer dd.Close()          // simple
+//	dd.Shutdown(ctx)          // bounded teardown with timeout
 //
 // For Fatal logs, use custom fatal handler:
 //

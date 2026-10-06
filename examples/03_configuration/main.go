@@ -1,5 +1,3 @@
-//go:build examples
-
 package main
 
 import (
@@ -13,21 +11,26 @@ import (
 // Configuration - Complete Config API Guide
 //
 // Topics covered:
-// 1. DefaultConfig and direct modification
-// 2. Preset configurations (Development, JSON)
-// 3. File output with rotation
-// 4. JSON customization
-// 5. Clone for multiple loggers
-// 6. Configure package-level functions with InitDefault
+// 1. DefaultConfig, validation, and direct modification
+// 2. Preset configurations (Development, JSON, Production)
+// 3. Output targets (console, file, dual output)
+// 4. File output with rotation
+// 5. JSON customization
+// 6. Clone for multiple loggers
+// 7. Configure package-level functions with InitDefault
+//
+// NOTE: constructor errors are ignored (logger, _) for brevity in these
+// examples; see 07_convenience for error-handling patterns.
 func main() {
 	fmt.Println("=== DD Configuration ===")
 
 	section1BasicConfig()
 	section2Presets()
-	section3FileRotation()
-	section4JSONCustomization()
-	section5Clone()
-	section6InitDefault()
+	section3OutputTargets()
+	section4FileRotation()
+	section5JSONCustomization()
+	section6Clone()
+	section7InitDefault()
 
 	fmt.Println("\n✅ Configuration examples completed!")
 	fmt.Println("\nCheck logs/ directory for output files")
@@ -42,7 +45,17 @@ func section1BasicConfig() {
 	cfg := dd.DefaultConfig()
 	cfg.Level = dd.LevelDebug
 	cfg.Format = dd.FormatJSON
-	cfg.DynamicCaller = true // Show caller file:line
+	cfg.DynamicCaller = true        // Show caller file:line
+	cfg.TimeFormat = "15:04:05.000" // Custom timestamp layout (time.Time format)
+	// cfg.IncludeTime = false  // omit timestamps entirely
+	// cfg.IncludeLevel = false // omit the level tag
+
+	// Validate before New() to catch config errors early
+	// (New() validates too, but this separates config bugs from I/O failures)
+	if err := cfg.Validate(); err != nil {
+		fmt.Printf("Invalid config: %v\n", err)
+		return
+	}
 
 	logger, _ := dd.New(cfg)
 	defer logger.Close()
@@ -72,12 +85,43 @@ func section2Presets() {
 	defer jsonLogger.Close()
 	jsonLogger.Info("JSON format ready for log aggregation")
 
+	// Production: Info level, JSON format, RFC3339 timestamps
+	prodLogger, _ := dd.New(dd.ProductionConfig())
+	defer prodLogger.Close()
+	prodLogger.Info("Production preset - Info level JSON output")
+
 	fmt.Println()
 }
 
-// Section 3: File output with rotation
-func section3FileRotation() {
-	fmt.Println("3. File Rotation")
+// Section 3: Output targets (console, file, dual output)
+func section3OutputTargets() {
+	fmt.Println("3. Output Targets")
+	fmt.Println("------------------")
+
+	// Console only (stdout)
+	consoleCfg := dd.DefaultConfig()
+	consoleCfg.Targets = []dd.OutputTarget{dd.ConsoleOutput()}
+	consoleLogger, _ := dd.New(consoleCfg)
+	defer consoleLogger.Close()
+	consoleLogger.Info("Console only - no file")
+
+	// Dual output: console AND file in one logger
+	// DefaultLogPath is the conventional "logs/app.log" convenience constant
+	dualCfg := dd.DefaultConfig()
+	dualCfg.Targets = []dd.OutputTarget{
+		dd.ConsoleOutput(),
+		dd.FileOutput(dd.DefaultLogPath),
+	}
+	dualLogger, _ := dd.New(dualCfg)
+	defer dualLogger.Close()
+	dualLogger.Info("Appears in BOTH console and file")
+
+	fmt.Println()
+}
+
+// Section 4: File output with rotation
+func section4FileRotation() {
+	fmt.Println("4. File Rotation")
 	fmt.Println("-----------------")
 
 	cfg := dd.DefaultConfig()
@@ -99,11 +143,12 @@ func section3FileRotation() {
 	)
 
 	fmt.Println("✓ Logs written to logs/app.log")
+	fmt.Println("  (see 05_writers for rotation demonstrated live)")
 }
 
-// Section 4: JSON customization
-func section4JSONCustomization() {
-	fmt.Println("4. JSON Customization")
+// Section 5: JSON customization
+func section5JSONCustomization() {
+	fmt.Println("5. JSON Customization")
 	fmt.Println("----------------------")
 
 	cfg := dd.JSONConfig()
@@ -131,9 +176,9 @@ func section4JSONCustomization() {
 	fmt.Println()
 }
 
-// Section 5: Clone for multiple loggers
-func section5Clone() {
-	fmt.Println("5. Clone for Multiple Loggers")
+// Section 6: Clone for multiple loggers
+func section6Clone() {
+	fmt.Println("6. Clone for Multiple Loggers")
 	fmt.Println("-------------------------------")
 
 	// Base configuration
@@ -179,9 +224,9 @@ func section5Clone() {
 	fmt.Println("✓ Multiple loggers from cloned config")
 }
 
-// Section 6: Configure package-level functions with InitDefault
-func section6InitDefault() {
-	fmt.Println("6. InitDefault - Configure Package-Level Functions")
+// Section 7: Configure package-level functions with InitDefault
+func section7InitDefault() {
+	fmt.Println("7. InitDefault - Configure Package-Level Functions")
 	fmt.Println("----------------------------------------------------")
 
 	// Package-level functions (dd.Debug, dd.Info, etc.) use a default logger.

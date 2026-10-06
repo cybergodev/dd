@@ -82,6 +82,41 @@ func BenchmarkConcurrentLogging(b *testing.B) {
 	})
 }
 
+// BenchmarkEntryLogging covers the LoggerEntry layer (WithFields + entry
+// methods): the arg-family dispatchers format after the level gate without
+// allocating a lazy-message closure per call.
+func BenchmarkEntryLogging(b *testing.B) {
+	cfg := DefaultConfig()
+	cfg.Targets = []OutputTarget{CustomOutput(io.Discard)}
+	logger, _ := New(cfg)
+	defer logger.Close()
+	entry := logger.WithFields(String("service", "api"), Int("port", 8080))
+
+	b.Run("Info", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			entry.Info("entry message")
+		}
+	})
+
+	b.Run("Infof", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			entry.Infof("entry %d", i)
+		}
+	})
+
+	b.Run("InfoWith", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			entry.InfoWith("message", String("user", "john"))
+		}
+	})
+}
+
 // ============================================================================
 // FORMAT PERFORMANCE BENCHMARKS
 // ============================================================================

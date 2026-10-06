@@ -109,10 +109,17 @@ logger, err := dd.New(dd.DevelopmentConfig())
 
 // Cloud-native - JSON format, debug level
 logger, err := dd.New(dd.JSONConfig())
+
+// Production preset - Info level, JSON format, RFC3339 timestamps
+logger, err := dd.New(dd.ProductionConfig())
 ```
 
 > All presets enable basic sensitive-data filtering by default (see
 > [Security Features](#security-features)).
+>
+> The zero `Config{}` is valid but **not** equivalent to `DefaultConfig()`
+> (it logs at Debug level with time/level/caller decorations disabled) —
+> always start from `DefaultConfig()` or a preset.
 
 ### Custom Configuration
 
@@ -237,7 +244,8 @@ if err != nil {
 logger.Info("password=secret123")           // -> password=[REDACTED]
 logger.Info("api_key=sk-abc123")            // -> api_key=[REDACTED]
 logger.Info("credit_card=4532015112830366") // -> credit_card=[REDACTED]
-// Email addresses require full filtering: cfg.Security = dd.DefaultSecureConfig()
+// Email addresses require full filtering:
+//   cfg.Security = dd.SecurityConfigForLevel(dd.SecurityLevelStandard)
 ```
 
 To change coverage, replace `cfg.Security` with one of the presets:
@@ -245,7 +253,7 @@ To change coverage, replace `cfg.Security` with one of the presets:
 | Security Level | Filter Type | Coverage |
 |----------------|-------------|----------|
 | `DefaultSecurityConfig()` | Basic | Passwords, API keys, credit cards, phone numbers, database URLs |
-| `DefaultSecureConfig()` | Full | All built-in patterns: JWTs, AWS keys, IPs, SSNs, emails, and more |
+| `SecurityConfigForLevel(SecurityLevelStandard)` | Full | All built-in patterns: JWTs, AWS keys, IPs, SSNs, emails, and more |
 | `HealthcareConfig()` | HIPAA | Full + PHI patterns (diagnosis codes, MRNs) |
 | `FinancialConfig()` | PCI-DSS | Full + financial data (SWIFT, IBAN, CVV, routing numbers) |
 | `GovernmentConfig()` | Government | Full + classified patterns (passports, licenses, case numbers) |
@@ -299,7 +307,7 @@ filter.PatternCount()                      // Number of registered patterns
 filter.ClearPatterns()                     // Remove all patterns
 filter.Disable() / filter.Enable()         // Toggle without losing patterns
 filter.IsEnabled()
-filter.GetFilterStats()                    // dd.FilterStats: scans, matches, drops
+filter.GetFilterStats()                    // dd.FilterStats: TotalFiltered, TotalRedactions, TotalTimeouts, PatternCount, ...
 ```
 
 ### Disable Security (Max Performance)
@@ -661,13 +669,11 @@ Reduce log volume in high-throughput scenarios:
 
 ```go
 cfg := dd.DefaultConfig()
-cfg.Sampling = &dd.SamplingConfig{
-    Enabled:    true,
-    Initial:    100,              // Always log first 100 messages
-    Thereafter: 10,               // Then log 1 in every 10
-    Tick:       time.Second,      // Reset counters every second
-}
+sampling := dd.DefaultSamplingConfig() // Initial=100, Thereafter=100, Tick=1s
+sampling.Thereafter = 10               // Then log 1 in every 10 (per second)
+cfg.Sampling = &sampling
 logger, err := dd.New(cfg)
+// Traffic below 100 messages/second is never sampled; only bursts are reduced.
 ```
 
 ### Field Validation
@@ -702,12 +708,20 @@ Adjust log levels at runtime based on conditions:
 ```go
 var errorCount atomic.Int64
 
-logger.SetLevelResolver(func(ctx context.Context) dd.LogLevel {
+resolver := func(ctx context.Context) dd.LogLevel {
     if errorCount.Load() > 100 {
         return dd.LevelWarn  // Reduce logging under high error rate
     }
     return dd.LevelDebug
-})
+}
+
+// At construction time (Config.LevelResolver)
+cfg := dd.DefaultConfig()
+cfg.LevelResolver = resolver
+logger, _ := dd.New(cfg)
+
+// Or at runtime
+logger.SetLevelResolver(resolver)
 ```
 
 ### Custom Fatal Handler
@@ -749,6 +763,14 @@ defer func() {
         fmt.Fprintf(os.Stderr, "Logger shutdown error: %v\n", err)
     }
 }()
+```
+
+The default logger can be shut down through the package layer too:
+
+```go
+dd.InitDefault(dd.DefaultConfig())
+defer dd.Close()                 // simple
+dd.Shutdown(ctx)                 // bounded teardown with timeout
 ```
 
 ### Debug Utilities
@@ -866,6 +888,8 @@ dd.GetSampling() *SamplingConfig
 
 // Lifecycle
 dd.Flush() error
+dd.Close() error                    // Close the default logger
+dd.Shutdown(ctx context.Context) error // Graceful close with timeout
 dd.AddWriter(w io.Writer) error
 dd.RemoveWriter(w io.Writer) error
 dd.WriterCount() int
@@ -977,7 +1001,8 @@ dd.Any(key string, value any)        // Any type
 ```go
 // Preset configs
 dd.DefaultSecurityConfig() // Basic (default in all presets)
-dd.DefaultSecureConfig()   // Full
+dd.SecurityConfigForLevel(dd.SecurityLevelStandard) // Full
+//   (DefaultSecureConfig() is deprecated: it returns the same full filter)
 dd.HealthcareConfig()      // HIPAA
 dd.FinancialConfig()       // PCI-DSS
 dd.GovernmentConfig()      // Government
@@ -1122,26 +1147,27 @@ type Service struct {
 
 ## Examples
 
-See the [examples](examples) directory for complete, runnable examples:
+See the [examples](examples) directory for complete, runnable examples
+(each example is a standalone package compiled by `go build ./...`):
 
-| File | Description |
-|------|-------------|
-| [01_quick_start.go](examples/01_quick_start.go) | Basic usage in 5 minutes |
-| [02_structured_logging.go](examples/02_structured_logging.go) | Type-safe fields, WithFields |
-| [03_configuration.go](examples/03_configuration.go) | Config API, presets, rotation |
-| [04_security.go](examples/04_security.go) | Filtering, custom patterns |
-| [05_writers.go](examples/05_writers.go) | File, buffered, multi-writer |
-| [06_context_hooks.go](examples/06_context_hooks.go) | Tracing, hooks |
-| [07_convenience.go](examples/07_convenience.go) | Output targets, quick setup |
-| [08_production.go](examples/08_production.go) | Production patterns |
-| [09_advanced.go](examples/09_advanced.go) | Sampling, validation, fatal handler |
-| [10_audit_integrity.go](examples/10_audit_integrity.go) | Audit, integrity |
-| [11_testing.go](examples/11_testing.go) | Testing with LoggerRecorder |
+| Example | Description |
+|---------|-------------|
+| [01_quick_start](examples/01_quick_start/main.go) | Basic usage in 5 minutes |
+| [02_structured_logging](examples/02_structured_logging/main.go) | Type-safe fields, WithFields |
+| [03_configuration](examples/03_configuration/main.go) | Config API, presets, rotation |
+| [04_security](examples/04_security/main.go) | Filtering, security levels, rate limiting |
+| [05_writers](examples/05_writers/main.go) | File, rotation, buffered, multi-writer |
+| [06_context_hooks](examples/06_context_hooks/main.go) | Tracing, hooks (incl. OnRotate) |
+| [07_convenience](examples/07_convenience/main.go) | Print family, default logger, error handling |
+| [08_production](examples/08_production/main.go) | Production patterns |
+| [09_advanced](examples/09_advanced/main.go) | Sampling, validation, fatal handler |
+| [10_audit_integrity](examples/10_audit_integrity/main.go) | Audit, integrity, signed audit trail |
+| [11_testing](examples/11_testing/main.go) | Testing with LoggerRecorder |
 
-Run examples with the `examples` build tag:
+Run any example (no build tag required):
 
 ```bash
-go run -tags examples examples/01_quick_start.go
+go run ./examples/01_quick_start
 ```
 
 ---
